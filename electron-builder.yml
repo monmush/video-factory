@@ -1,0 +1,30 @@
+appId: vn.hyan.videofactory
+productName: Hy An Video Factory
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+  # The Agent SDK's own copy of Claude Code (~300 MB). The app runs the
+  # user's installed `claude` instead (docs/TECH_STACK_AND_SKILLS.md).
+  - "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+asarUnpack: []
+mac:
+  category: public.app-category.video
+  target:
+    - target: dmg
+      arch: [arm64]
+  # Unsigned for the pilot. Signing and notarisation come later.
+  identity: null
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  artifactName: ${productName}-${version}-setup.${ext}
+  oneClick: false
+publish: null

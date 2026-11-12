@@ -1,0 +1,58 @@
+{
+  "name": "hyan-video-factory",
+  "productName": "Hy An Video Factory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop app for producing Hy An tea videos in batches",
+  "main": "./out/main/index.js",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "electron-vite dev --watch",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "check": "pnpm typecheck && pnpm lint && pnpm build",
+    "package:mac": "pnpm build && electron-builder --mac",
+    "package:mac:dir": "pnpm build && electron-builder --mac --dir",
+    "package:win": "pnpm build && electron-builder --win"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.322",
+    "@base-ui/react": "1.9.0",
+    "@elevenlabs/elevenlabs-js": "^2.77.0",
+    "@fal-ai/client": "^1.10.1",
+    "@tanstack/react-router": "1.170.46",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "1.72.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwind-merge": "3.7.0",
+    "zod": "4.6.7"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [],
+    "ignoredBuiltDependencies": [
+      "electron-winstaller"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.7",
+    "@tailwindcss/vite": "4.3.5",
+    "@types/node": "^22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "electron": "45.3.1",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "tailwindcss": "4.3.5",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}
