@@ -1,0 +1,60 @@
+{
+  "repository": "https://github.com/pingdotgg/t3code",
+  "commit": "c6ca6056309904f89b90b6055d797973be0a0939",
+  "inspected_on": "2026-11-09",
+  "purpose": "Unmodified study references; not an installed component library",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "935d8f2af0c703f9c39517ee57cc4930b19d02d533be930b63f0e82f93614b43"
+    },
+    {
+      "path": "apps/web/components.json",
+      "sha256": "eec028667d6a6fcaf8032cd511da27cbae1d8f5faf20d061766c943195d56e20"
+    },
+    {
+      "path": "packages/shared/src/themePalettes.ts",
+      "sha256": "21b10dad58a61e86c563e48f75584a49ef61d423d426129e831c8c2c2090ddb8"
+    },
+    {
+      "path": "apps/web/src/index.css",
+      "sha256": "a58386183e7823f15e95c12a04366e06faf56cca7115d38a6dfee76191f4aa7a"
+    },
+    {
+      "path": "apps/web/src/themePalette.ts",
+      "sha256": "05f72f4e689c5f112241a82796002f0ea6579c533e3356602c757dd13b3d931f"
+    },
+    {
+      "path": "apps/web/src/appearanceFonts.ts",
+      "sha256": "c605d53305cd8a4cd02b49300439ad7f8c29150dc9308fa6b0d959e9fe757b9d"
+    },
+    {
+      "path": "apps/web/src/lib/utils.ts",
+      "sha256": "14b0a843378a1f8f166358828b0e1d8c1bb408b031b836144968815ef5d24305"
+    },
+    {
+      "path": "apps/web/src/components/ui/button.tsx",
+      "sha256": "ee4b5bea5aa08a2f519e9b0810edcc29cca02010fcb724b937413d64d85fa342"
+    },
+    {
+      "path": "apps/web/src/components/ui/input.tsx",
+      "sha256": "6dc3d407a0b2d1c027a64e47eb9d9ed92f44aeb0a3aaff88d1fc1747054256a7"
+    },
+    {
+      "path": "apps/web/src/components/ui/badge.tsx",
+      "sha256": "c73b0e5d1a54885d702ff193248e943a3424abd6285166d63d942c19d5dba03e"
+    },
+    {
+      "path": "apps/web/src/components/ui/dialog.tsx",
+      "sha256": "7c8177228c60ba25fccf0cf36b76b55d590b7bcfacf4ad942c0f5c3ae63d7833"
+    },
+    {
+      "path": "apps/web/src/components/ui/dialog-styles.ts",
+      "sha256": "e0e987bd3bcf354286d0323db8a448d1953fce676c2503ee3d6c02dfd0a82fbb"
+    },
+    {
+      "path": "apps/web/src/components/ui/scroll-area.tsx",
+      "sha256": "f063524e4ecb9846fe2d968ded53c1e04cfa87349d87e31f8591653a43e9db45"
+    }
+  ]
+}
