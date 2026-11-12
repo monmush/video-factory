@@ -1,0 +1,26 @@
+# Local secrets written by `elevenlabs onboard`
+/.env.local
+
+# Local dependencies
+/node_modules/
+
+# Build output
+/out/
+/dist/
+*.tmp
+.DS_Store
+
+# Local only: business context, client material and research.
+# Kept on this machine, never published.
+/PROJECT_CONTEXT.md
+/project/
+/docs/
+/assets/
+/experiments/
+/prototypes/
+/references/hyan/
+/references/ui-patterns/
+/templates/video-script/examples/
+/templates/video-script/video-types/
+/.agents/skills/sources.json
+/.agents/skills/make-interfaces-feel-better/
