@@ -1,5 +1,6 @@
 import type { GroupedProduct, ProductGroupingResult } from "../shared/ipc";
 import { askClaudeCode } from "./claude-code";
+import { falCall } from "./fal";
 import { uploadImages } from "./fal-upload";
 import { falClient, providerMode } from "./providers";
 import { readSettings } from "./settings";
@@ -122,25 +123,23 @@ export async function groupProducts(paths: string[]): Promise<ProductGroupingRes
 
   const fal = await falClient();
   const image_urls = await uploadImages(fal, paths, 768);
-  const result = await fal.subscribe(FAL_ENDPOINT, {
-    input: {
+  const { data } = await falCall<{ output: string; usage?: { cost?: number } }>(
+    fal,
+    FAL_ENDPOINT,
+    {
       model: FAL_MODEL,
       prompt: userPrompt(paths.length),
       system_prompt: SYSTEM_PROMPT,
       image_urls,
       temperature: 0.2,
     },
-  });
-  const data = result.data as { output: string; usage?: { cost?: number } };
+    {
+      purpose: "group-products",
+      model: FAL_MODEL,
+      images: image_urls.length,
+      cost: (d) => d.usage?.cost ?? null,
+    },
+  );
   const cost = data.usage?.cost ?? null;
-  await logUsage({
-    provider: "fal",
-    endpoint: FAL_ENDPOINT,
-    model: FAL_MODEL,
-    purpose: "group-products",
-    requestId: result.requestId,
-    images: image_urls.length,
-    cost,
-  });
   return { ...normalise(data.output, paths.length), source: "fal", cost };
 }

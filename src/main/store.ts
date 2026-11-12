@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
-import { shell } from "electron";
+import { BrowserWindow, shell } from "electron";
 import {
   type AssetKind,
   SERIES_ASSET_FIELD,
@@ -43,6 +43,7 @@ export function mutate<T>(change: (ws: Workspace) => T | Promise<T>): Promise<T>
     const result = await change(ws);
     await writeJsonAtomic(dataFile(FILE), ws);
     cache = ws;
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send("workspace:changed", ws);
     return result;
   });
   queue = run.catch(() => undefined);

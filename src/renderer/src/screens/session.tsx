@@ -57,7 +57,11 @@ export function SessionLayout() {
         </nav>
         <span className="flex-1" />
         {onScripts && (
-          <ScriptsToolbar sessionId={sessionId} approved={Boolean(session.approvedAt)} />
+          <ScriptsToolbar
+            key={sessionId}
+            sessionId={sessionId}
+            approved={Boolean(session.approvedAt)}
+          />
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -78,6 +82,8 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
   // appears; the button waits until writing finishes. Failed cards are not videos.
   const ready = scripts.filter((s) => s.status !== "failed").length;
   const writing = scripts.some((s) => s.status === "writing");
+  // A chat turn may still change the scripts; wait for it before approving.
+  const chatting = board.messages.some((m) => m.pending);
   const layout = boardLayout(view, scripts.length);
   // Estimated total for what "Tạo N video" would make; "…" until writing finishes.
   const seconds = scripts
@@ -114,7 +120,7 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
         </fieldset>
       )}
       {!approved && (
-        <Button disabled={ready === 0 || writing} onClick={() => setConfirming(true)}>
+        <Button disabled={ready === 0 || writing || chatting} onClick={() => setConfirming(true)}>
           {ready > 0 ? `Tạo ${ready} video` : "Tạo video"}
         </Button>
       )}
@@ -122,6 +128,7 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
         sessionId={sessionId}
         count={ready}
         total={total}
+        blocked={writing || chatting}
         open={confirming}
         onOpenChange={setConfirming}
       />
@@ -166,12 +173,14 @@ function ApproveDialog({
   sessionId,
   count,
   total,
+  blocked,
   open,
   onOpenChange,
 }: {
   sessionId: string;
   count: number;
   total: string;
+  blocked: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -207,7 +216,7 @@ function ApproveDialog({
         </div>
         <DialogFooter className="justify-end">
           <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>
-          <Button disabled={busy} onClick={approve}>
+          <Button disabled={busy || blocked || count === 0} onClick={approve}>
             Tạo {count} video
           </Button>
         </DialogFooter>
@@ -218,7 +227,8 @@ function ApproveDialog({
 
 export function ScriptsPage() {
   const { sessionId } = useParams({ from: "/sessions/$sessionId" });
-  return <ScriptBoard sessionId={sessionId} />;
+  // Keyed so board-local state (selection, undo notice) never carries over to another session.
+  return <ScriptBoard key={sessionId} sessionId={sessionId} />;
 }
 
 export function VideosPage() {

@@ -5,6 +5,29 @@ import { registerIpc } from "./ipc";
 import { clearStaging, handleMediaProtocol, registerMediaScheme } from "./media";
 import { readSettings } from "./settings";
 
+// Development never touches the packaged app's data: it gets its own folder,
+// and HYAN_DATA_DIR points either at a disposable one. Electron's own storage
+// and the single-instance lock follow, so each data folder is fully separate.
+// Must run before anything reads paths.
+if (process.env.HYAN_DATA_DIR) {
+  app.setPath("userData", process.env.HYAN_DATA_DIR);
+} else if (!app.isPackaged) {
+  app.setPath("userData", `${app.getPath("userData")} (dev)`);
+}
+
+// One running copy per data folder: two would each cache workspace.json and
+// overwrite each other's changes. A second launch focuses the first window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+app.on("second-instance", () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.focus();
+});
+
 // Development keys live in the ignored `.env.local` at the project root.
 if (!app.isPackaged) {
   try {

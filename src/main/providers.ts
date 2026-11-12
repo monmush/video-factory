@@ -71,8 +71,17 @@ export async function clearKey(id: ProviderId): Promise<ProvidersInfo> {
 }
 
 // Clients are created lazily so app start-up does not load either SDK.
+// Fixture mode never gets a client, so a forgotten mode check in a caller
+// fails loudly instead of spending credits.
+
+function assertLive(provider: string) {
+  if (providerMode() === "fixture") {
+    throw new Error(`${provider} is disabled in fixture mode (set HYAN_PROVIDER_MODE=live)`);
+  }
+}
 
 export async function falClient() {
+  assertLive("fal");
   const credentials = await getKey("fal");
   if (!credentials) throw new Error("Chưa có khóa fal. Thêm khóa trong Cài đặt.");
   const { createFalClient } = await import("@fal-ai/client");
@@ -80,6 +89,7 @@ export async function falClient() {
 }
 
 export async function elevenLabsClient() {
+  assertLive("ElevenLabs");
   const apiKey = await getKey("elevenlabs");
   if (!apiKey) throw new Error("Chưa có khóa ElevenLabs. Thêm khóa trong Cài đặt.");
   const { ElevenLabsClient } = await import("@elevenlabs/elevenlabs-js");

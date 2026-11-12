@@ -9,6 +9,7 @@ import {
   Settings,
 } from "lucide-react";
 import { type PointerEvent, useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import { onChatFocusRequest } from "@/lib/board";
 import { lastPath, type Section, TABS, useSection } from "@/lib/sections";
 import { usePersistentNumber, usePersistentToggle } from "@/lib/shell-state";
@@ -34,7 +35,7 @@ export function AppShell() {
   // "Nhắc trong chat" on a card opens the chat if it is closed.
   useEffect(() => onChatFocusRequest(() => setPanelOpen(true)), [setPanelOpen]);
   const panel = useSidePanel();
-  const isMac = window.hyan.platform === "darwin";
+  const isMac = api.platform === "darwin";
   const hasSidebar = section !== "settings";
   const showSidebar = hasSidebar && sidebarOpen;
   const [usageOpen, setUsageOpen] = useState(false);

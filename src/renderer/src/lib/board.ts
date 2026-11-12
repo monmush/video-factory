@@ -24,21 +24,42 @@ api.on("board:changed", ({ sessionId, board }) => {
   emit();
 });
 
+// Sessions some mounted component is showing, so a failed read can be retried.
+const wanted = new Map<string, number>();
+
+function load(sessionId: string, retry: boolean) {
+  if (boards.has(sessionId) || loading.has(sessionId)) return;
+  loading.add(sessionId);
+  api
+    .invoke("board:get", sessionId)
+    .then((fresh) => {
+      // A pushed change that arrived meanwhile is newer; keep it.
+      if (!boards.has(sessionId)) boards.set(sessionId, fresh);
+      emit();
+    })
+    .catch((error) => {
+      console.error(error);
+      // One automatic retry; after that, the next mount or window focus tries again.
+      if (retry) setTimeout(() => wanted.has(sessionId) && load(sessionId, false), 2000);
+    })
+    .finally(() => loading.delete(sessionId));
+}
+
+window.addEventListener("focus", () => {
+  for (const sessionId of wanted.keys()) load(sessionId, false);
+});
+
 /** The session's board; null until the first read arrives. */
 export function useBoard(sessionId: string): Board | null {
   const board = useSyncExternalStore(subscribe, () => boards.get(sessionId) ?? null);
   useEffect(() => {
-    if (boards.has(sessionId) || loading.has(sessionId)) return;
-    loading.add(sessionId);
-    api
-      .invoke("board:get", sessionId)
-      .then((fresh) => {
-        // A pushed change that arrived meanwhile is newer; keep it.
-        if (!boards.has(sessionId)) boards.set(sessionId, fresh);
-        emit();
-      })
-      .catch((error) => console.error(error))
-      .finally(() => loading.delete(sessionId));
+    wanted.set(sessionId, (wanted.get(sessionId) ?? 0) + 1);
+    load(sessionId, true);
+    return () => {
+      const count = (wanted.get(sessionId) ?? 1) - 1;
+      if (count > 0) wanted.set(sessionId, count);
+      else wanted.delete(sessionId);
+    };
   }, [sessionId]);
   return board;
 }

@@ -7,7 +7,7 @@ import {
   HIDDEN_CHAT_MODELS,
   resolveChoice,
 } from "../../shared/ipc";
-import { claudeCodeStatus, findClaude } from "../claude-code";
+import { claudeCodeStatus, claudeEnv, findClaude } from "../claude-code";
 import { readSettings, writeSettings } from "../settings";
 import { textAiMode } from "../text-ai";
 
@@ -49,6 +49,7 @@ async function readModels(): Promise<ChatModelOption[] | null> {
       settingSources: [],
       strictMcpConfig: true,
       persistSession: false,
+      env: claudeEnv(),
     },
   });
   try {

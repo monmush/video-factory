@@ -3,10 +3,10 @@ import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AngleModel, CoreAngle, GenerateAnglesResult, GeneratedAngle } from "../shared/ipc";
 import { mediaUrl } from "../shared/ipc";
+import { falCall } from "./fal";
 import { uploadImages } from "./fal-upload";
 import { stagingDir } from "./media";
 import { falClient, getKey, providerMode } from "./providers";
-import { logUsage } from "./usage";
 
 // "Tạo thêm góc nhìn": generates the generic core character sheet (close-up,
 // three-quarter, full body) from the character's reference images with a fal
@@ -16,7 +16,11 @@ const MAX_REFERENCES = 4;
 
 const MODELS: Record<
   AngleModel,
-  { endpoint: string; fallbackUsd: number; input: (prompt: string, urls: string[]) => object }
+  {
+    endpoint: string;
+    fallbackUsd: number;
+    input: (prompt: string, urls: string[]) => Record<string, unknown>;
+  }
 > = {
   // The model used for the approved courtyard pack.
   "gpt-image": {
@@ -129,24 +133,23 @@ export async function generateAngles(input: {
 
   const settled = await Promise.allSettled(
     input.angles.map(async (angle) => {
-      const result = await fal.subscribe(config.endpoint, {
-        input: config.input(prompt(angle, input.description), urls),
-      });
-      const imageUrl = (result.data as { images?: { url: string }[] }).images?.[0]?.url;
-      if (!imageUrl) throw new Error("Mô hình không trả về ảnh");
-      const file = await stageFromUrl(imageUrl);
       // Image models bill by tokens and do not return the charge; log fal's
       // historical average so cost per character can still be tracked.
-      await logUsage({
-        provider: "fal",
-        endpoint: config.endpoint,
-        purpose: "generate-angle",
-        angle,
-        requestId: result.requestId,
-        references: urls.length,
-        cost: unitCost,
-        costIsEstimate: true,
-      });
+      const { data } = await falCall<{ images?: { url: string }[] }>(
+        fal,
+        config.endpoint,
+        config.input(prompt(angle, input.description), urls),
+        {
+          purpose: "generate-angle",
+          angle,
+          references: urls.length,
+          cost: () => unitCost,
+          costIsEstimate: true,
+        },
+      );
+      const imageUrl = data.images?.[0]?.url;
+      if (!imageUrl) throw new Error("Mô hình không trả về ảnh");
+      const file = await stageFromUrl(imageUrl);
       return { id: file, url: mediaUrl.staged(file), angle } satisfies GeneratedAngle;
     }),
   );

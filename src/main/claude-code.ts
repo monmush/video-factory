@@ -42,6 +42,16 @@ export function toLimits(
 
 const run = promisify(execFile);
 
+/**
+ * Environment for the user's Claude processes: everything except the app's own
+ * provider keys (loaded from .env.local in development), which Claude never needs.
+ */
+export function claudeEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of ["FAL_KEY", "FAL_BILLING_KEY", "ELEVENLABS_API_KEY"]) delete env[name];
+  return env;
+}
+
 // GUI apps on macOS do not inherit the shell PATH, so look in the usual places.
 const CANDIDATE_DIRS = [
   join(homedir(), ".local", "bin"),
@@ -71,11 +81,14 @@ export async function claudeCodeStatus(): Promise<ClaudeCodeStatus> {
   cachedPath = undefined; // re-detect: the user may have just installed it
   const bin = await findClaude();
   if (!bin) return { installed: false, version: null, loggedIn: false, plan: null };
-  const version = await run(bin, ["--version"], { timeout: 10_000 })
+  const version = await run(bin, ["--version"], { timeout: 10_000, env: claudeEnv() })
     .then((r) => r.stdout.trim().split(" ")[0] ?? null)
     .catch(() => null);
   try {
-    const { stdout } = await run(bin, ["auth", "status", "--json"], { timeout: 10_000 });
+    const { stdout } = await run(bin, ["auth", "status", "--json"], {
+      timeout: 10_000,
+      env: claudeEnv(),
+    });
     const status = JSON.parse(stdout) as { loggedIn?: boolean; subscriptionType?: string };
     return {
       installed: true,
@@ -163,7 +176,7 @@ export async function askClaudeCode(input: {
   ];
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd, env: claudeEnv(), stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {

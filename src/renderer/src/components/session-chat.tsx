@@ -52,7 +52,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   const [view, setView] = useBoardView(sessionId);
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
   const live = useChatLive(sessionId);
-  const [info, refreshInfo] = useChatInfo();
+  const [info, refreshInfo, setInfoLocal] = useChatInfo();
   const [text, setText, clearText] = useDraft(`session-chat:${sessionId}`, "");
   const [files, setFiles, clearFiles] = useDraft<ChatAttachment[]>(
     `session-chat-files:${sessionId}`,
@@ -60,6 +60,8 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   );
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [dropping, setDropping] = useState(false);
   // A drag cancelled (Esc) or dropped elsewhere never sends "dragleave" here.
   useEffect(() => {
@@ -149,6 +151,10 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   };
 
   const send = async () => {
+    // A second Enter or click before the first send returns would send twice.
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
     setError(null);
     try {
       await api.invoke("chat:send", {
@@ -162,6 +168,9 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
       setView({ refs: [] });
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
   };
 
@@ -170,11 +179,14 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     setAdding(true);
     try {
       const added = await picked;
-      const next = [...files, ...added];
-      if (next.length > MAX_CHAT_ATTACHMENTS) {
-        throw new Error(`Tối đa ${MAX_CHAT_ATTACHMENTS} tệp mỗi tin nhắn`);
-      }
-      setFiles(next);
+      // Builds on the latest list: two stagings that overlap both keep their files.
+      let tooMany = false;
+      setFiles((current) => {
+        const next = [...current, ...added];
+        tooMany = next.length > MAX_CHAT_ATTACHMENTS;
+        return tooMany ? current : next;
+      });
+      if (tooMany) throw new Error(`Tối đa ${MAX_CHAT_ATTACHMENTS} tệp mỗi tin nhắn`);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -204,7 +216,10 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     }
   };
 
-  const ctx: MessageContext = { sessionId, scripts, locked, running, blocked, act };
+  // Only the newest turn that can still be undone offers it: undoing an older
+  // turn would overwrite what later turns changed.
+  const undoId = messages.findLast(canUndo)?.id ?? null;
+  const ctx: MessageContext = { sessionId, scripts, locked, running, blocked, undoId, act };
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: drop target for scripts dragged from the board
@@ -271,7 +286,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
           value={text}
           onChange={setText}
           onSubmit={send}
-          busy={adding}
+          busy={adding || sending}
           disabled={locked || blocked}
           running={running}
           onStop={() => act(() => api.invoke("chat:stop", sessionId))}
@@ -306,7 +321,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
                     key={file.id}
                     sessionId={sessionId}
                     file={file}
-                    onRemove={() => setFiles(files.filter((f) => f.id !== file.id))}
+                    onRemove={() => setFiles((current) => current.filter((f) => f.id !== file.id))}
                   />
                 ))}
               </div>
@@ -331,6 +346,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
               info={info}
               current={resolveChoice(board?.agent ?? info.choice)}
               onError={setError}
+              onChosen={(choice) => setInfoLocal({ choice })}
             />
           )}
         </Composer>
@@ -346,8 +362,20 @@ interface MessageContext {
   running: boolean;
   /** The setup banner is showing; messages don't repeat its actions. */
   blocked: boolean;
+  /** The one assistant message whose changes can be undone now. */
+  undoId: string | null;
   act: (run: () => Promise<unknown>) => void;
 }
+
+const undoChanges = (m: ChatMessage) => (m.undo?.before.length ?? 0) + (m.undo?.added?.length ?? 0);
+
+/** An assistant turn whose changes are still on the board. Pipeline replies always record some. */
+const canUndo = (m: ChatMessage) =>
+  m.role === "assistant" &&
+  !m.pending &&
+  Boolean(m.undo) &&
+  !m.undo?.undone &&
+  (!m.parts || undoChanges(m) > 0);
 
 /** Follows new content only while the reader is already at the bottom. */
 function useStickToBottom() {
@@ -422,17 +450,23 @@ function ModelPicker({
   info,
   current,
   onError,
+  onChosen,
 }: {
   sessionId: string;
   info: ChatInfo;
   current: { model: string; effort: ChatEffort };
   onError: (message: string) => void;
+  /** The choice was saved; it is also the default for new sessions. */
+  onChosen: (choice: ChatModelChoice) => void;
 }) {
   const option = info.models.find((m) => m.value === current.model);
   const label = option?.label ?? current.model;
   const efforts = option?.efforts ?? [];
   const choose = (choice: ChatModelChoice) =>
-    api.invoke("chat:set-model", { sessionId, choice }).catch((e) => onError(errorMessage(e)));
+    api
+      .invoke("chat:set-model", { sessionId, choice })
+      .then(() => onChosen(choice))
+      .catch((e) => onError(errorMessage(e)));
 
   return (
     <Menu>
@@ -703,7 +737,7 @@ function AssistantMessage({
   const toolRunning = parts.some((p) => p.type === "tool" && p.status === "running");
   const thinking = message.pending && !liveText && !toolRunning;
   const undo = message.undo;
-  const changes = (undo?.before.length ?? 0) + (undo?.added?.length ?? 0);
+  const changes = undoChanges(message);
 
   return (
     <div className="flex flex-col gap-1.5 leading-relaxed">
@@ -748,18 +782,20 @@ function AssistantMessage({
           {undo.undone ? (
             <span className="text-muted-foreground">Đã hoàn tác.</span>
           ) : (
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={ctx.running || ctx.locked}
-              onClick={() =>
-                ctx.act(() =>
-                  api.invoke("board:undo", { sessionId: ctx.sessionId, messageId: message.id }),
-                )
-              }
-            >
-              Hoàn tác
-            </Button>
+            ctx.undoId === message.id && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={ctx.running || ctx.locked}
+                onClick={() =>
+                  ctx.act(() =>
+                    api.invoke("board:undo", { sessionId: ctx.sessionId, messageId: message.id }),
+                  )
+                }
+              >
+                Hoàn tác
+              </Button>
+            )
           )}
         </div>
       )}
@@ -910,18 +946,20 @@ function PipelineMessage({ message, ctx }: { message: ChatMessage; ctx: MessageC
         (message.undo.undone ? (
           <span className="text-muted-foreground">Đã hoàn tác.</span>
         ) : (
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={ctx.running || ctx.locked}
-            onClick={() =>
-              ctx.act(() =>
-                api.invoke("board:undo", { sessionId: ctx.sessionId, messageId: message.id }),
-              )
-            }
-          >
-            Hoàn tác
-          </Button>
+          ctx.undoId === message.id && (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={ctx.running || ctx.locked}
+              onClick={() =>
+                ctx.act(() =>
+                  api.invoke("board:undo", { sessionId: ctx.sessionId, messageId: message.id }),
+                )
+              }
+            >
+              Hoàn tác
+            </Button>
+          )
         ))}
     </div>
   );

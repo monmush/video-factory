@@ -624,6 +624,8 @@ export const IPC_CHANNELS = [
 
 /** Main → renderer notifications, for work that finishes after the request returned. */
 export interface IpcEvents {
+  /** Sent after every saved workspace change, whoever made it. */
+  "workspace:changed": Workspace;
   "board:changed": { sessionId: string; board: Board };
   /** Streamed, unsaved progress of a running turn; null when it ends. */
   "chat:live": { sessionId: string; live: ChatLive | null };
@@ -631,7 +633,19 @@ export interface IpcEvents {
 
 export type IpcEvent = keyof IpcEvents;
 
-export const IPC_EVENTS = ["board:changed", "chat:live"] as const satisfies readonly IpcEvent[];
+export const IPC_EVENTS = [
+  "workspace:changed",
+  "board:changed",
+  "chat:live",
+] as const satisfies readonly IpcEvent[];
+
+// Compile-time completeness: a channel or event added to the contract but not
+// to its list above fails here instead of at runtime ("Unknown IPC channel").
+type Missing<All, Listed> = Exclude<All, Listed> extends never ? true : Exclude<All, Listed>;
+const channelsComplete: Missing<IpcChannel, (typeof IPC_CHANNELS)[number]> = true;
+const eventsComplete: Missing<IpcEvent, (typeof IPC_EVENTS)[number]> = true;
+void channelsComplete;
+void eventsComplete;
 
 /** Exposed on `window.hyan` by the preload script. */
 export interface HyanBridge {

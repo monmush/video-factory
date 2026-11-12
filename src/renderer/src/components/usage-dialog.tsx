@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "./ui/dialog";
@@ -28,10 +29,17 @@ export function UsageDialog({
 function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
   const [data, setData] = useState<Balances | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     setLoading(true);
-    setData(await api.invoke("usage:balances"));
-    setLoading(false);
+    setError(null);
+    try {
+      setData(await api.invoke("usage:balances"));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setLoading(false);
+    }
   }, []);
   useEffect(() => {
     void refresh();
@@ -56,8 +64,13 @@ function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
         </Button>
       </DialogHeader>
 
+      {error && (
+        <p className="px-6 pt-4 text-center text-destructive-foreground">
+          Không kiểm tra được: {error}
+        </p>
+      )}
       {!data ? (
-        <p className="px-6 py-10 text-center text-muted-foreground">Đang kiểm tra…</p>
+        !error && <p className="px-6 py-10 text-center text-muted-foreground">Đang kiểm tra…</p>
       ) : (
         <div className="flex min-h-0 flex-col gap-8 overflow-y-auto px-6 py-6">
           <Section title="fal.ai" hint="Tạo ảnh và video. Trả trước, trừ dần theo mỗi lần tạo.">

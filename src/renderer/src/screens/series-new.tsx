@@ -32,7 +32,7 @@ export function SeriesNewPage() {
   const dropImages = async (files: File[]) => {
     setError(null);
     try {
-      const staged = await api.invoke("assets:stage-paths", window.hyan.pathsForFiles(files));
+      const staged = await api.invoke("assets:stage-paths", api.pathsForFiles(files));
       if (staged.length === 0) setError("Chỉ nhận ảnh PNG, JPG hoặc WebP, tối đa 25 MB.");
       else setDropped(staged);
     } catch (e) {

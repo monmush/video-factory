@@ -1,6 +1,7 @@
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { api } from "./lib/api";
 import { refreshWorkspace } from "./lib/workspace";
 import { router } from "./router";
 import "./styles.css";
@@ -8,7 +9,7 @@ import "./styles.css";
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing #root");
 
-document.documentElement.dataset.platform = window.hyan.platform;
+document.documentElement.dataset.platform = api.platform;
 
 // Load persisted state before the first paint so screens never render an empty flash.
 await refreshWorkspace();

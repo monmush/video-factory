@@ -13,7 +13,8 @@ Work is tracked in `project/TODO.md`. Read it at the start of a task. When you f
 ## App development
 
 - `pnpm dev` runs the app (fixture mode, keys from `.env.local`). It restarts the app when main-process or preload code changes (`--watch`); renderer changes hot-reload. Use `HYAN_DATA_DIR=<tmp folder>` to avoid touching real data.
-- Run `pnpm check` (typecheck, Biome, build) before handing work back. `pnpm format` fixes formatting.
+- Run `pnpm check` (typecheck, Biome, Vitest, build) before handing work back. `pnpm format` fixes formatting. Tests sit beside pure, Electron-free modules (`*.test.ts`).
+- Every paid fal call goes through `falCall` (`src/main/fal.ts`); provider clients refuse to exist in fixture mode.
 - Renderer code never imports Node or Electron. Add a channel to `src/shared/ipc.ts`, handle it in `src/main/ipc.ts`; the preload allow-list comes from the same file.
 - Use the semantic tokens in `src/renderer/src/styles.css` and the `components/ui` primitives; port further primitives from `references/t3code/` rather than restyling ad hoc. UI copy is Vietnamese.
 - `<Placeholder` marks reserved screen regions still to build. Interaction references: `prototypes/` and `docs/PROTOTYPE_INTEGRATION_CHECKLIST.md`.

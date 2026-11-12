@@ -13,7 +13,7 @@ import {
   type StagedImage,
 } from "@shared/ipc";
 import { ImagePlus, LoaderCircle, Sparkles, Star, Upload, X } from "lucide-react";
-import { type DragEvent, type ReactNode, useEffect, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { ASSET_KINDS } from "@/lib/asset-kinds";
 import { errorMessage } from "@/lib/errors";
@@ -151,6 +151,9 @@ function CharacterForm({
   const [handleTouched, setHandleTouched] = useState(Boolean(character));
   const [description, setDescription] = useState(character?.description ?? "");
   const [previousDescription, setPreviousDescription] = useState<string | null>(null);
+  // The text as last rendered, read after the describe call returns.
+  const latestDescription = useRef(description);
+  latestDescription.current = description;
   const [describing, setDescribing] = useState(false);
   const [describeNote, setDescribeNote] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -275,7 +278,7 @@ function CharacterForm({
     event.preventDefault();
     setDragging(false);
     if (!canAdd) return;
-    const paths = window.hyan.pathsForFiles([...event.dataTransfer.files]);
+    const paths = api.pathsForFiles([...event.dataTransfer.files]);
     if (paths.length === 0) return;
     void withAdding(async () =>
       addStaged(await api.invoke("assets:stage-paths", paths), paths.length),
@@ -289,6 +292,7 @@ function CharacterForm({
     });
 
   const describe = async () => {
+    const before = description;
     setDescribing(true);
     setError(null);
     try {
@@ -297,8 +301,11 @@ function CharacterForm({
         name,
         images: images.map((i) => i.ref),
       });
-      setPreviousDescription(description);
-      setDescription(result.description);
+      // Text typed while the call ran wins over the generated one.
+      if (latestDescription.current === before) {
+        setPreviousDescription(before);
+        setDescription(result.description);
+      }
       setDescribeNote(
         result.source === "fixture"
           ? "Chế độ thử: đây là mô tả mẫu, chưa gọi API."
@@ -347,9 +354,15 @@ function CharacterForm({
       setConfirmDelete(true);
       return;
     }
-    await api.invoke("assets:delete", character.id);
-    await refreshWorkspace();
-    onDone();
+    setError(null);
+    try {
+      await api.invoke("assets:delete", character.id);
+      await refreshWorkspace();
+      onDone();
+    } catch (e) {
+      setError(errorMessage(e));
+      setConfirmDelete(false);
+    }
   };
 
   return (

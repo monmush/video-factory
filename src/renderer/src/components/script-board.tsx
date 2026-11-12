@@ -216,7 +216,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   // A box dragged over empty board space selects the cards it touches.
   const onBoardPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    if (e.button !== 0 || target.closest("[data-card], button, a, input, textarea, form")) return;
+    // The list view's open script ([data-reader]) is content, not empty space.
+    const content = "[data-card], [data-reader], button, a, input, textarea, form";
+    if (e.button !== 0 || target.closest(content)) return;
     const el = root.current;
     if (!el) return;
     const start = { x: e.clientX, y: e.clientY };
@@ -539,6 +541,7 @@ function ScriptCard({
       <article
         data-flip={inGallery ? script.id : undefined}
         data-card={inGallery || undefined}
+        data-reader={inGallery ? undefined : true}
         data-script-id={inGallery ? script.id : undefined}
         tabIndex={inGallery ? 0 : undefined}
         className={cn(

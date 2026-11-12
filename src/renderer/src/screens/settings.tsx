@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { refreshChatInfo } from "@/lib/chat";
+import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -111,17 +112,35 @@ export function SettingsPage() {
 function TextAiSection() {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setChecking(true);
-    setStatus(await api.invoke("ai:status"));
-    setChecking(false);
+    setError(null);
+    try {
+      setStatus(await api.invoke("ai:status"));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setChecking(false);
+    }
   }, []);
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  if (!status) return null;
+  const errorLine = error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>;
+  if (!status) {
+    if (!error) return null;
+    return (
+      <Section title="AI viết văn bản">
+        <Button variant="ghost-muted" size="sm" onClick={refresh} disabled={checking}>
+          {checking ? "Đang kiểm tra…" : "Kiểm tra lại"}
+        </Button>
+        {errorLine}
+      </Section>
+    );
+  }
   const cc = status.claudeCode;
   const ccReady = cc.installed && cc.loggedIn;
   const options: { value: TextProvider; label: string; detail: string; disabled?: boolean }[] = [
@@ -158,8 +177,13 @@ function TextAiSection() {
               aria-pressed={selected}
               disabled={option.disabled && !selected}
               onClick={async () => {
-                setStatus(await api.invoke("ai:set-text-provider", option.value));
-                void refreshChatInfo();
+                setError(null);
+                try {
+                  setStatus(await api.invoke("ai:set-text-provider", option.value));
+                  void refreshChatInfo();
+                } catch (e) {
+                  setError(errorMessage(e));
+                }
               }}
               className={cn(
                 "flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-4 py-3 text-left disabled:cursor-default",
@@ -187,6 +211,7 @@ function TextAiSection() {
           {checking ? "Đang kiểm tra…" : "Kiểm tra lại"}
         </Button>
       </div>
+      {errorLine}
     </Section>
   );
 }

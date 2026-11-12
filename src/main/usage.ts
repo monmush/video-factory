@@ -8,10 +8,21 @@ import { dataFile, writeJsonAtomic } from "./paths";
 
 const LOG = "usage.jsonl";
 const LIMITS = "claude-limits.json";
+const REQUESTS = "requests.jsonl";
 
 export async function logUsage(entry: Omit<UsageEntry, "at"> & Record<string, unknown>) {
   await appendFile(
     dataFile(LOG),
+    `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`,
+  );
+}
+
+/** A paid request the provider accepted; written before its result is known. */
+export async function recordSubmitted(
+  entry: { provider: string; requestId: string } & Record<string, unknown>,
+) {
+  await appendFile(
+    dataFile(REQUESTS),
     `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`,
   );
 }

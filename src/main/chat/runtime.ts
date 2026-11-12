@@ -49,6 +49,8 @@ interface ChatState {
   turn: ActiveTurn | null;
   idle: ReturnType<typeof setTimeout> | null;
   liveTimer: ReturnType<typeof setTimeout> | null;
+  /** The session is being deleted: run nothing more for it. */
+  closed: boolean;
 }
 
 const states = new Map<string, ChatState>();
@@ -62,6 +64,7 @@ const state = (sessionId: string) => {
       turn: null,
       idle: null,
       liveTimer: null,
+      closed: false,
     };
     states.set(sessionId, s);
   }
@@ -226,6 +229,7 @@ async function drain(sessionId: string) {
   s.draining = true;
   try {
     for (;;) {
+      if (s.closed) break;
       const current = await board.getBoard(sessionId).catch(() => null);
       const next = current?.messages.find((m) => m.role === "user" && m.queued);
       if (!next) break;
@@ -240,7 +244,7 @@ async function drain(sessionId: string) {
   } finally {
     s.draining = false;
   }
-  armIdle(sessionId);
+  if (!s.closed) armIdle(sessionId);
 }
 
 async function runTurn(sessionId: string, user: ChatMessage) {
@@ -559,14 +563,20 @@ export async function choose(
 /** Model for this session's next turns (the conversation itself continues). */
 export async function setSessionModel(sessionId: string, choice: ChatModelChoice) {
   await board.mutateBoard(sessionId, (b) => {
+    // Before the first turn there is no conversation yet: record the choice on
+    // a not-yet-started one, which the first turn then opens with this model.
     if (b.agent) Object.assign(b.agent, choice);
+    else b.agent = { sessionId: randomUUID(), started: false, ...choice };
   });
 }
 
 /** Stops processes and deletes Claude transcripts of deleted sessions. */
 export async function forget(agentSessionIds: { sessionId: string; agentId?: string }[]) {
   for (const { sessionId, agentId } of agentSessionIds) {
-    await states.get(sessionId)?.turn?.stop();
+    const s = states.get(sessionId);
+    // Set before stopping, so the queue does not start the next message.
+    if (s) s.closed = true;
+    await s?.turn?.stop();
     closeRunner(sessionId);
     states.delete(sessionId);
     if (agentId) await deleteSession(agentId, { dir: claudeChatDir() }).catch(() => {});

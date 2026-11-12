@@ -2,17 +2,24 @@ import type { Workspace } from "@shared/ipc";
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
 
-// A minimal client cache of the main-process workspace. Mutations go through IPC,
-// then `refreshWorkspace()` re-reads the persisted state. Replace with a richer
-// store only when screens need optimistic updates.
+// A client copy of the main-process workspace. Main pushes "workspace:changed"
+// after every saved change (including work that finishes in the background),
+// so screens stay current without refreshing. `refreshWorkspace()` remains for
+// the first load and for callers that want the new state before continuing.
 
 let snapshot: Workspace | null = null;
 const listeners = new Set<() => void>();
 
-export async function refreshWorkspace(): Promise<Workspace> {
-  snapshot = await api.invoke("workspace:get");
+function set(next: Workspace) {
+  snapshot = next;
   for (const listener of listeners) listener();
-  return snapshot;
+}
+
+api.on("workspace:changed", set);
+
+export async function refreshWorkspace(): Promise<Workspace> {
+  set(await api.invoke("workspace:get"));
+  return snapshot as Workspace;
 }
 
 function subscribe(listener: () => void) {

@@ -1,4 +1,5 @@
 import { askClaudeCode } from "./claude-code";
+import { falCall } from "./fal";
 import { falClient, providerMode } from "./providers";
 import { readSettings } from "./settings";
 import { logUsage } from "./usage";
@@ -74,25 +75,22 @@ export async function askText(input: {
 
   return queues.fal(async () => {
     const fal = await falClient();
-    const result = await fal.subscribe(FAL_ENDPOINT, {
-      input: {
+    const { data } = await falCall<{ output: string; usage?: { cost?: number } }>(
+      fal,
+      FAL_ENDPOINT,
+      {
         model: FAL_MODEL,
         prompt: input.prompt,
         system_prompt: input.system,
         temperature: input.temperature ?? 0.8,
       },
-    });
-    const data = result.data as { output: string; usage?: { cost?: number } };
-    const cost = data.usage?.cost ?? null;
-    await logUsage({
-      provider: "fal",
-      endpoint: FAL_ENDPOINT,
-      model: FAL_MODEL,
-      purpose: input.purpose,
-      sessionId: input.sessionId,
-      requestId: result.requestId,
-      cost,
-    });
+      {
+        purpose: input.purpose,
+        model: FAL_MODEL,
+        sessionId: input.sessionId,
+        cost: (d) => d.usage?.cost ?? null,
+      },
+    );
     return data.output;
   });
 }

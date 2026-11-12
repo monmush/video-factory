@@ -10,7 +10,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { app } from "electron";
 import type { ChatError, ChatModelChoice } from "../../shared/ipc";
-import { findClaude, toLimits } from "../claude-code";
+import { claudeEnv, findClaude, toLimits } from "../claude-code";
 import { dataDir } from "../paths";
 import { saveClaudeLimits } from "../usage";
 import type { Runner, TurnInput, TurnResult } from "./runner";
@@ -159,7 +159,7 @@ export async function createClaudeRunner(options: {
       includePartialMessages: true,
       ...(options.resume ? { resume: options.sessionId } : { sessionId: options.sessionId }),
       env: {
-        ...process.env,
+        ...claudeEnv(),
         CLAUDE_AGENT_SDK_CLIENT_APP: `hyan-video-factory/${app.getVersion()}`,
       },
       stderr: (data) => console.error("[chat] claude:", data.trim().slice(0, 500)),

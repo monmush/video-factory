@@ -176,7 +176,7 @@ function ImportBoard({
   const dropFiles = (event: DragEvent) => {
     const files = [...event.dataTransfer.files];
     if (files.length === 0 || adding || busy || room <= 0) return false;
-    const paths = window.hyan.pathsForFiles(files);
+    const paths = api.pathsForFiles(files);
     if (paths.length) {
       void withAdding(async () =>
         addPhotos(await api.invoke("assets:stage-paths", paths), paths.length),

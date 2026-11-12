@@ -147,7 +147,13 @@ export function registerIpc() {
     return groupProducts(stagedIds.map((id) => imageRefPath({ source: "staged", id })));
   });
   handle("assets:update", updateAsset);
-  handle("assets:delete", deleteAsset);
+  handle("assets:delete", async (id) => {
+    const using = await board.approvedSessionsUsing(id);
+    if (using.length) {
+      throw new Error(`Đang dùng trong kịch bản đã duyệt: ${using.join(", ")}`);
+    }
+    return deleteAsset(id);
+  });
   handle("assets:describe", async ({ kind, name, images }) =>
     describeAsset(kind, name, refPaths(await getWorkspace(), images)),
   );

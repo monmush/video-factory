@@ -1,8 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { nativeImage } from "electron";
-import type { falClient } from "./providers";
-
-type Fal = Awaited<ReturnType<typeof falClient>>;
+import type { Fal } from "./fal";
 
 /** Downscale large photos before upload: fewer tokens and faster, same visual information. */
 async function toUploadBlob(path: string, maxSide: number): Promise<Blob> {

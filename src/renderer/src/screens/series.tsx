@@ -53,6 +53,7 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const { createSession } = useCreateActions();
   const [request, setRequest, clearRequest] = useDraft(`series-request:${seriesId}`, "");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -65,10 +66,14 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const visible = showAll ? sessions : sessions.slice(0, VISIBLE_SESSIONS);
 
   const start = async () => {
+    if (busy) return;
     setBusy(true);
+    setError(null);
     try {
       await createSession(series.id, request);
       clearRequest();
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -117,6 +122,7 @@ function SeriesView({ seriesId }: { seriesId: string }) {
       >
         <SeriesAssetSummary series={series} onEdit={() => setEditing(true)} />
       </Composer>
+      {error && <p className="mt-2 px-1 text-destructive-foreground">{error}</p>}
 
       {sessions.length > 0 && (
         <section className="mt-8">

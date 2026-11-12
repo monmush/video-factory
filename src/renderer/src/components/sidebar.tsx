@@ -104,6 +104,19 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
   const FolderIcon = open ? FolderOpen : Folder;
   const pinned = Boolean(series.pinnedAt);
   const menuShown = menuOpen || contextOpen;
+  // A double click on "+" must not create two sessions.
+  const creating = useRef(false);
+  const create = async () => {
+    if (creating.current) return;
+    creating.current = true;
+    try {
+      await createSession(series.id);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      creating.current = false;
+    }
+  };
 
   const actions: RowAction[] = [
     {
@@ -183,7 +196,7 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
               size="icon-xs"
               aria-label={`Tạo video cho ${series.name}`}
               title="Tạo video"
-              onClick={() => createSession(series.id)}
+              onClick={create}
             >
               <Plus />
             </Button>
@@ -364,11 +377,17 @@ function RenameInput({ session, onDone }: { session: Session; onDone: () => void
     if (done.current) return;
     done.current = true;
     const name = value.trim();
-    if (save && name && name !== session.name) {
-      await api.invoke("session:update", { id: session.id, name });
-      await refreshWorkspace();
+    try {
+      if (save && name && name !== session.name) {
+        await api.invoke("session:update", { id: session.id, name });
+        await refreshWorkspace();
+      }
+    } catch (error) {
+      // The row shows the saved name again, so a failed rename is visible.
+      console.error(error);
+    } finally {
+      onDone();
     }
-    onDone();
   };
 
   return (

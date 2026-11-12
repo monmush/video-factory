@@ -10,10 +10,13 @@ import {
   type Script,
   type Session,
 } from "../shared/ipc";
+import { applyUndo, dropTouch, recordTouch, type TurnLog, turnUndo } from "./board-undo";
 import { mediaDir, writeJsonAtomic } from "./paths";
 import * as writer from "./script-writer";
 import { readSettings } from "./settings";
 import { getWorkspace } from "./store";
+
+export type { TurnLog };
 
 // A session's script board and chat, saved as board.json in the session's
 // folder. The main process owns all writing work, so it keeps running when the
@@ -24,6 +27,9 @@ import { getWorkspace } from "./store";
 
 const FILE = "board.json";
 const cache = new Map<string, Board>();
+// One file read per session at a time. Two overlapping cold reads could
+// otherwise finish after a write and put the older board back in the cache.
+const reading = new Map<string, Promise<Board>>();
 const queues = new Map<string, Promise<unknown>>();
 // Work running in this process. Anything else marked as writing was interrupted.
 const runningScripts = new Set<string>();
@@ -44,9 +50,18 @@ export function assertEditable(session: Session) {
   if (session.approvedAt) throw new Error("Kịch bản đã chốt để làm video");
 }
 
-async function load(sessionId: string): Promise<Board> {
+function load(sessionId: string): Promise<Board> {
   const cached = cache.get(sessionId);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
+  let pending = reading.get(sessionId);
+  if (!pending) {
+    pending = read(sessionId).finally(() => reading.delete(sessionId));
+    reading.set(sessionId, pending);
+  }
+  return pending;
+}
+
+async function read(sessionId: string): Promise<Board> {
   const { session } = await findSession(sessionId);
   let board: Board;
   try {
@@ -114,6 +129,26 @@ export async function getBoard(sessionId: string): Promise<Board> {
   return structuredClone(await load(sessionId));
 }
 
+/** Most recent series titles the writer is told to avoid repeating. */
+const MAX_AVOID = 80;
+
+/**
+ * Names of approved sessions whose scripts use an asset. Videos are made from
+ * approved scripts, so their characters and products must not disappear.
+ */
+export async function approvedSessionsUsing(assetId: string): Promise<string[]> {
+  const ws = await getWorkspace();
+  const names: string[] = [];
+  for (const session of ws.sessions.filter((s) => s.approvedAt)) {
+    const board = await load(session.id).catch(() => null);
+    const uses = boardOrder(board?.scripts ?? []).some(
+      (s) => s.productIds.includes(assetId) || s.lines.some((l) => l.characterId === assetId),
+    );
+    if (uses) names.push(session.name);
+  }
+  return names;
+}
+
 /** The last model chosen in any chat; sessions without their own choice use it. */
 const readChoice = () => {
   const settings = readSettings();
@@ -125,11 +160,16 @@ export async function writerContext(sessionId: string): Promise<writer.WriterCon
   const series = ws.series.find((s) => s.id === session.seriesId);
   if (!series) throw new Error("Không tìm thấy series");
   const pick = (ids: string[]) => ids.flatMap((id) => ws.assets.find((a) => a.id === id) ?? []);
-  // Titles from every session in the series, so new stories do not repeat old ones.
+  // Recent titles in the series, so new stories do not repeat old ones. Capped
+  // so prompts stay small as the series grows (sessions are newest first).
   const avoid = new Set<string>();
   for (const other of ws.sessions.filter((s) => s.seriesId === series.id)) {
+    if (avoid.size >= MAX_AVOID) break;
     const board = await load(other.id).catch(() => null);
-    for (const s of board?.scripts ?? []) if (!s.deletedAt && s.title) avoid.add(s.title);
+    for (const s of [...(board?.scripts ?? [])].reverse()) {
+      if (avoid.size >= MAX_AVOID) break;
+      if (!s.deletedAt && s.title) avoid.add(s.title);
+    }
   }
   const choice = resolveChoice((await load(sessionId)).agent ?? readChoice());
   return {
@@ -462,64 +502,9 @@ export const pin = (sessionId: string, scriptId: string, pinned: boolean) =>
 
 /** Restores every script a chat turn changed, and removes the scripts it added. */
 export const undo = (sessionId: string, messageId: string) =>
-  changeBoard(sessionId, (b) => {
-    const m = b.messages.find((x) => x.id === messageId);
-    if (!m?.undo || m.undo.undone) return;
-    for (const before of m.undo.before) {
-      const s = b.scripts.find((x) => x.id === before.id);
-      if (!s || s.status === "writing") continue;
-      Object.assign(s, {
-        title: before.title,
-        hook: before.hook,
-        lines: before.lines,
-        productIds: before.productIds,
-        staging: before.staging,
-        deletedAt: before.deletedAt,
-        mark: null,
-        updatedAt: now(),
-      });
-    }
-    for (const id of m.undo.added ?? []) {
-      const s = b.scripts.find((x) => x.id === id);
-      if (s && s.status !== "writing") s.deletedAt = now();
-    }
-    m.undo.undone = true;
-  });
+  changeBoard(sessionId, (b) => applyUndo(b, messageId));
 
 // ---------------------------------------------------------------- agent turns
-
-/**
- * What one agent turn has changed so far. Each script is saved for undo the
- * first time the turn touches it, in the same write as the change, so a turn
- * that is stopped or crashes midway can still be undone completely.
- */
-export interface TurnLog {
-  messageId: string;
-  touched: Set<string>;
-}
-
-function turnUndo(b: Board, log: TurnLog) {
-  const m = b.messages.find((x) => x.id === log.messageId);
-  if (!m) return null;
-  m.undo ??= { before: [], undone: false };
-  return m.undo;
-}
-
-function recordTouch(b: Board, log: TurnLog, script: Script) {
-  const undoState = turnUndo(b, log);
-  if (!undoState || log.touched.has(script.id)) return false;
-  log.touched.add(script.id);
-  undoState.before.push({ ...structuredClone(script), status: "ready", mark: null });
-  return true;
-}
-
-/** Forgets a snapshot taken by this call when the script did not change after all. */
-function dropTouch(b: Board, log: TurnLog, id: string) {
-  const undoState = turnUndo(b, log);
-  if (!undoState) return;
-  undoState.before = undoState.before.filter((s) => s.id !== id);
-  log.touched.delete(id);
-}
 
 /** Scripts in the numbering the operator sees (#1, #2…). */
 export async function orderedScripts(sessionId: string): Promise<Script[]> {
