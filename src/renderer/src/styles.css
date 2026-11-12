@@ -1,0 +1,288 @@
+/*
+ * Design tokens adapted from T3 Code's default palette (snapshot c6ca6056, MIT —
+ * see references/t3code/upstream/LICENSE). Values come from
+ * references/t3code/default-colors.json and the accepted prototype theme.
+ * Components use the semantic names below; never hard-code colours in screens.
+ */
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+  --control-radius: 0.5rem;
+  --titlebar-height: 40px;
+
+  --background: #fcfcfc;
+  --foreground: #27272a;
+  --card: #ffffff;
+  --card-foreground: #27272a;
+  --popover: #ffffff;
+  --popover-foreground: #27272a;
+  --primary: #1b4ed8;
+  --primary-foreground: #ffffff;
+  --secondary: #fafafa;
+  --secondary-foreground: #27272a;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717b;
+  --placeholder: #71717b;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --border: #e4e4e7;
+  --input: #d4d4d8;
+  --ring: #1b4ed8;
+  --message: #f4f4f5;
+  --destructive: #fb2c36;
+  --destructive-foreground: #c10007;
+  --destructive-surface: #fcebec;
+  --warning: #fe9a00;
+  --warning-foreground: #bb4d00;
+  --warning-surface: #fcf4e8;
+
+  /* Window chrome (rail and sidebar); a step darker than the content card. */
+  --sidebar: #f4f4f5;
+  --sidebar-foreground: #27272a;
+  --sidebar-muted-foreground: #71717b;
+  --sidebar-border: #e4e4e7;
+  --sidebar-row-hover: #e9e9eb;
+  --sidebar-row-selected: #ffffff;
+
+  --scrollbar-thumb: rgb(217 217 217);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0a0a0a;
+  --foreground: #f5f5f5;
+  --card: #111111;
+  --card-foreground: #f5f5f5;
+  --popover: #111111;
+  --popover-foreground: #f5f5f5;
+  --primary: #346bf1;
+  --primary-foreground: #ffffff;
+  --secondary: #111111;
+  --secondary-foreground: #f5f5f5;
+  --muted: #141414;
+  --muted-foreground: #818181;
+  --placeholder: #818181;
+  --accent: #141414;
+  --accent-foreground: #f5f5f5;
+  --border: #191919;
+  --input: #1e1e1e;
+  --ring: #346bf1;
+  --message: #141414;
+  --destructive: #fb414a;
+  --destructive-foreground: #ff6467;
+  --destructive-surface: #301214;
+  --warning: #fe9a00;
+  --warning-foreground: #ffb900;
+  --warning-surface: #312108;
+
+  --sidebar: #000000;
+  --sidebar-foreground: #f1f3f7;
+  --sidebar-muted-foreground: #a3a3a3;
+  --sidebar-border: #141414;
+  --sidebar-row-hover: #131313;
+  --sidebar-row-selected: #111111;
+
+  --scrollbar-thumb: rgb(255 255 255 / 8%);
+}
+
+@theme {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+@theme inline {
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: calc(1 / 0.6875);
+  /* Chat reading size: Vietnamese stacks diacritics, so 14px reads tight. */
+  --text-chat: 0.9375rem;
+  --text-chat--line-height: 1.6;
+  --text-chat-meta: 0.8125rem;
+  --text-chat-meta--line-height: 1.4;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-placeholder: var(--placeholder);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-message: var(--message);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-surface: var(--destructive-surface);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-surface: var(--warning-surface);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-row-hover: var(--sidebar-row-hover);
+  --color-sidebar-row-selected: var(--sidebar-row-selected);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Window chrome: the top bar drags the window; controls inside it opt out. */
+@utility app-drag {
+  -webkit-app-region: drag;
+}
+@utility app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Writing state: a soft sheen sweeping across placeholder bars or text. */
+@keyframes shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+/* Text that is still working: a highlight sweeps through the letters (as in T3 Code). */
+@utility shimmer-text {
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: shimmer 1.8s linear infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    color: var(--muted-foreground);
+  }
+}
+
+@utility shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 30%,
+    color-mix(in oklab, var(--foreground) 7%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Finished text writes in line by line; set the delay per line. */
+@keyframes line-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+@utility line-in {
+  animation: line-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Long sidebar names (sidebar.tsx ScrollingName): fade at the right edge; on hover,
+   glide left to the end, swapping the fade to the left edge. --shift and --dur are set inline. */
+@property --fade-l {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-r {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 14px;
+}
+.scrolling-name.is-overflowing {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent
+  );
+  transition:
+    --fade-l 150ms ease-out,
+    --fade-r 150ms ease-out;
+}
+.scrolling-name > span {
+  transition: transform 300ms cubic-bezier(0.2, 0, 0, 1);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .group\/session:hover .scrolling-name.is-overflowing {
+    --fade-l: 14px;
+    --fade-r: 0px;
+    transition:
+      --fade-l 200ms ease-out 600ms,
+      --fade-r 200ms ease-out calc(400ms + var(--dur));
+  }
+  .group\/session:hover .scrolling-name.is-overflowing > span {
+    transform: translateX(var(--shift));
+    transition: transform var(--dur) linear 600ms;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background font-sans text-sm text-foreground antialiased;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  /* Desktop app, not a document: only text the user works with is selectable. */
+  body {
+    user-select: none;
+  }
+  input,
+  textarea,
+  [data-selectable] {
+    user-select: text;
+  }
+  :where(svg.lucide[stroke-width="2"]) {
+    stroke-width: 1.75;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over component styles */
+      transition-duration: 0ms !important;
+      /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over component styles */
+      animation-duration: 0ms !important;
+    }
+  }
+}
