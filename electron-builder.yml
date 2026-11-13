@@ -6,6 +6,8 @@ directories:
 files:
   - out/**
   - package.json
+  # Sample media for fixture mode (HYAN_PROVIDER_MODE=fixture).
+  - resources/fixtures/**
   - "!**/*.map"
   # The Agent SDK's own copy of Claude Code (~300 MB). The app runs the
   # user's installed `claude` instead (docs/TECH_STACK_AND_SKILLS.md).

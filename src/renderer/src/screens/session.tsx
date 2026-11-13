@@ -1,24 +1,18 @@
-import { boardOrder, estimateSeconds, estimateVideoUsd, formatSeconds } from "@shared/board";
+import { boardOrder, estimateSeconds, estimateUsd, formatSeconds } from "@shared/board";
 import { formatCost } from "@shared/credits";
+import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
 import { Link, Outlet, useMatches, useNavigate, useParams } from "@tanstack/react-router";
 import { LayoutGrid, Rows3 } from "lucide-react";
-import { type ReactNode, useState } from "react";
-import { Page, Placeholder } from "@/components/page";
+import type { ReactNode } from "react";
+import { BatchSettings } from "@/components/batch-settings";
+import { makeLabel, useMakeVideos } from "@/components/ready-check";
 import { ScriptBoard } from "@/components/script-board";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogFooter,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { api } from "@/lib/api";
-import { boardLayout, useBoard, useBoardView } from "@/lib/board";
-import { errorMessage } from "@/lib/errors";
+import { ButtonPrice, HoldButton } from "@/components/ui/hold-button";
+import { VideosList } from "@/components/videos";
+import { boardLayout, testCardId, useBoard, useBoardView } from "@/lib/board";
 import { cn } from "@/lib/utils";
-import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
+import { useWorkspace } from "@/lib/workspace";
 import { NotFound } from "./not-found";
 
 /**
@@ -54,6 +48,9 @@ export function SessionLayout() {
               Video
             </span>
           )}
+          <Link to="/sessions/$sessionId/settings" params={{ sessionId }} className={tab}>
+            Thiết lập
+          </Link>
         </nav>
         <span className="flex-1" />
         {onScripts && (
@@ -71,31 +68,63 @@ export function SessionLayout() {
   );
 }
 
-/** View toggle and the one primary action: make videos from the scripts on the board. */
+/**
+ * View toggle and the primary action: make videos from the scripts on the
+ * board. A series' first batch nudges toward one test video first
+ * (docs/VIDEO_COMMIT_DECISIONS.md, "One video first").
+ */
 function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: boolean }) {
   const board = useBoard(sessionId);
+  const { sessions } = useWorkspace();
+  const session = sessions.find((s) => s.id === sessionId);
+  const navigate = useNavigate();
   const [view, setView] = useBoardView(sessionId);
-  const [confirming, setConfirming] = useState(false);
-  if (!board) return null;
+  // A chat turn or the writer may still change the scripts.
+  const busy =
+    !!board &&
+    (board.scripts.some((s) => s.status === "writing") || board.messages.some((m) => m.pending));
+  const make = useMakeVideos({
+    sessionId,
+    waiting: busy,
+    onStarted: () => navigate({ to: "/sessions/$sessionId/videos", params: { sessionId } }),
+  });
+  if (!board || !session) return null;
   const scripts = boardOrder(board.scripts);
+  // Scripts already sent to video are not counted again.
+  const sent = committedIds(session, board.scripts);
   // Counts cards still being written, so the number rises the moment a card
   // appears; the button waits until writing finishes. Failed cards are not videos.
-  const ready = scripts.filter((s) => s.status !== "failed").length;
+  const ready = scripts.filter((s) => s.status !== "failed" && !sent.includes(s.id)).length;
   const writing = scripts.some((s) => s.status === "writing");
   // A chat turn may still change the scripts; wait for it before approving.
   const chatting = board.messages.some((m) => m.pending);
+  const waiting = writing || chatting;
   const layout = boardLayout(view, scripts.length);
-  // Estimated total for what "Tạo N video" would make; "…" until writing finishes.
-  const seconds = scripts
-    .filter((s) => s.status === "ready")
-    .reduce((sum, s) => sum + estimateSeconds(s.lines), 0);
-  const total = `~${formatSeconds(seconds)} · ~${formatCost(estimateVideoUsd(seconds))}`;
+  const finished = finishedScripts(board.scripts).filter((s) => !sent.includes(s.id));
+  const finishedIds = finished.map((s) => s.id);
+  const nudge = !approved && isFirstBatch(session, sessions) && finished.length > 1;
+  const testId = testCardId(view, finishedIds);
+  const test = finished.find((s) => s.id === testId);
+  // Estimates, all-in; "…" until writing finishes.
+  const seconds = finished.reduce((sum, s) => sum + estimateSeconds(s.lines), 0);
+  const usd = finished.reduce(
+    (sum, s) =>
+      sum +
+      estimateUsd(s.lines, {
+        frames: make.frames,
+        model: make.model,
+        resolution: make.resolution,
+        cutoutUsd: make.cutouts(s),
+      }),
+    0,
+  );
+  const price = (value: number) => (writing ? "…" : `~${formatCost(value)}`);
 
   return (
     <div className="flex items-center gap-2">
-      {ready > 0 && (
+      {ready > 0 && !nudge && (
         <span className="px-1 text-xs text-muted-foreground tabular-nums">
-          {writing ? "…" : total}
+          {writing ? "…" : `~${formatSeconds(seconds)} · ~${formatCost(usd)}`}
         </span>
       )}
       {scripts.length > 0 && (
@@ -119,20 +148,99 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
           </ViewButton>
         </fieldset>
       )}
-      {!approved && (
-        <Button disabled={ready === 0 || writing || chatting} onClick={() => setConfirming(true)}>
-          {ready > 0 ? `Tạo ${ready} video` : "Tạo video"}
-        </Button>
+      {make.error && <span className="text-xs text-destructive-foreground">{make.error}</span>}
+      {nudge && test ? (
+        <>
+          <MakeButton
+            tone="outline"
+            ids={finishedIds}
+            label={makeLabel(ready, { hold: !make.needsCheck(finishedIds) })}
+            price={price(usd)}
+            disabled={waiting}
+            make={make}
+            onPointerEnter={() => setView({ previewAll: true })}
+            onPointerLeave={() => setView({ previewAll: false })}
+            onFocus={() => setView({ previewAll: true })}
+            onBlur={() => setView({ previewAll: false })}
+          />
+          <MakeButton
+            ids={[test.id]}
+            label={makeLabel(1, { test: true, hold: !make.needsCheck([test.id]) })}
+            price={price(
+              estimateUsd(test.lines, {
+                frames: make.frames,
+                model: make.model,
+                resolution: make.resolution,
+                cutoutUsd: make.cutouts(test),
+              }),
+            )}
+            disabled={waiting}
+            make={make}
+          />
+        </>
+      ) : ready > 0 ? (
+        <MakeButton
+          ids={finishedIds}
+          label={makeLabel(ready, {
+            hold: !make.needsCheck(finishedIds),
+            // With other videos already made, say which scripts this makes.
+            remaining: sent.length > 0,
+            number: scripts.findIndex((s) => s.id === finishedIds[0]) + 1,
+          })}
+          price={price(usd)}
+          disabled={waiting}
+          make={make}
+        />
+      ) : (
+        !approved && <Button disabled>Tạo video</Button>
       )}
-      <ApproveDialog
-        sessionId={sessionId}
-        count={ready}
-        total={total}
-        blocked={writing || chatting}
-        open={confirming}
-        onOpenChange={setConfirming}
-      />
+      {make.dialog}
     </div>
+  );
+}
+
+/**
+ * A make button: held for three seconds when nothing needs fixing, else a
+ * plain click that opens the ready check.
+ */
+function MakeButton({
+  ids,
+  label,
+  price,
+  disabled,
+  make,
+  tone = "primary",
+  ...pointer
+}: {
+  ids: string[];
+  label: string;
+  price: string;
+  disabled?: boolean;
+  make: ReturnType<typeof useMakeVideos>;
+  tone?: "primary" | "outline";
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+}) {
+  if (make.needsCheck(ids)) {
+    return (
+      <Button
+        variant={tone === "primary" ? "default" : "outline"}
+        disabled={disabled}
+        onClick={() => make.open(ids)}
+        {...pointer}
+      >
+        {label}
+        <ButtonPrice>{price}</ButtonPrice>
+      </Button>
+    );
+  }
+  return (
+    <HoldButton tone={tone} disabled={disabled} onHold={() => make.make(ids)} {...pointer}>
+      {label}
+      <ButtonPrice>{price}</ButtonPrice>
+    </HoldButton>
   );
 }
 
@@ -165,76 +273,20 @@ function ViewButton({
   );
 }
 
-/**
- * Confirms count, length and estimated cost before the board is locked for
- * production. The estimate covers generated video only (shared/board.ts).
- */
-function ApproveDialog({
-  sessionId,
-  count,
-  total,
-  blocked,
-  open,
-  onOpenChange,
-}: {
-  sessionId: string;
-  count: number;
-  total: string;
-  blocked: boolean;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const navigate = useNavigate();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const approve = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.invoke("session:approve", sessionId);
-      await refreshWorkspace();
-      onOpenChange(false);
-      await navigate({ to: "/sessions/$sessionId/videos", params: { sessionId } });
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Tạo {count} video?</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-2 p-5">
-          <p className="font-medium tabular-nums">{total}</p>
-          <p className="text-muted-foreground">Chưa gồm giọng đọc và làm lại.</p>
-          {error && <p className="text-destructive-foreground">{error}</p>}
-        </div>
-        <DialogFooter className="justify-end">
-          <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>
-          <Button disabled={busy || blocked || count === 0} onClick={approve}>
-            Tạo {count} video
-          </Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
-  );
-}
-
 export function ScriptsPage() {
   const { sessionId } = useParams({ from: "/sessions/$sessionId" });
   // Keyed so board-local state (selection, undo notice) never carries over to another session.
   return <ScriptBoard key={sessionId} sessionId={sessionId} />;
 }
 
+/** The batch's output settings, the series' by default. */
+export function SessionSettingsPage() {
+  const { sessionId } = useParams({ from: "/sessions/$sessionId" });
+  return <BatchSettings key={sessionId} sessionId={sessionId} />;
+}
+
+/** The session's videos (docs/VIDEO_GENERATION_DECISIONS.md). */
 export function VideosPage() {
-  return (
-    <Page className="pt-4">
-      <Placeholder title="Video" />
-    </Page>
-  );
+  const { sessionId } = useParams({ from: "/sessions/$sessionId" });
+  return <VideosList key={sessionId} sessionId={sessionId} />;
 }

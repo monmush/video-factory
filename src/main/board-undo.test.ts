@@ -100,4 +100,13 @@ describe("recordTouch", () => {
     expect(b.messages[0]?.undo?.before).toEqual([]);
     expect(log.touched.has("a")).toBe(false);
   });
+
+  it("refuses once a script it touched has been sent to video", () => {
+    const b = board(script("a", "one"));
+    turn(b, "m1", "a", "two");
+    expect(() => applyUndo(b, "m1", new Set(["a"]))).toThrow();
+    expect(b.scripts[0]?.title).toBe("two");
+    applyUndo(b, "m1");
+    expect(b.scripts[0]?.title).toBe("one");
+  });
 });

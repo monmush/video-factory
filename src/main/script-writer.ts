@@ -1,5 +1,7 @@
 import { DEFAULT_TARGET_SEC, estimateSeconds, syllableBudget } from "../shared/board";
+import { CUES, cleanCues } from "../shared/cues";
 import type { Asset, Script, ScriptLine } from "../shared/ipc";
+import { type Note, type NoteArea, notesBlock, WRITER_AREAS } from "../shared/notes";
 import { FIXTURE_STORIES } from "./script-fixtures";
 import { askText, parseJsonObject, textAiMode } from "./text-ai";
 
@@ -18,6 +20,8 @@ import { askText, parseJsonObject, textAiMode } from "./text-ai";
 export interface WriterContext {
   sessionId: string;
   guidance: string;
+  /** Learned preferences: for every series, then this series' own. */
+  notes: { every: Note[]; series: Note[] };
   characters: Asset[];
   products: Asset[];
   environments: Asset[];
@@ -68,10 +72,22 @@ function assetList(assets: Asset[], empty: string) {
     .join("\n");
 }
 
-export function seriesBlock(ctx: WriterContext) {
+/**
+ * The series as a prompt section. Writers get the script and voice notes;
+ * the chat, which also stages fixes, passes every area.
+ */
+export function seriesBlock(ctx: WriterContext, areas: NoteArea[] = WRITER_AREAS) {
+  const notes = notesBlock(ctx.notes.every, ctx.notes.series, areas);
   return `## Định hướng series
 ${ctx.guidance || "(Chưa có định hướng.)"}
-
+${
+  notes
+    ? `
+## Ghi nhớ của người dùng (luôn làm theo; nếu trái định hướng thì theo ghi nhớ)
+${notes}
+`
+    : ""
+}
 ## Nhân vật
 ${assetList(ctx.characters, "(Chưa chọn nhân vật. Dùng tối đa hai nhân vật hợp với định hướng.)")}
 
@@ -92,7 +108,12 @@ export const writingRules = (targetSec: number) => `## Quy tắc viết
 - Thành ngữ, tục ngữ phải có thật, trích đúng và hợp nghĩa.
 - Nhắc sản phẩm tự nhiên trong lời thoại một lần (nhiều nhất hai), dùng đúng tên sản phẩm, và để sản phẩm xuất hiện trong khung hình.
 - Chỉ nói về sản phẩm những điều có trong mô tả sản phẩm. Không bịa nguồn gốc, công dụng, sức khỏe, hương vị, giải thưởng hay giá. Cần thì nói cảm nhận ("con thích vị này").
-- Không lời thoại trong ngoặc, không chỉ dẫn diễn xuất trong lời thoại.`;
+- Khi câu chuyện cần (ví dụ người nói cười sau câu đùa của mình), một lượt thoại được kết thúc bằng đúng một tiếng không lời trong ngoặc vuông: ${Object.keys(
+  CUES,
+)
+  .map((c) => `[${c}]`)
+  .join(", ")}. Tiếng này nghe được nhưng không có phụ đề. Nhiều nhất hai lần mỗi kịch bản.
+- Ngoài tiếng đó, không lời thoại trong ngoặc, không chỉ dẫn diễn xuất trong lời thoại.`;
 
 // Title and hook are what the operator scans on the board: keep them short,
 // never a story summary.
@@ -143,7 +164,8 @@ export function normalise(ctx: WriterContext, raw: RawScript): WrittenScript {
       return {
         characterId: character?.id ?? null,
         speaker: character?.name ?? speaker.replace(/^@/, ""),
-        text: String(line.text ?? "").trim(),
+        // Only a known sound at the very end survives; other bracketed text goes.
+        text: cleanCues(String(line.text ?? "")),
       };
     })
     .filter((line) => line.text);

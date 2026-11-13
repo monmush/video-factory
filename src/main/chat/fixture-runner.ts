@@ -46,6 +46,27 @@ export function createFixtureRunner(choice: ChatModelChoice): Runner {
         });
         return { outcome: stopping ? "stopped" : "done" };
       }
+      // "Ghi nhớ: …" or "Ghi nhớ mọi series: …" saves a note without asking.
+      const remember = turn.text.match(/^ghi nhớ( mọi series)?\s*:\s*(.+)$/is);
+      if (remember?.[2]) {
+        await call(turn, "list_notes", {});
+        const all = Boolean(remember[1]);
+        const result = await call(turn, "save_note", {
+          text: remember[2],
+          area: /hình|cảnh|góc|ánh sáng/i.test(remember[2]) ? "picture" : "script",
+          scope: all ? "all" : "series",
+          words: turn.text,
+        });
+        await stream(
+          turn,
+          result.isError
+            ? result.text
+            : all
+              ? "Đã ghi nhớ cho mọi series."
+              : "Đã ghi nhớ cho series.",
+        );
+        return { outcome: stopping ? "stopped" : "done" };
+      }
       await call(turn, "list_scripts", {});
       if (stopping) return { outcome: "stopped" };
       const ctx = await board.writerContext(sessionId);

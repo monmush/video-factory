@@ -10,9 +10,18 @@ import {
   type ImageRef,
   MAX_CHARACTER_IMAGES,
   mediaUrl,
+  type PlaceFinding,
   type StagedImage,
 } from "@shared/ipc";
-import { ImagePlus, LoaderCircle, Sparkles, Star, Upload, X } from "lucide-react";
+import { findingLabel, isFlagged } from "@shared/place-check";
+import {
+  guessVoiceTraits,
+  suggestVoice,
+  takenVoiceIds,
+  type VoiceId,
+  voiceById,
+} from "@shared/voices";
+import { ImagePlus, LoaderCircle, Sparkles, Star, TriangleAlert, Upload, X } from "lucide-react";
 import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { ASSET_KINDS } from "@/lib/asset-kinds";
@@ -22,8 +31,10 @@ import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { ANGLE_LABELS, AngleGenerator, PendingAngleTile } from "./angle-generator";
 import { Button } from "./ui/button";
 import { Dialog, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "./ui/dialog";
+import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
+import { VoiceField } from "./voice-field";
 
 interface DraftImage {
   key: string;
@@ -31,6 +42,13 @@ interface DraftImage {
   url: string;
   origin: ImageOrigin;
   angle?: AngleId;
+  /**
+   * Places: what the check found (src/shared/place-check.ts); null when
+   * nothing was or it could not run; missing until asked.
+   */
+  check?: PlaceFinding | null;
+  /** Places: a cleaned photo's original, which "Dùng ảnh gốc" brings back. */
+  original?: DraftImage;
 }
 
 const fromStaged = (
@@ -52,6 +70,15 @@ const fromAsset = (asset: Asset): DraftImage[] =>
     url: mediaUrl.asset(asset.id, img.file),
     origin: img.origin ?? "upload",
     angle: img.angle,
+    check: img.placeCheck,
+    original: img.original && {
+      key: img.id,
+      ref: { source: "asset", assetId: asset.id, id: img.id, restore: true },
+      url: mediaUrl.asset(asset.id, img.original.file),
+      origin: img.original.origin ?? "upload",
+      angle: img.angle,
+      check: img.original.placeCheck ?? null,
+    },
   }));
 
 /** The ref sent on save, carrying the image's label and origin. */
@@ -164,6 +191,18 @@ function CharacterForm({
   const [angleNote, setAngleNote] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // Places: photos being checked, the one being cleaned, and a cleaned
+  // version waiting for "Dùng ảnh này" or "Bỏ".
+  const isPlace = kind === "environment";
+  const asked = useRef(new Set<string>());
+  const [checking, setChecking] = useState<Set<string>>(new Set());
+  const [cleaning, setCleaning] = useState<string | null>(null);
+  const [review, setReview] = useState<{
+    key: string;
+    image: StagedImage;
+    check: PlaceFinding | null;
+  } | null>(null);
+  const [cleanPrice, setCleanPrice] = useState<number | null>(null);
   // Products only: the set this product is (members) and the set it belongs to.
   const [contains, setContains] = useState<string[]>(character?.contains ?? []);
   const members = contains
@@ -172,13 +211,115 @@ function CharacterForm({
   const memberOf = character
     ? workspace.assets.find((a) => a.contains?.includes(character.id))
     : undefined;
+  // Characters only: a voice picked by hand (or saved) is kept; until then the
+  // rule suggests one from the name and description, avoiding voices in use.
+  const [pickedVoice, setPickedVoice] = useState<VoiceId | null>(
+    voiceById(character?.voiceId)?.id ?? null,
+  );
+  const voiceId =
+    pickedVoice ??
+    suggestVoice(
+      guessVoiceTraits(name, description),
+      takenVoiceIds(workspace.assets, character?.id),
+    );
 
   // How the dialog's actions interact: only one change to the image list at a
   // time, and nothing that would lose in-flight (possibly paid) work.
   const generating = pendingAngles.length > 0;
-  const inFlight = describing || generating || saving;
-  const busy = inFlight || adding;
-  const unsavedAi = images.some((i) => i.origin === "ai" && i.ref.source === "staged");
+  const inFlight = describing || generating || saving || cleaning !== null;
+  const busy = inFlight || adding || review !== null;
+  const unsavedAi =
+    review !== null || images.some((i) => i.origin === "ai" && i.ref.source === "staged");
+  const anyFlagged = isPlace && images.some((i) => isFlagged(i.check));
+
+  // Places: every photo not checked yet is looked at once (free; nothing waits for it).
+  useEffect(() => {
+    if (!isPlace) return;
+    const todo = images.filter((i) => i.check === undefined && !asked.current.has(i.key));
+    if (!todo.length) return;
+    for (const image of todo) asked.current.add(image.key);
+    const keys = todo.map((i) => i.key);
+    setChecking((current) => new Set([...current, ...keys]));
+    api
+      .invoke("assets:check-place", { images: todo.map((i) => i.ref) })
+      .catch(() => todo.map(() => null))
+      .then((found) =>
+        setImages((current) =>
+          current.map((image) => {
+            const at = keys.indexOf(image.key);
+            return at < 0 || image.check !== undefined
+              ? image
+              : { ...image, check: found[at] ?? null };
+          }),
+        ),
+      )
+      .finally(() =>
+        setChecking((current) => new Set([...current].filter((key) => !keys.includes(key)))),
+      );
+  }, [images, isPlace]);
+
+  useEffect(() => {
+    if (!anyFlagged || cleanPrice !== null) return;
+    api
+      .invoke("assets:estimate-clean")
+      .then((r) => setCleanPrice(r.cost))
+      .catch(() => undefined);
+  }, [anyFlagged, cleanPrice]);
+
+  const clean = async (key: string) => {
+    const target = images.find((i) => i.key === key);
+    if (!target || !isFlagged(target.check)) return;
+    setCleaning(key);
+    setError(null);
+    setAngleNote(null);
+    try {
+      const result = await api.invoke("assets:clean-place-photo", {
+        image: target.ref,
+        finding: target.check,
+      });
+      setReview({ key, image: result.image, check: result.finding });
+      setAngleNote(
+        result.source === "fixture"
+          ? "Chế độ thử: ảnh mẫu là bản sao ảnh gốc, chưa gọi API."
+          : result.cost !== null
+            ? `Đã dùng khoảng ${formatCost(result.cost)}.`
+            : null,
+      );
+    } catch (e) {
+      setError(`Không làm sạch được ảnh: ${errorMessage(e)}`);
+    } finally {
+      setCleaning(null);
+    }
+  };
+
+  /** The cleaned photo takes the original's place; the original can come back until and after saving. */
+  const acceptCleaned = () => {
+    if (!review) return;
+    setImages((current) =>
+      current.map((image) =>
+        image.key === review.key
+          ? {
+              key: review.image.id,
+              ref: { source: "staged", id: review.image.id, cleanOf: toRef(image) },
+              url: review.image.url,
+              origin: "ai",
+              angle: image.angle,
+              check: review.check ?? null,
+              original: image,
+            }
+          : image,
+      ),
+    );
+    setReview(null);
+    setAngleNote(null);
+  };
+
+  const restoreOriginal = (key: string) =>
+    setImages((current) =>
+      current.map((image) => (image.key === key && image.original ? image.original : image)),
+    );
+
+  const reviewed = review && images.find((i) => i.key === review.key);
 
   useEffect(() => {
     onGuardChange(inFlight ? "busy" : unsavedAi ? "unsaved-ai" : null);
@@ -332,6 +473,7 @@ function CharacterForm({
       description,
       images: images.map(toRef),
       contains: kind === "product" ? contains : undefined,
+      voiceId: kind === "character" ? voiceId : undefined,
     };
     try {
       if (character) await api.invoke("assets:update", character.id, input);
@@ -420,6 +562,25 @@ function CharacterForm({
                           AI
                         </span>
                       )}
+                      {checking.has(image.key) ? (
+                        <span className="absolute right-2 bottom-2 grid size-5 place-items-center rounded-md bg-black/60 text-white">
+                          <LoaderCircle className="size-3 animate-spin" />
+                        </span>
+                      ) : (
+                        isFlagged(image.check) && (
+                          <span
+                            className="absolute right-2 bottom-2 grid size-5 place-items-center rounded-md bg-warning-surface text-warning-foreground"
+                            title={findingLabel(image.check) ?? undefined}
+                          >
+                            <TriangleAlert className="size-3" />
+                          </span>
+                        )
+                      )}
+                      {cleaning === image.key && (
+                        <span className="absolute inset-0 grid place-items-center bg-background/60">
+                          <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
+                        </span>
+                      )}
                       {index === 0 ? (
                         <span className="absolute bottom-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-2xs text-white">
                           Ảnh chính
@@ -441,7 +602,10 @@ function CharacterForm({
                         aria-label="Bỏ ảnh"
                         title="Bỏ ảnh"
                         className="absolute top-2 right-2 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
-                        onClick={() => setImages((c) => c.filter((i) => i.key !== image.key))}
+                        onClick={() => {
+                          if (review?.key === image.key) setReview(null);
+                          setImages((c) => c.filter((i) => i.key !== image.key));
+                        }}
                       >
                         <X />
                       </Button>
@@ -465,6 +629,38 @@ function CharacterForm({
                           </option>
                         ))}
                       </select>
+                    )}
+                    {isPlace && isFlagged(image.check) && (
+                      <>
+                        <p className="text-xs text-warning-foreground">
+                          {findingLabel(image.check)}
+                        </p>
+                        {review?.key !== image.key && (
+                          <HoldButton
+                            size="xs"
+                            tone="outline"
+                            className="self-start"
+                            disabled={busy || cleaning !== null}
+                            onHold={() => clean(image.key)}
+                          >
+                            Giữ để làm sạch
+                            {cleanPrice !== null && (
+                              <ButtonPrice>~{formatCost(cleanPrice)}</ButtonPrice>
+                            )}
+                          </HoldButton>
+                        )}
+                      </>
+                    )}
+                    {image.original && review?.key !== image.key && (
+                      <Button
+                        size="xs"
+                        variant="ghost-muted"
+                        className="self-start"
+                        disabled={busy}
+                        onClick={() => restoreOriginal(image.key)}
+                      >
+                        Dùng ảnh gốc
+                      </Button>
                     )}
                   </div>
                 ))}
@@ -490,6 +686,41 @@ function CharacterForm({
                   </button>
                 )}
               </div>
+
+              {review && reviewed && (
+                <div className="mx-3 mb-3 flex flex-col gap-2 rounded-lg border bg-background p-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <img
+                      src={reviewed.url}
+                      alt=""
+                      className="aspect-[4/3] w-full rounded-md bg-muted object-contain"
+                      draggable={false}
+                    />
+                    <figure className="relative">
+                      <img
+                        src={review.image.url}
+                        alt=""
+                        className="aspect-[4/3] w-full rounded-md bg-muted object-contain"
+                        draggable={false}
+                      />
+                      <span className="absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-2xs font-medium text-white">
+                        AI
+                      </span>
+                    </figure>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 text-xs text-warning-foreground">
+                      {findingLabel(review.check)}
+                    </span>
+                    <Button variant="ghost-muted" size="sm" onClick={() => setReview(null)}>
+                      Bỏ
+                    </Button>
+                    <Button size="sm" onClick={acceptCleaned}>
+                      Dùng ảnh này
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               <div className="mt-auto flex flex-col items-start gap-2 p-3 pt-0">
                 {copy.generateViews && (
@@ -595,6 +826,10 @@ function CharacterForm({
             {describeNote && <p className="mt-2 text-xs text-muted-foreground">{describeNote}</p>}
           </Field>
 
+          {kind === "character" && (
+            <VoiceField value={voiceId} onChange={setPickedVoice} disabled={saving} />
+          )}
+
           {kind === "product" && (members.length > 0 || memberOf) && (
             <div className="flex flex-col gap-1.5">
               <span className="font-medium">Bộ sản phẩm</span>
@@ -663,7 +898,7 @@ function CharacterForm({
           <span className="flex-1" />
           {inFlight && !saving && (
             <span className="text-xs text-muted-foreground">
-              {generating ? "Đang tạo ảnh…" : "Đang tạo mô tả…"}
+              {generating || cleaning !== null ? "Đang tạo ảnh…" : "Đang tạo mô tả…"}
             </span>
           )}
           <Button

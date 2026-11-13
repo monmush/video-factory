@@ -22,6 +22,7 @@ const PROMPTS: Record<
   character: {
     system: `Bạn viết mô tả nhân vật để dùng làm chỉ dẫn cho mô hình tạo ảnh và video.
 Chỉ mô tả bản thân nhân vật nhìn thấy trong ảnh: giới tính, độ tuổi ước chừng, khuôn mặt, kiểu tóc, vóc dáng, trang phục, phụ kiện và màu sắc chủ đạo.
+Câu đầu tiên luôn nói rõ là nam hay nữ và tuổi ước chừng bằng số, ví dụ "Người đàn ông khoảng 70 tuổi" hoặc "Cô gái khoảng 25 tuổi".
 Không mô tả bối cảnh, ánh sáng hay tư thế. Không đoán tiểu sử, tính cách hay tên. Nếu các ảnh là cùng một người ở nhiều góc, gộp thành một mô tả.
 Viết bằng tiếng Việt tự nhiên, một đoạn duy nhất gồm 2–4 câu ngắn, không dùng markdown, không gạch đầu dòng.`,
     user: (name) =>

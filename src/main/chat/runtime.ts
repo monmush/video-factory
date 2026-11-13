@@ -10,15 +10,17 @@ import {
   type ChatPart,
   resolveChoice,
 } from "../../shared/ipc";
+import { NOTE_AREAS } from "../../shared/notes";
 import * as board from "../board";
 import * as writer from "../script-writer";
 import { textAiMode } from "../text-ai";
+import * as video from "../video/runner";
 import { claudeChatDir, createClaudeRunner } from "./claude-runner";
 import { attachmentBlocks } from "./files";
 import { createFixtureRunner } from "./fixture-runner";
 import { currentChoice } from "./models";
 import type { Runner, TurnEvents } from "./runner";
-import { pendingLabel, SILENT_TOOLS, type ToolHost } from "./tools";
+import { pendingLabel, recentFeedback, SILENT_TOOLS, type ToolHost } from "./tools";
 
 // The session chat as an agent conversation. One turn runs at a time per
 // session; messages sent meanwhile wait in order. Streamed text and "being
@@ -121,10 +123,13 @@ function partOf(m: ChatMessage, id: string) {
 
 async function systemPrompt(sessionId: string) {
   const ctx = await board.writerContext(sessionId);
+  const { session } = await board.findSession(sessionId);
+  const feedback = await recentFeedback(session.seriesId);
+  const earlier = feedback ? `\n\n## Góp ý sửa video gần đây trong series\n${feedback}` : "";
   const avoid = ctx.avoid.length
     ? `\n## Đã dùng trong series (không lặp lại ý, thành ngữ hay câu đùa)\n${ctx.avoid.map((t) => `- ${t}`).join("\n")}`
     : "";
-  return `Bạn là trợ lý biên kịch trong ứng dụng làm video ngắn dọc. Người dùng là nhân viên nội dung: họ duyệt kịch bản, không tự viết.
+  return `Bạn là trợ lý biên kịch và dựng video trong ứng dụng làm video ngắn dọc. Người dùng là nhân viên nội dung: họ duyệt kịch bản và video, không tự viết, không phải đạo diễn.
 Bảng kịch bản nằm cạnh khung chat. Mọi thay đổi phải qua các công cụ board; kịch bản đánh số #1, #2… theo thứ tự trên bảng. Tin nhắn có thể ghi "Kịch bản đính kèm" là các kịch bản người dùng đang chọn: mặc định yêu cầu áp dụng cho chúng.
 
 ## Cách làm
@@ -132,18 +137,42 @@ Bảng kịch bản nằm cạnh khung chat. Mọi thay đổi phải qua các c
 - Sửa lớn hoặc sửa từ 3 kịch bản trở lên: rewrite_scripts với một yêu cầu sửa rõ ràng.
 - Sửa nhỏ, chính xác 1–2 kịch bản: read_scripts rồi update_script, tự viết theo quy tắc viết bên dưới. Chỉ gửi trường cần đổi. Nếu kết quả báo "Cần sửa", sửa lại ngay.
 - Xóa: delete_scripts.
+- Kịch bản [đã có video] không bao giờ đổi. Sửa nó vẫn dùng update_script hoặc rewrite_scripts như thường: công cụ tự tạo bản mới và sửa trên bản đó. Bản mới cần tạo video riêng (người dùng tự bấm). Không xóa kịch bản đã có video.
 - Yêu cầu có vài hướng rõ ràng mà chưa biết chọn hướng nào: offer_choices, không hỏi bằng chữ.
 - Câu hỏi không cần sửa gì: trả lời ngắn, không gọi công cụ.
 - Tệp đính kèm (ảnh, PDF, văn bản) là tài liệu tham khảo người dùng gửi.
+
+## Video
+Kịch bản [đã có video] có video ở thẻ Video. Một video gồm các cảnh nối nhau; mỗi cảnh là một đoạn lời thoại cùng thứ người xem thấy lúc đó: speaker (cận mặt người đang nói), listener (cận mặt người nghe, im lặng), wide (toàn cảnh mọi người), detail (cận đồ vật hay hành động, không có mặt người). Tin nhắn có thể ghi "Cảnh N" của kịch bản đính kèm.
+Khi người dùng chê hoặc muốn đổi một video:
+- Luôn read_video trước. Chọn cách sửa RẺ NHẤT giải quyết đúng điều họ nói, rồi propose_video_fix. Bạn không tự tạo lại gì: đề xuất hiện giá kèm nút, người dùng giữ nút để đồng ý. Đề xuất xong thì nói một câu ngắn.
+- Một cảnh lỗi hình (miệng méo, tay lạ, mặt biến dạng, biểu cảm sai): redo_shot cảnh đó; biểu cảm sai thì thêm visual.
+- Lời thoại nhắc tới một hành động hay đồ vật mà không thấy, hoặc muốn đổi góc máy ở một câu: replace_line cho câu đó. text của các cảnh ghép lại phải đúng nguyên văn câu thoại, chỉ cắt ngay sau dấu câu, mỗi phần ít nhất bốn chữ; giữ nguyên các cảnh không cần đổi. visual viết bằng tiếng Anh, tả một khoảnh khắc cụ thể (cảnh detail là ảnh tĩnh có chuyển máy chậm). Cảnh speaker phải là người đang nói câu đó. Câu đùa hay câu cuối kết thúc quá vội: replace_line cho câu đó với hold (1–2 giây lặng) ở cảnh cuối của câu; tổng lặng cả video tối đa 4 giây, kể cả 1 giây ở cảnh cuối.
+- Một nhân vật sai ở mọi cảnh (nhìn sai hướng, sai trang phục): redo_still của nhân vật đó, note tiếng Anh nói rõ cần sửa gì. Đắt hơn vì mọi cảnh của nhân vật quay lại.
+- Giọng đọc sai (phát âm, giọng điệu): redo_voice, gần bằng giá cả video.
+- Đổi lời thoại không phải là sửa video: dùng update_script như thường (tạo bản mới, người dùng tạo video mới với giá đầy đủ). Nói rõ điều đó trước khi làm.
+- Chưa làm được: nhân vật đi lại hay đứng lên; cảnh cận có chuyển động thật (rót, cầm, đặt); hai người cùng nói trong một cảnh; sửa riêng phụ đề; nhạc nền. Nói thẳng là chưa hỗ trợ và gợi ý cách gần nhất; không đề xuất tốn tiền cho việc không làm được.
+- Lời chê chung chung ("chán", "nhìn giả"): offer_choices với 2–3 hướng cụ thể, chưa đề xuất gì tốn tiền.
+- Mỗi lần góp ý về video, một câu trả lời ngắn cho thấy cả hai đường: sửa video này ngay (đề xuất kèm giá) và ghi nhớ cho các video sau. Sau đề xuất, hỏi đúng một câu bằng offer_choices, ví dụ "Ghi nhớ cho video sau?" với "Chỉ video này", "Cả series", "Mọi series".
+- Góp ý chưa sửa được trên video này (mục "Chưa làm được" ở trên) vẫn được ghi nhớ nếu người viết kịch bản hay người dựng cảnh làm theo được ở video sau (ví dụ: tránh viết cảnh rót trà, chọn góc khác, câu ngắn hơn): nói một câu là video này chưa sửa được, rồi offer_choices với "Cả series", "Mọi series", "Không lưu". Nếu chưa có cách nào làm theo (cảnh cận có chuyển động thật, hai người cùng nói, sửa riêng phụ đề, nhạc nền, ai ngồi bên trái hay phải: người nói câu đầu luôn ngồi bên trái), nói thẳng và không lưu gì.
+- Không bao giờ nêu tên nhà cung cấp, mô hình AI hay công nghệ phía sau việc tạo giọng, hình và video, kể cả khi được hỏi; gọi theo việc chúng làm ("tạo giọng đọc", "vẽ khung hình", "quay cảnh"). Không tự ước giá: chỉ dùng giá công cụ trả về.
+
+## Ghi nhớ
+Ghi nhớ là sở thích người dùng muốn giữ cho mọi kịch bản và video sau. Người viết kịch bản đọc ghi nhớ về lời thoại và giọng (script, voice), người dựng cảnh đọc ghi nhớ về hình và nhịp (picture, editing). Video và kịch bản đã có không đổi.
+- Người dùng nói điều họ luôn thích hay không thích, hoặc bảo "nhớ…": nếu chưa rõ phạm vi, hỏi một lần bằng offer_choices ("Cả series", "Mọi series"; thêm "Chỉ video này" khi đang nói về một video). Có phạm vi rồi: list_notes, rồi save_note (thay ghi nhớ trùng hoặc trái ý bằng replace_id), rồi xác nhận vài chữ ("Đã ghi nhớ cho series.").
+- Người dùng chọn "Cả series" hay "Mọi series" sau góp ý: list_notes rồi save_note với một câu ngắn nói điều cần làm, words là nguyên văn góp ý. "Chỉ video này" hay "Không lưu": không lưu gì, không hỏi lại.
+- Góp ý giống một góp ý đã có trong "Góp ý sửa video gần đây" của series: nói một câu là đã gặp lần trước, rồi vẫn hỏi ghi nhớ một lần như trên. Không hỏi lại khi người dùng đã từ chối trong cuộc trò chuyện này.
+- Đã đủ số ghi nhớ: hỏi người dùng bỏ hoặc thay ghi nhớ nào.
+- Người dùng muốn quên một ghi nhớ: list_notes rồi remove_note.
 
 ## Trả lời
 Trả lời bằng ngôn ngữ người dùng đang viết (mặc định tiếng Việt). Kịch bản trên bảng vẫn luôn bằng tiếng Việt, kể cả khi người dùng nhắn bằng ngôn ngữ khác.
 Một hoặc hai câu, nói đã làm gì. Không chép lại kịch bản vào chat vì người dùng thấy trên bảng. Không dùng tiêu đề hay danh sách dài.
 
-${writer.seriesBlock(ctx)}
+${writer.seriesBlock(ctx, NOTE_AREAS)}
 
 ${writer.writingRules(45)}
-(Độ dài mặc định 45 giây; theo độ dài người dùng yêu cầu nếu có.)${avoid}`;
+(Độ dài mặc định 45 giây; theo độ dài người dùng yêu cầu nếu có.)${avoid}${earlier}`;
 }
 
 // ---------------------------------------------------------------- runners
@@ -387,6 +416,12 @@ async function runTurn(sessionId: string, user: ChatMessage) {
         addPart(m, { type: "choices", id: randomUUID(), question, options });
       });
     },
+    proposeFix(fix) {
+      void changeMessage(sessionId, reply.id, (m) => {
+        addPart(m, { type: "fix", id: randomUUID(), ...fix });
+      });
+    },
+    request: user.text,
   };
 
   let result: Awaited<ReturnType<Runner["run"]>>;
@@ -478,8 +513,7 @@ export async function send(input: {
     }
     return board.send(input.sessionId, text, input.refs);
   }
-  const { session } = await board.findSession(input.sessionId);
-  board.assertEditable(session);
+  await board.findSession(input.sessionId);
   const message: ChatMessage = {
     id: randomUUID(),
     role: "user",
@@ -558,6 +592,29 @@ export async function choose(
   });
   if (!fresh) return null;
   return send({ sessionId, text: option, refs: [], attachments: [] });
+}
+
+/** The operator accepts a proposed video fix: it starts, and the proposal is spent. */
+export async function applyFix(
+  sessionId: string,
+  messageId: string,
+  partId: string,
+): Promise<null> {
+  const current = await board.getBoard(sessionId);
+  const part = current.messages
+    .find((m) => m.id === messageId)
+    ?.parts?.find(
+      (p): p is Extract<ChatPart, { type: "fix" }> => p.type === "fix" && p.id === partId,
+    );
+  if (!part) throw new Error("Không tìm thấy đề xuất này");
+  if (part.applied) return null;
+  await video.fix(sessionId, part.scriptId, part.changes, part.rev);
+  await board.mutateBoard(sessionId, (b) => {
+    for (const m of b.messages) {
+      for (const p of m.parts ?? []) if (p.type === "fix" && p.id === partId) p.applied = true;
+    }
+  });
+  return null;
 }
 
 /** Model for this session's next turns (the conversation itself continues). */

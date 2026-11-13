@@ -1,3 +1,4 @@
+import { outputResolution } from "@shared/batch-settings";
 import { boardOrder } from "@shared/board";
 import type { Asset, Series, Session } from "@shared/ipc";
 import { Link, useParams } from "@tanstack/react-router";
@@ -11,6 +12,7 @@ import {
 } from "@/components/asset-picker";
 import { Composer } from "@/components/composer";
 import { DeleteSeriesDialog } from "@/components/delete-series-dialog";
+import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +26,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "@/components/ui/menu";
 import { Textarea } from "@/components/ui/textarea";
+import { SeriesOutputFields } from "@/components/video-model-menu";
 import { useCreateActions } from "@/lib/actions";
 import { api } from "@/lib/api";
 import { useBoard } from "@/lib/board";
@@ -145,6 +148,13 @@ function SeriesView({ seriesId }: { seriesId: string }) {
           )}
         </section>
       )}
+
+      {series.notes?.length ? (
+        <section className="mt-8">
+          <h2 className="mb-1 px-3 font-semibold">Ghi nhớ</h2>
+          <NotesList notes={series.notes} />
+        </section>
+      ) : null}
 
       <EditSeriesDialog series={series} open={editing} onOpenChange={setEditing} />
       <DeleteSeriesDialog series={series} open={deleting} onOpenChange={setDeleting} />
@@ -297,12 +307,21 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
     productIds: series.productIds ?? [],
     environmentIds: series.environmentIds ?? [],
   });
+  const [videoModel, setVideoModel] = useState(series.videoModel);
+  const [resolution, setResolution] = useState(outputResolution(series.resolution));
   const [error, setError] = useState<string | null>(null);
   const id = useId();
 
   const save = async () => {
     try {
-      await api.invoke("series:update", { id: series.id, name, guidance, ...assets });
+      await api.invoke("series:update", {
+        id: series.id,
+        name,
+        guidance,
+        ...assets,
+        ...(videoModel ? { videoModel } : {}),
+        resolution,
+      });
       await refreshWorkspace();
       onDone();
     } catch (e) {
@@ -336,6 +355,13 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
           />
         </div>
         <SeriesAssetFields value={assets} onChange={setAssets} />
+        <SeriesOutputFields
+          environmentIds={assets.environmentIds}
+          videoModel={videoModel}
+          resolution={resolution}
+          onVideoModel={setVideoModel}
+          onResolution={setResolution}
+        />
         {error && <p className="text-destructive-foreground">{error}</p>}
       </div>
       <DialogFooter className="justify-end">

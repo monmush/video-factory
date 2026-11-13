@@ -9,6 +9,11 @@ const now = () => new Date().toISOString();
 export interface TurnLog {
   messageId: string;
   touched: Set<string>;
+  /**
+   * Scripts sent to video that this turn edited through a new version:
+   * original id → the copy, so later edits in the same turn reuse the copy.
+   */
+  copies?: Map<string, string>;
 }
 
 /** Script ids a turn's undo would change. */
@@ -19,8 +24,10 @@ const undoTargets = (undo: NonNullable<Board["messages"][number]["undo"]>) =>
  * Restores every script a chat turn changed and removes the scripts it added.
  * Refuses when a later turn that is still undoable changed the same scripts:
  * restoring the older snapshot would silently throw that later work away.
+ * Also refuses when one of them has since been sent to video (`locked`):
+ * a script with a video never changes.
  */
-export function applyUndo(b: Board, messageId: string) {
+export function applyUndo(b: Board, messageId: string, locked: ReadonlySet<string> = new Set()) {
   const index = b.messages.findIndex((x) => x.id === messageId);
   const m = b.messages[index];
   if (!m?.undo || m.undo.undone) return;
@@ -31,6 +38,9 @@ export function applyUndo(b: Board, messageId: string) {
       (x) => x.undo && !x.undo.undone && [...undoTargets(x.undo)].some((id) => targets.has(id)),
     );
   if (later) throw new Error("Hãy hoàn tác thay đổi mới hơn trên các kịch bản này trước");
+  if ([...targets].some((id) => locked.has(id))) {
+    throw new Error("Kịch bản đã gửi làm video nên không hoàn tác được");
+  }
   for (const before of m.undo.before) {
     const s = b.scripts.find((x) => x.id === before.id);
     if (!s || s.status === "writing") continue;

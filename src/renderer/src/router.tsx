@@ -11,7 +11,7 @@ import { HomePage } from "./screens/home";
 import { NotFound } from "./screens/not-found";
 import { SeriesPage } from "./screens/series";
 import { SeriesNewPage } from "./screens/series-new";
-import { ScriptsPage, SessionLayout, VideosPage } from "./screens/session";
+import { ScriptsPage, SessionLayout, SessionSettingsPage, VideosPage } from "./screens/session";
 import { SettingsPage } from "./screens/settings";
 
 // Code-based routes: few enough that a generated route tree is not worth the plugin.
@@ -59,6 +59,12 @@ const videosRoute = createRoute({
   component: VideosPage,
 });
 
+const sessionSettingsRoute = createRoute({
+  getParentRoute: () => sessionRoute,
+  path: "settings",
+  component: SessionSettingsPage,
+});
+
 const assetsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/assets",
@@ -81,7 +87,7 @@ const routeTree = rootRoute.addChildren([
   homeRoute,
   seriesNewRoute,
   seriesRoute,
-  sessionRoute.addChildren([sessionIndexRoute, scriptsRoute, videosRoute]),
+  sessionRoute.addChildren([sessionIndexRoute, scriptsRoute, videosRoute, sessionSettingsRoute]),
   assetsRoute,
   assetsCategoryRoute,
   settingsRoute,

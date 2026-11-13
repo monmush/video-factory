@@ -1,0 +1,74 @@
+import type { Series, Session } from "./ipc";
+import { fitResolution, legacyModel, videoModel } from "./video-models";
+
+// Output settings of a batch (a session). Each is optional on the session;
+// missing means the series' value, else the default. A job resolves them
+// once, when it is created, and keeps them: changing a setting affects only
+// videos created afterwards. Aspect ratio, subtitles and the like join
+// `SessionSettings` later.
+
+export type SessionSettingKey = keyof NonNullable<Session["settings"]>;
+
+/** Output size of the final video (9:16). */
+export const RESOLUTIONS = {
+  "720p": { width: 720, height: 1280 },
+  "1080p": { width: 1080, height: 1920 },
+} as const;
+
+export type OutputResolution = keyof typeof RESOLUTIONS;
+
+export const DEFAULT_RESOLUTION: OutputResolution = "720p";
+
+const isResolution = (r: unknown): r is OutputResolution =>
+  typeof r === "string" && r in RESOLUTIONS;
+
+/** A saved resolution, or 720p when missing (jobs saved before) or unknown. */
+export const outputResolution = (r?: string | null): OutputResolution =>
+  isResolution(r) ? r : DEFAULT_RESOLUTION;
+
+/** Width and height of a job's final video and every clip in it. */
+export const outputSize = (r?: string | null): { width: number; height: number } =>
+  RESOLUTIONS[outputResolution(r)];
+
+/** The resolved speaking-shot model id, and whether it comes from the series (or the default). */
+export function batchVideoModel(
+  session: Pick<Session, "settings"> | undefined,
+  series: Pick<Series, "videoModel"> | undefined,
+): { id: string; inherited: boolean } {
+  const own = session?.settings?.videoModel;
+  if (own) return { id: videoModel(own).id, inherited: false };
+  return { id: videoModel(series?.videoModel).id, inherited: true };
+}
+
+/**
+ * The resolved output resolution, and whether it comes from the series (or the
+ * default). With a model that cannot make 1080p it is 720p whatever is saved:
+ * the saved choice is kept and applies again with a model that can.
+ */
+export function batchResolution(
+  session: Pick<Session, "settings"> | undefined,
+  series: Pick<Series, "resolution"> | undefined,
+  modelId?: string | null,
+): { id: OutputResolution; inherited: boolean } {
+  const own = session?.settings?.resolution;
+  const picked = isResolution(own)
+    ? { id: own, inherited: false }
+    : { id: outputResolution(series?.resolution), inherited: true };
+  return modelId === undefined ? picked : { ...picked, id: fitResolution(modelId, picked.id) };
+}
+
+/**
+ * Settings saved with a model id from before MiniMax became one entry: the
+ * merged model, and the output size that id implied unless one is set.
+ */
+export function migrateSettings<T extends { videoModel?: string; resolution?: string }>(
+  settings: T,
+): T {
+  const legacy = legacyModel(settings.videoModel);
+  if (!legacy) return settings;
+  return {
+    ...settings,
+    videoModel: legacy.id,
+    resolution: settings.resolution ?? legacy.resolution,
+  };
+}

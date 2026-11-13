@@ -2,6 +2,10 @@
 // The renderer never touches Node, the file system or provider keys directly;
 // every capability it needs is a channel listed here.
 
+import type { Note } from "./notes";
+import type { FixChange } from "./video-fix";
+import type { StepAverages, VideoJob } from "./video-job";
+
 export type ThemePreference = "light" | "dark" | "system";
 
 export interface Series {
@@ -16,10 +20,31 @@ export interface Series {
   characterIds: string[];
   productIds: string[];
   environmentIds: string[];
+  /**
+   * Speaking-shot model (src/shared/video-models.ts), chosen as a quality
+   * level: the default for this series' batches, which may set their own.
+   * Missing or unknown: the default. Each video keeps the one it was made with.
+   */
+  videoModel?: string;
+  /** Output size ("720p" | "1080p") for this series' batches; missing: 720p. */
+  resolution?: string;
   /** Set when pinned to the top of the sidebar. */
   pinnedAt?: string;
+  /** Learned preferences for this series (src/shared/notes.ts), saved from the chat. */
+  notes?: Note[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Output settings of one batch (src/shared/batch-settings.ts). Missing
+ * fields take the series' value, else the default.
+ */
+export interface SessionSettings {
+  /** Speaking-shot model (src/shared/video-models.ts). */
+  videoModel?: string;
+  /** Output size of the final video: "720p" or "1080p". */
+  resolution?: string;
 }
 
 export interface Session {
@@ -30,8 +55,16 @@ export interface Session {
   request?: string;
   /** Session-level script approval. Videos can only be generated after this is set. */
   approvedAt: string | null;
+  /**
+   * Scripts committed to video, in the order they were committed. Missing on an
+   * approved session saved before this existed: every script was committed.
+   * A test approval commits one; "make the rest" adds the others later.
+   */
+  committedScriptIds?: string[];
   /** Set when pinned to the top of its series in the sidebar. */
   pinnedAt?: string;
+  /** This batch's own output settings; missing: the series'. */
+  settings?: SessionSettings;
   createdAt: string;
   updatedAt: string;
 }
@@ -49,6 +82,8 @@ export interface ScriptLine {
 export type ScriptBrief = (
   | { kind: "topic"; direction?: string }
   | { kind: "variant"; sourceId: string; direction?: string }
+  /** A new version of a script already sent to video: copied, never written. */
+  | { kind: "copy"; sourceId: string }
 ) & {
   /** Length the request asked for, in seconds; about 45 when it named none. */
   targetSec?: number;
@@ -77,6 +112,13 @@ export interface Script {
   pinned: boolean;
   /** Deleted scripts stay in place until the session ends, so undo restores them exactly. */
   deletedAt: string | null;
+  /**
+   * New versions of a script sent to video (src/shared/versions.ts): the id
+   * of the chain's first script, and this copy's number ("bản 2"). Missing on
+   * the first version.
+   */
+  versionOf?: string;
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -112,6 +154,26 @@ export type ChatPart =
       question: string;
       options: string[];
       chosen?: string;
+    }
+  | {
+      /**
+       * A fix the agent proposes for a video: what is made again and what it
+       * costs. Nothing happens until the operator holds its button.
+       */
+      type: "fix";
+      id: string;
+      scriptId: string;
+      /** One short line in the operator's language. */
+      summary: string;
+      changes: FixChange[];
+      priceUsd: number;
+      /** How much is made again. */
+      shots: number;
+      stills: number;
+      voice: boolean;
+      /** The video's revision the proposal was made for; stale once it moves on. */
+      rev: number;
+      applied?: boolean;
     };
 
 export interface ChatError {
@@ -238,6 +300,32 @@ export interface AssetImage {
   /** "ai" for images generated from the references; originals stay authoritative. */
   origin?: ImageOrigin;
   angle?: AngleId;
+  /**
+   * Products only: the photo's background removed once, kept beside it
+   * (`file`, never replacing the original) and reused by every video.
+   * `usable`: the product stands alone in it, so it can be placed in a scene
+   * (src/shared/product-shot.ts).
+   */
+  cutout?: { file: string; usable: boolean };
+  /**
+   * Places only: what the user's own AI saw in the photo
+   * (src/shared/place-check.ts). Missing: never checked.
+   */
+  placeCheck?: PlaceFinding;
+  /**
+   * Places only: this photo is a cleaned version (people or packaging
+   * removed by the image model); the photo it replaced stays on disk here
+   * and can be restored.
+   */
+  original?: { file: string; origin?: ImageOrigin; placeCheck?: PlaceFinding };
+}
+
+/** What a check of a place photo found. */
+export interface PlaceFinding {
+  people: boolean;
+  /** Packaging or lettered box, bag, label or sign, in a few words; null if none. */
+  packaging: string | null;
+  checkedAt: string;
 }
 
 export type ImageOrigin = "upload" | "ai";
@@ -285,6 +373,11 @@ export interface Asset {
    * sachets). One level: a contained product never contains others itself.
    */
   contains?: string[];
+  /**
+   * Characters only: our voice catalogue id (src/shared/voices.ts). Missing
+   * or unknown means no voice chosen; generation then uses resolveVoice.
+   */
+  voiceId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -296,6 +389,9 @@ export interface SeriesInput {
   characterIds: string[];
   productIds: string[];
   environmentIds: string[];
+  /** Omit to keep the current choice (on create: the default). */
+  videoModel?: string;
+  resolution?: string;
 }
 
 export interface Workspace {
@@ -303,6 +399,8 @@ export interface Workspace {
   series: Series[];
   sessions: Session[];
   assets: Asset[];
+  /** Learned preferences for every series (src/shared/notes.ts). */
+  notes?: Note[];
 }
 
 /** An image copied into the staging folder, waiting to be saved with an asset. */
@@ -313,8 +411,22 @@ export interface StagedImage {
 
 /** Points at an image that is either staged or already saved with an asset. */
 export type ImageRef =
-  | { source: "staged"; id: string; origin?: ImageOrigin; angle?: AngleId }
-  | { source: "asset"; assetId: string; id: string; angle?: AngleId };
+  | {
+      source: "staged";
+      id: string;
+      origin?: ImageOrigin;
+      angle?: AngleId;
+      /** Places: a cleaned version of this photo, which it replaces (the original is kept). */
+      cleanOf?: ImageRef;
+    }
+  | {
+      source: "asset";
+      assetId: string;
+      id: string;
+      angle?: AngleId;
+      /** Places: a cleaned photo goes back to the original it replaced. */
+      restore?: boolean;
+    };
 
 export interface AssetInput {
   kind: AssetKind;
@@ -324,6 +436,8 @@ export interface AssetInput {
   images: ImageRef[];
   /** Products only. Omit on update to keep the current set contents. */
   contains?: string[];
+  /** Characters only. Omit on update to keep the current voice. */
+  voiceId?: string;
 }
 
 /** Batch product import: photos grouped into products by AI (or by hand). */
@@ -386,7 +500,7 @@ export interface DescribeResult {
 /** One logged AI request (usage.jsonl in the data folder). */
 export interface UsageEntry {
   at: string;
-  provider: "fal" | "claude-code";
+  provider: "fal" | "claude-code" | "elevenlabs";
   /** What the app was doing, e.g. "describe-character". */
   purpose: string;
   model?: string;
@@ -433,7 +547,16 @@ export const mediaUrl = {
   asset: (assetId: string, file: string) => `hyan-media://asset/${assetId}/${file}`,
   chat: (sessionId: string, file: string) => `hyan-media://chat/${sessionId}/${file}`,
   staged: (file: string) => `hyan-media://staging/${file}`,
+  /** A file in a video job's folder (voice, frames, clips, final). */
+  video: (sessionId: string, scriptId: string, file: string) =>
+    `hyan-media://video/${sessionId}/${scriptId}/${file}`,
 };
+
+/** The session's video jobs and the step averages the time estimate uses. */
+export interface VideoJobs {
+  jobs: VideoJob[];
+  averages: StepAverages;
+}
 
 /** "fal-billing" is an optional read-only fal key, used only to read the credit balance. */
 export type ProviderId = "fal" | "fal-billing" | "elevenlabs";
@@ -477,16 +600,31 @@ export interface IpcContract {
   };
   /** Removes the series and its sessions; their media folder goes to the system Trash. */
   "series:delete": { args: [id: string]; result: null };
+  /** Edits the text of a learned preference ("Ghi nhớ"), series or all-series. */
+  "notes:update": { args: [input: { id: string; text: string }]; result: null };
+  "notes:remove": { args: [id: string]; result: null };
   /** With a request, also starts writing it on the new session's board. */
   "session:create": { args: [input: { seriesId: string; request?: string }]; result: Session };
   "session:update": {
-    args: [input: { id: string; name?: string; pinned?: boolean }];
+    /** `settings` fields set to null go back to the series' value. */
+    args: [
+      input: {
+        id: string;
+        name?: string;
+        pinned?: boolean;
+        settings?: { [K in keyof SessionSettings]?: SessionSettings[K] | null };
+      },
+    ];
     result: Session;
   };
   /** Removes the session; its media folder goes to the system Trash. */
   "session:delete": { args: [id: string]; result: null };
-  /** Locks the script board; videos follow from the scripts on it. */
-  "session:approve": { args: [sessionId: string]; result: Session };
+  /**
+   * Commits scripts to video: the given ones, or every finished script when
+   * none are given. Committed scripts lock; the rest of the board stays
+   * editable. Called again to commit more.
+   */
+  "session:approve": { args: [sessionId: string, scriptIds?: string[]]; result: Session };
   "board:get": { args: [sessionId: string]; result: Board };
   /** A chat message. Runs in the background; queued while a turn is running. */
   "chat:send": {
@@ -512,6 +650,11 @@ export interface IpcContract {
     result: null;
   };
   /** Copies dropped, pasted or picked files into the session folder. */
+  /** The operator accepts a proposed video fix (held: it spends money). */
+  "chat:apply-fix": {
+    args: [input: { sessionId: string; messageId: string; partId: string }];
+    result: null;
+  };
   "chat:stage-files": {
     args: [
       input: { sessionId: string; files: { name: string; path?: string; data?: Uint8Array }[] },
@@ -533,10 +676,20 @@ export interface IpcContract {
     result: null;
   };
   "board:retry": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  /** A new editable version of a script sent to video, after its chain. Returns its id. */
+  "board:copy": { args: [input: { sessionId: string; scriptId: string }]; result: string };
   "board:delete": { args: [input: { sessionId: string; ids: string[] }]; result: null };
   "board:restore": { args: [input: { sessionId: string; ids: string[] }]; result: null };
   "board:pin": {
     args: [input: { sessionId: string; scriptId: string; pinned: boolean }];
+    result: null;
+  };
+  /**
+   * Gives lines spoken by `speaker` (not in the library) to a library
+   * character and adds it to the series. Only on scripts not yet committed.
+   */
+  "board:link-speaker": {
+    args: [input: { sessionId: string; speaker: string; characterId: string }];
     result: null;
   };
   /** Restores every script an in-place edit changed. */
@@ -565,12 +718,77 @@ export interface IpcContract {
     ];
     result: GenerateAnglesResult;
   };
+  /**
+   * Places: the user's own AI looks at each photo for people and packaging.
+   * Saved photos record the finding. Null where the check cannot run.
+   */
+  "assets:check-place": { args: [input: { images: ImageRef[] }]; result: (PlaceFinding | null)[] };
+  /** Price of one cleaned place photo. */
+  "assets:estimate-clean": { args: []; result: { cost: number } };
+  /** Removes what the check found from a place photo (held: it spends). The result is staged. */
+  "assets:clean-place-photo": {
+    args: [input: { image: ImageRef; finding: PlaceFinding }];
+    result: {
+      image: StagedImage;
+      /** The cleaned photo checked again; null when the check cannot run. */
+      finding: PlaceFinding | null;
+      source: "fixture" | "fal";
+      cost: number | null;
+    };
+  };
   "usage:balances": { args: []; result: Balances };
   "providers:status": { args: []; result: ProvidersInfo };
   "providers:set-key": { args: [id: ProviderId, key: string]; result: ProvidersInfo };
   "providers:clear-key": { args: [id: ProviderId]; result: ProvidersInfo };
   "ai:status": { args: []; result: AiStatus };
   "ai:set-text-provider": { args: [provider: TextProvider]; result: AiStatus };
+  "video:jobs": { args: [sessionId: string]; result: VideoJobs };
+  /** Starts a committed script with no job yet, or continues a stopped or failed one. */
+  "video:start": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  /**
+   * "Make everything" on the Video tab: commits `scriptIds` (not yet sent) and
+   * runs every unfinished video of the session to the end, with no stop.
+   */
+  "video:make-all": { args: [input: { sessionId: string; scriptIds: string[] }]; result: null };
+  /** Unsent shots are never sent; shots with the provider finish and are kept. */
+  "video:stop": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  "video:retry-shot": {
+    args: [input: { sessionId: string; scriptId: string; shot: number }];
+    result: null;
+  };
+  /** Fixes a video in place: only what the changes touch is made again. */
+  /** `take`: fix that take (a model id), worked on first; default the one worked on. */
+  "video:fix": {
+    args: [input: { sessionId: string; scriptId: string; changes: FixChange[]; take?: string }];
+    result: null;
+  };
+  /** Swaps the video with the cut before its last fix. Free. */
+  "video:restore": {
+    args: [input: { sessionId: string; scriptId: string; take?: string }];
+    result: null;
+  };
+  /** This video's own model, before any shot is sent (it then no longer follows the batch). */
+  "video:set-model": {
+    args: [input: { sessionId: string; scriptId: string; model: string }];
+    result: null;
+  };
+  /**
+   * Takes with another model (src/shared/video-takes.ts): start one (held: it
+   * spends), make one "the video", delete one, or make one the take worked on.
+   */
+  "video:take": {
+    args: [
+      input: {
+        sessionId: string;
+        scriptId: string;
+        action: "start" | "use" | "delete" | "focus";
+        model: string;
+      },
+    ];
+    result: null;
+  };
+  /** Saves final.mp4 through a save dialog; null when cancelled. */
+  "video:save": { args: [input: { sessionId: string; scriptId: string }]; result: string | null };
 }
 
 export type IpcChannel = keyof IpcContract;
@@ -583,6 +801,8 @@ export const IPC_CHANNELS = [
   "series:create",
   "series:update",
   "series:delete",
+  "notes:update",
+  "notes:remove",
   "session:create",
   "session:update",
   "session:delete",
@@ -593,6 +813,7 @@ export const IPC_CHANNELS = [
   "chat:discard",
   "chat:resend",
   "chat:choose",
+  "chat:apply-fix",
   "chat:stage-files",
   "chat:pick-files",
   "chat:info",
@@ -600,10 +821,12 @@ export const IPC_CHANNELS = [
   "ai:open-terminal",
   "board:variant",
   "board:retry",
+  "board:copy",
   "board:delete",
   "board:restore",
   "board:pin",
   "board:undo",
+  "board:link-speaker",
   "assets:pick-images",
   "assets:stage-paths",
   "assets:create",
@@ -614,12 +837,25 @@ export const IPC_CHANNELS = [
   "assets:create-batch",
   "assets:estimate-angles",
   "assets:generate-angles",
+  "assets:check-place",
+  "assets:estimate-clean",
+  "assets:clean-place-photo",
   "usage:balances",
   "providers:status",
   "providers:set-key",
   "providers:clear-key",
   "ai:status",
   "ai:set-text-provider",
+  "video:jobs",
+  "video:start",
+  "video:make-all",
+  "video:stop",
+  "video:retry-shot",
+  "video:fix",
+  "video:restore",
+  "video:take",
+  "video:set-model",
+  "video:save",
 ] as const satisfies readonly IpcChannel[];
 
 /** Main → renderer notifications, for work that finishes after the request returned. */
@@ -629,6 +865,8 @@ export interface IpcEvents {
   "board:changed": { sessionId: string; board: Board };
   /** Streamed, unsaved progress of a running turn; null when it ends. */
   "chat:live": { sessionId: string; live: ChatLive | null };
+  /** A video job changed (progress, a finished step, stop). */
+  "video:job": { job: VideoJob; averages: StepAverages };
 }
 
 export type IpcEvent = keyof IpcEvents;
@@ -637,6 +875,7 @@ export const IPC_EVENTS = [
   "workspace:changed",
   "board:changed",
   "chat:live",
+  "video:job",
 ] as const satisfies readonly IpcEvent[];
 
 // Compile-time completeness: a channel or event added to the contract but not

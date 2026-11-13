@@ -21,3 +21,8 @@ async function toUploadBlob(path: string, maxSide: number): Promise<Blob> {
 export function uploadImages(fal: Fal, paths: string[], maxSide = 1536): Promise<string[]> {
   return Promise.all(paths.map(async (p) => fal.storage.upload(await toUploadBlob(p, maxSide))));
 }
+
+/** Uploads a local file unchanged (audio, video) and returns a URL models can read. */
+export async function uploadFile(fal: Fal, path: string, type: string): Promise<string> {
+  return fal.storage.upload(new Blob([new Uint8Array(await readFile(path))], { type }));
+}

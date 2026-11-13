@@ -14,22 +14,25 @@ import { falClient, getKey, providerMode } from "./providers";
 
 const MAX_REFERENCES = 4;
 
-const MODELS: Record<
+/** Portrait shapes: 2:3 for the character sheet, 9:16 for video start frames. */
+export type ImageShape = "2:3" | "9:16";
+
+export const MODELS: Record<
   AngleModel,
   {
     endpoint: string;
     fallbackUsd: number;
-    input: (prompt: string, urls: string[]) => Record<string, unknown>;
+    input: (prompt: string, urls: string[], shape?: ImageShape) => Record<string, unknown>;
   }
 > = {
   // The model used for the approved courtyard pack.
   "gpt-image": {
     endpoint: "openai/gpt-image-2.6/sunburst/edit",
     fallbackUsd: 0.12,
-    input: (prompt, image_urls) => ({
+    input: (prompt, image_urls, shape = "2:3") => ({
       prompt,
       image_urls,
-      image_size: { width: 1024, height: 1536 },
+      image_size: shape === "9:16" ? "portrait_16_9" : { width: 1024, height: 1536 },
       background: "opaque",
       quality: "high",
       reasoning_effort: "medium",
@@ -40,10 +43,10 @@ const MODELS: Record<
   "nano-banana-pro": {
     endpoint: "fal-ai/nano-banana-pro/edit",
     fallbackUsd: 0.15,
-    input: (prompt, image_urls) => ({
+    input: (prompt, image_urls, shape = "2:3") => ({
       prompt,
       image_urls,
-      aspect_ratio: "2:3",
+      aspect_ratio: shape,
       resolution: "1K",
       num_images: 1,
       output_format: "png",
@@ -95,7 +98,11 @@ export async function estimateAngles(model: AngleModel, count: number): Promise<
   }
 }
 
-async function stageFromUrl(url: string): Promise<string> {
+/** The angle dialog's default model; video start frames use it too. */
+export const DEFAULT_IMAGE_MODEL: AngleModel = "gpt-image";
+
+/** Downloads a generated image into the staging folder; returns its file name. */
+export async function stageFromUrl(url: string): Promise<string> {
   const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Không tải được ảnh (${res.status})`);
   const file = `${randomUUID()}.png`;

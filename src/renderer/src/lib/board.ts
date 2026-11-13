@@ -73,6 +73,13 @@ export interface BoardView {
   layout: BoardLayout | null;
   /** The script open in the list view. */
   activeId: string | null;
+  /**
+   * "One video first": the card chosen as the test; null means the first
+   * finished card. Board-local until approval commits it.
+   */
+  testId: string | null;
+  /** Pointer or focus on "Tạo cả N video": every card shows undimmed. */
+  previewAll: boolean;
 }
 
 /** Up to this many scripts open as full cards side by side; more open as a list. */
@@ -81,7 +88,17 @@ export const FULL_CARDS_MAX = 6;
 export const boardLayout = (view: BoardView, count: number): BoardLayout =>
   view.layout ?? (count > FULL_CARDS_MAX ? "list" : "gallery");
 
-const DEFAULT_VIEW: BoardView = { refs: [], layout: null, activeId: null };
+const DEFAULT_VIEW: BoardView = {
+  refs: [],
+  layout: null,
+  activeId: null,
+  testId: null,
+  previewAll: false,
+};
+
+/** The test card: the chosen one while it is still finished, else the first finished. */
+export const testCardId = (view: BoardView, finishedIds: string[]): string | null =>
+  view.testId && finishedIds.includes(view.testId) ? view.testId : (finishedIds[0] ?? null);
 const views = new Map<string, BoardView>();
 
 export function useBoardView(sessionId: string) {
@@ -116,10 +133,13 @@ export function toggleRef(sessionId: string, scriptId: string): boolean {
 // Kept pending until the chat (which may mount only after the panel opens)
 // takes it.
 let focusRequest: string | null = null;
+let insertRequest: { sessionId: string; text: string } | null = null;
 const focusListeners = new Set<() => void>();
 
-export function requestChatFocus(sessionId: string) {
+/** `insert` is put at the start of the composer, e.g. "Video #2, cảnh 7: " for a shot of a video. */
+export function requestChatFocus(sessionId: string, insert?: string) {
   focusRequest = sessionId;
+  if (insert) insertRequest = { sessionId, text: insert };
   for (const listener of focusListeners) listener();
 }
 
@@ -137,6 +157,14 @@ export function takeChatFocus(sessionId: string): boolean {
   if (focusRequest !== sessionId) return false;
   focusRequest = null;
   return true;
+}
+
+/** Text waiting to be put in this session's composer, once. */
+export function takeChatInsert(sessionId: string): string | null {
+  if (insertRequest?.sessionId !== sessionId) return null;
+  const { text } = insertRequest;
+  insertRequest = null;
+  return text;
 }
 
 /** Adds scripts to the chat references (keeps order, skips ones already there). */
@@ -196,3 +224,21 @@ export function readScriptDrag(e: { dataTransfer: DataTransfer | null }): Script
 
 export const isScriptDrag = (e: { dataTransfer: DataTransfer | null }) =>
   Boolean(e.dataTransfer?.types.includes(SCRIPT_DRAG_TYPE));
+
+/**
+ * "Sửa" on a script sent to video: makes its new version, opens it in the
+ * list view, and references it in the chat, which is where scripts are
+ * edited. Returns the new script's id.
+ */
+export async function editAsNewVersion(sessionId: string, scriptId: string): Promise<string> {
+  const id = await api.invoke("board:copy", { sessionId, scriptId });
+  const current = views.get(sessionId) ?? DEFAULT_VIEW;
+  views.set(sessionId, {
+    ...current,
+    activeId: id,
+    refs: [...current.refs.filter((x) => x !== scriptId), id],
+  });
+  emit();
+  requestChatFocus(sessionId);
+  return id;
+}

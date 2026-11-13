@@ -1,9 +1,11 @@
+import { DEFAULT_RESOLUTION, type OutputResolution } from "@shared/batch-settings";
 import type { StagedImage } from "@shared/ipc";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { AssetDialog } from "@/components/asset-dialog";
 import { SeriesAssetFields } from "@/components/asset-picker";
 import { Composer } from "@/components/composer";
+import { SeriesOutputFields } from "@/components/video-model-menu";
 import { api } from "@/lib/api";
 import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
@@ -25,6 +27,12 @@ export function SeriesNewPage() {
   const [environmentIds, setEnvironmentIds, clearEnvironments] = useDraft<string[]>(
     "series-new:environments",
     [],
+  );
+  // Empty: the default model.
+  const [videoModel, setVideoModel, clearVideoModel] = useDraft("series-new:video-model", "");
+  const [resolution, setResolution, clearResolution] = useDraft<OutputResolution>(
+    "series-new:resolution",
+    DEFAULT_RESOLUTION,
   );
   // Images dropped on the composer open as a new environment, added to this series once saved.
   const [dropped, setDropped] = useState<StagedImage[] | null>(null);
@@ -52,6 +60,8 @@ export function SeriesNewPage() {
         characterIds,
         productIds,
         environmentIds,
+        ...(videoModel ? { videoModel } : {}),
+        resolution,
       });
       await refreshWorkspace();
       for (const clear of [
@@ -60,6 +70,8 @@ export function SeriesNewPage() {
         clearCharacters,
         clearProducts,
         clearEnvironments,
+        clearVideoModel,
+        clearResolution,
       ])
         clear();
       await navigate({ to: "/series/$seriesId", params: { seriesId: series.id } });
@@ -93,7 +105,7 @@ export function SeriesNewPage() {
           />
         }
       >
-        <div className="px-1.5 pb-0.5">
+        <div className="flex flex-col gap-2 px-1.5 pb-0.5">
           <SeriesAssetFields
             value={{ characterIds, productIds, environmentIds }}
             onChange={(next) => {
@@ -101,6 +113,13 @@ export function SeriesNewPage() {
               setProductIds(next.productIds);
               setEnvironmentIds(next.environmentIds);
             }}
+          />
+          <SeriesOutputFields
+            environmentIds={environmentIds}
+            videoModel={videoModel || undefined}
+            resolution={resolution}
+            onVideoModel={setVideoModel}
+            onResolution={setResolution}
           />
         </div>
       </Composer>

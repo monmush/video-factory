@@ -1,4 +1,5 @@
 import { boardOrder } from "@shared/board";
+import { formatCost } from "@shared/credits";
 import {
   type ChatAttachment,
   type ChatEffort,
@@ -11,6 +12,7 @@ import {
   resolveChoice,
   type Script,
 } from "@shared/ipc";
+import { canFix } from "@shared/video-fix";
 import {
   Check,
   ChevronDown,
@@ -28,6 +30,7 @@ import {
   onChatFocusRequest,
   readScriptDrag,
   takeChatFocus,
+  takeChatInsert,
   useBoard,
   useBoardView,
 } from "@/lib/board";
@@ -35,9 +38,10 @@ import { useChatInfo, useChatLive } from "@/lib/chat";
 import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
-import { useWorkspace } from "@/lib/workspace";
+import { useVideoJobs } from "@/lib/video-jobs";
 import { Composer } from "./composer";
 import { Button } from "./ui/button";
+import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
 /**
@@ -50,7 +54,6 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 export function SessionChat({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const [view, setView] = useBoardView(sessionId);
-  const session = useWorkspace().sessions.find((s) => s.id === sessionId);
   const live = useChatLive(sessionId);
   const [info, refreshInfo, setInfoLocal] = useChatInfo();
   const [text, setText, clearText] = useDraft(`session-chat:${sessionId}`, "");
@@ -79,7 +82,6 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   const scripts = board ? boardOrder(board.scripts) : [];
   const refs = scripts.filter((s) => view.refs.includes(s.id));
   const running = messages.some((m) => m.pending);
-  const locked = Boolean(session?.approvedAt);
   const agent = info?.mode === "agent";
   const blocked = agent && Boolean(info?.problem);
   const scroller = useStickToBottom();
@@ -101,11 +103,25 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     return () => window.removeEventListener("focus", recheck);
   }, [info?.problem, refreshInfo]);
 
+  // The draft setter changes every render; the listener below always calls the latest.
+  const insertText = useRef(setText);
+  insertText.current = setText;
   // A card's "Nhắc trong chat" focuses the composer (after the panel opens).
   useEffect(
     () =>
       onChatFocusRequest(() => {
-        if (takeChatFocus(sessionId)) requestAnimationFrame(() => input.current?.focus());
+        if (!takeChatFocus(sessionId)) return;
+        const insert = takeChatInsert(sessionId);
+        if (insert) {
+          insertText.current((current) =>
+            current.startsWith(insert) ? current : insert + current,
+          );
+        }
+        requestAnimationFrame(() => {
+          input.current?.focus();
+          const end = input.current?.value.length ?? 0;
+          input.current?.setSelectionRange(end, end);
+        });
       }),
     [sessionId],
   );
@@ -113,7 +129,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   // `#query` right before the caret opens the script picker.
   const hash = findHash(text, caret);
   const candidates =
-    hash && hash.start !== dismissedHash && !locked
+    hash && hash.start !== dismissedHash
       ? matchScripts(scripts, hash.query).filter((s) => !view.refs.includes(s.id))
       : [];
   // The highlighted row starts at the top again whenever the query changes.
@@ -219,14 +235,14 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   // Only the newest turn that can still be undone offers it: undoing an older
   // turn would overwrite what later turns changed.
   const undoId = messages.findLast(canUndo)?.id ?? null;
-  const ctx: MessageContext = { sessionId, scripts, locked, running, blocked, undoId, act };
+  const ctx: MessageContext = { sessionId, scripts, running, blocked, undoId, act };
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: drop target for scripts dragged from the board
     <div
       className="relative flex min-h-0 flex-1 flex-col text-chat"
       onDragOver={(e) => {
-        if (!isScriptDrag(e) || locked) return;
+        if (!isScriptDrag(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
         setDropping(true);
@@ -239,7 +255,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
         if (!drag) return;
         e.preventDefault();
         setDropping(false);
-        if (drag.sessionId !== sessionId || locked) return;
+        if (drag.sessionId !== sessionId) return;
         addRefs(sessionId, drag.ids);
         input.current?.focus();
       }}
@@ -252,7 +268,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
       {agent && info?.problem && <SetupBanner problem={info.problem} onCheck={refreshInfo} />}
       <div
         ref={scroller}
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pt-4 pb-3"
+        className="scroll-fade-top flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pt-4 pb-3"
       >
         {messages.map((m, i) =>
           m.role === "user" ? (
@@ -287,17 +303,15 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
           onChange={setText}
           onSubmit={send}
           busy={adding || sending}
-          disabled={locked || blocked}
+          disabled={blocked}
           running={running}
           onStop={() => act(() => api.invoke("chat:stop", sessionId))}
           hasAttachments={files.length > 0}
           rows={2}
           placeholder={
-            locked
-              ? "Kịch bản đã chốt"
-              : scripts.length === 0
-                ? "Bạn muốn làm video về chủ đề gì"
-                : "Hỏi hoặc yêu cầu thay đổi kịch bản"
+            scripts.length === 0
+              ? "Bạn muốn làm video về chủ đề gì"
+              : "Hỏi hoặc yêu cầu thay đổi kịch bản"
           }
           submitLabel={running ? "Gửi sau khi xong" : "Gửi"}
           onDropFiles={info?.mode === "pipeline" ? undefined : stage}
@@ -334,7 +348,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
               size="icon-sm"
               aria-label="Đính kèm tệp"
               title="Đính kèm tệp"
-              disabled={locked || adding}
+              disabled={adding}
               onClick={() => attach(api.invoke("chat:pick-files", sessionId))}
             >
               <Paperclip />
@@ -358,7 +372,6 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
 interface MessageContext {
   sessionId: string;
   scripts: Script[];
-  locked: boolean;
   running: boolean;
   /** The setup banner is showing; messages don't repeat its actions. */
   blocked: boolean;
@@ -688,7 +701,6 @@ function UserMessage({ message, ctx }: { message: ChatMessage; ctx: MessageConte
             <Button
               variant="ghost-muted"
               size="xs"
-              disabled={ctx.locked}
               onClick={() =>
                 ctx.act(() =>
                   api.invoke("chat:resend", { sessionId: ctx.sessionId, messageId: message.id }),
@@ -768,7 +780,7 @@ function AssistantMessage({
           error={message.error}
           waiting={Boolean(message.pending)}
           showSetup={!ctx.blocked}
-          canRetry={Boolean(request) && !ctx.locked && !ctx.blocked && !message.pending}
+          canRetry={Boolean(request) && !ctx.blocked && !message.pending}
           onRetry={() =>
             request &&
             ctx.act(() =>
@@ -786,7 +798,7 @@ function AssistantMessage({
               <Button
                 variant="outline"
                 size="xs"
-                disabled={ctx.running || ctx.locked}
+                disabled={ctx.running}
                 onClick={() =>
                   ctx.act(() =>
                     api.invoke("board:undo", { sessionId: ctx.sessionId, messageId: message.id }),
@@ -833,6 +845,7 @@ function Part({
       </p>
     );
   }
+  if (part.type === "fix") return <FixPart part={part} message={message} ctx={ctx} />;
   return (
     <div className="flex flex-col gap-1.5">
       <p data-selectable>{part.question}</p>
@@ -843,7 +856,7 @@ function Part({
             variant="outline"
             size="sm"
             className={cn(part.chosen === option && "border-ring bg-accent")}
-            disabled={Boolean(part.chosen) || ctx.locked}
+            disabled={Boolean(part.chosen)}
             onClick={() =>
               ctx.act(() =>
                 api.invoke("chat:choose", {
@@ -858,6 +871,67 @@ function Part({
             {option}
           </Button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A video fix the agent proposes: what is made again, the price, and the one
+ * button that starts it. Spending is always the operator's hold, never the
+ * agent's. A proposal is spent once used and stale once the video moved on.
+ */
+function FixPart({
+  part,
+  message,
+  ctx,
+}: {
+  part: Extract<ChatPart, { type: "fix" }>;
+  message: ChatMessage;
+  ctx: MessageContext;
+}) {
+  const job = useVideoJobs(ctx.sessionId)?.jobs.get(part.scriptId);
+  const number = ctx.scripts.findIndex((s) => s.id === part.scriptId) + 1;
+  const scope = [
+    part.voice ? "giọng đọc" : "",
+    part.stills ? `${part.stills} khung hình` : "",
+    part.shots ? `${part.shots} cảnh` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const apply = () =>
+    ctx.act(() =>
+      api.invoke("chat:apply-fix", {
+        sessionId: ctx.sessionId,
+        messageId: message.id,
+        partId: part.id,
+      }),
+    );
+  const stale = !job || (job.rev ?? 0) !== part.rev;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border bg-card p-2.5">
+      <p data-selectable>
+        {number > 0 && <span className="text-muted-foreground tabular-nums">#{number} </span>}
+        {part.summary}
+      </p>
+      <div className="flex items-center gap-2">
+        {part.applied ? (
+          <span className="text-chat-meta text-muted-foreground">Đã bắt đầu sửa</span>
+        ) : stale ? (
+          <span className="text-chat-meta text-muted-foreground">Video đã thay đổi</span>
+        ) : part.priceUsd > 0 ? (
+          <HoldButton size="sm" disabled={!canFix(job)} onHold={apply}>
+            Giữ để sửa
+            <ButtonPrice>~{formatCost(part.priceUsd)}</ButtonPrice>
+          </HoldButton>
+        ) : (
+          <Button size="sm" disabled={!canFix(job)} onClick={apply}>
+            Sửa
+          </Button>
+        )}
+        {!part.applied && !stale && scope && (
+          <span className="text-chat-meta text-muted-foreground">Làm lại {scope}</span>
+        )}
       </div>
     </div>
   );
@@ -950,7 +1024,7 @@ function PipelineMessage({ message, ctx }: { message: ChatMessage; ctx: MessageC
             <Button
               variant="outline"
               size="xs"
-              disabled={ctx.running || ctx.locked}
+              disabled={ctx.running}
               onClick={() =>
                 ctx.act(() =>
                   api.invoke("board:undo", { sessionId: ctx.sessionId, messageId: message.id }),

@@ -7,6 +7,7 @@ import type {
   ThemePreference,
 } from "@shared/ipc";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,7 @@ import { refreshChatInfo } from "@/lib/chat";
 import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import { useWorkspace } from "@/lib/workspace";
 
 const THEMES: { value: ThemePreference; label: string }[] = [
   { value: "light", label: "Sáng" },
@@ -32,6 +34,7 @@ export function SettingsPage() {
   const { preference, setPreference } = useTheme();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [providers, setProviders] = useState<ProvidersInfo | null>(null);
+  const notes = useWorkspace().notes ?? [];
 
   useEffect(() => {
     void api.invoke("app:info").then(setInfo);
@@ -63,6 +66,14 @@ export function SettingsPage() {
       </Section>
 
       <TextAiSection />
+
+      {notes.length > 0 && (
+        <Section title="Ghi nhớ cho mọi series">
+          <div className="-mx-3">
+            <NotesList notes={notes} />
+          </div>
+        </Section>
+      )}
 
       <Section title="Khóa API">
         {providers && (

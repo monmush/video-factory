@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { copyFile, mkdir, rm, stat } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
+import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { net, protocol } from "electron";
 import { type ImageRef, mediaUrl, type StagedImage } from "../shared/ipc";
@@ -12,6 +14,7 @@ import { dataDir, mediaDir } from "./paths";
 //   hyan-media://asset/<assetId>/<file>   saved asset images
 //   hyan-media://staging/<file>           images picked but not yet saved
 //   hyan-media://chat/<sessionId>/<file>  files attached in a session chat
+//   hyan-media://video/<sessionId>/<scriptId>/<file>  a video job's voice, frames and clips
 
 const SCHEME = "hyan-media";
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
@@ -23,7 +26,10 @@ export const stagingDir = () => join(dataDir(), "staging");
 /** Must run before app "ready". */
 export function registerMediaScheme() {
   protocol.registerSchemesAsPrivileged([
-    { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+    {
+      scheme: SCHEME,
+      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+    },
   ]);
 }
 
@@ -40,11 +46,57 @@ export function handleMediaProtocol() {
             ? await findSession(parts[0] as string)
                 .then(({ session }) => join(mediaDir(session.seriesId, session.id), "chat-files"))
                 .catch(() => null)
-            : null;
+            : url.hostname === "video" && parts.length === 3 && /^[\w-]+$/.test(parts[1] as string)
+              ? await findSession(parts[0] as string)
+                  .then(({ session }) =>
+                    join(mediaDir(session.seriesId, session.id), "videos", parts[1] as string),
+                  )
+                  .catch(() => null)
+              : null;
     if (!base) return new Response("Not found", { status: 404 });
     const file = resolve(base, parts.at(-1) as string);
     if (!file.startsWith(resolve(base) + sep)) return new Response("Forbidden", { status: 403 });
-    return net.fetch(pathToFileURL(file).toString());
+    return (
+      (await serveRange(file, request.headers.get("range"))) ??
+      net.fetch(pathToFileURL(file).toString())
+    );
+  });
+}
+
+const MEDIA_TYPES: Record<string, string> = {
+  mp4: "video/mp4",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+};
+
+/**
+ * Answers a byte-range request ourselves: players ask for ranges to start and
+ * to seek, and a file:// fetch does not honour them. Null when the request has
+ * no usable range, so the caller serves the whole file.
+ */
+async function serveRange(file: string, range: string | null): Promise<Response | null> {
+  const match = range?.match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || (!match[1] && !match[2])) return null;
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) return new Response("Not found", { status: 404 });
+  const size = info.size;
+  // "bytes=-N" is the last N bytes.
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  if (start > end || start >= size) {
+    return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
+  }
+  const body = Readable.toWeb(createReadStream(file, { start, end })) as ReadableStream;
+  return new Response(body, {
+    status: 206,
+    headers: {
+      "Content-Type":
+        MEDIA_TYPES[extname(file).slice(1).toLowerCase()] ?? "application/octet-stream",
+      "Content-Range": `bytes ${start}-${end}/${size}`,
+      "Content-Length": String(end - start + 1),
+      "Accept-Ranges": "bytes",
+    },
   });
 }
 

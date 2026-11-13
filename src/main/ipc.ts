@@ -12,6 +12,13 @@ import { claudeCodeStatus, findClaude } from "./claude-code";
 import { describeAsset } from "./describe";
 import { IMAGE_EXTENSIONS, imageRefPath, stageImages } from "./media";
 import { dataDir, dataFile } from "./paths";
+import {
+  checkPlace,
+  checkPlaceImages,
+  cleanPlacePhoto,
+  estimateClean,
+  placePhotoPath,
+} from "./place-check";
 import { groupProducts } from "./product-grouping";
 import { clearKey, providersInfo, setKey } from "./providers";
 import { readSettings, writeSettings } from "./settings";
@@ -22,9 +29,12 @@ import {
   deleteSeries,
   deleteSession,
   getWorkspace,
+  removeNote,
+  updateNote,
   updateSeries,
   updateSession,
 } from "./store";
+import * as video from "./video/runner";
 
 type Handler<C extends IpcChannel> = (
   ...args: IpcContract[C]["args"]
@@ -54,6 +64,8 @@ export function registerIpc() {
   handle("workspace:get", getWorkspace);
   handle("series:create", createSeries);
   handle("series:update", updateSeries);
+  handle("notes:update", ({ id, text }) => updateNote(id, text));
+  handle("notes:remove", removeNote);
   handle("series:delete", async (id) => {
     // Claude transcripts of the series' sessions go with it.
     const ws = await getWorkspace();
@@ -66,6 +78,7 @@ export function registerIpc() {
         })),
     );
     await chat.forget(sessions);
+    for (const s of sessions) video.forgetSession(s.sessionId);
     return deleteSeries(id);
   });
   handle("session:create", async (input) => {
@@ -78,11 +91,15 @@ export function registerIpc() {
     // The session's Claude transcript goes with it.
     const agentId = (await board.getBoard(id).catch(() => null))?.agent?.sessionId;
     await chat.forget([{ sessionId: id, agentId }]);
+    video.forgetSession(id);
     return deleteSession(id);
   });
-  handle("session:approve", async (sessionId) => {
-    await board.assertApprovable(sessionId);
-    return approveSession(sessionId);
+  handle("session:approve", async (sessionId, scriptIds) => {
+    const ids = await board.scriptsToCommit(sessionId, scriptIds);
+    const session = await approveSession(sessionId, ids);
+    // Committing starts the videos (one at a time, in commit order).
+    await video.enqueue(sessionId, ids);
+    return session;
   });
 
   handle("board:get", board.getBoard);
@@ -92,6 +109,9 @@ export function registerIpc() {
   handle("chat:resend", ({ sessionId, messageId }) => chat.resend(sessionId, messageId));
   handle("chat:choose", ({ sessionId, messageId, partId, option }) =>
     chat.choose(sessionId, messageId, partId, option),
+  );
+  handle("chat:apply-fix", ({ sessionId, messageId, partId }) =>
+    chat.applyFix(sessionId, messageId, partId),
   );
   handle("chat:stage-files", ({ sessionId, files }) => stageChatFiles(sessionId, files));
   handle("chat:pick-files", async (sessionId) => {
@@ -120,10 +140,28 @@ export function registerIpc() {
     board.variant(sessionId, scriptId, direction),
   );
   handle("board:retry", ({ sessionId, scriptId }) => board.retry(sessionId, scriptId));
-  handle("board:delete", ({ sessionId, ids }) => board.remove(sessionId, ids));
+  handle("board:copy", ({ sessionId, scriptId }) => board.copy(sessionId, scriptId));
+  handle("board:delete", async ({ sessionId, ids }) => {
+    // A video still being made keeps its script; stopping it comes first.
+    const active = (await video.jobsFor(sessionId)).some(
+      (j) => ids.includes(j.scriptId) && (j.status === "running" || j.status === "waiting"),
+    );
+    if (active) throw new Error("Video của kịch bản này đang được tạo. Dừng video trước khi xóa.");
+    return board.remove(sessionId, ids);
+  });
   handle("board:restore", ({ sessionId, ids }) => board.restore(sessionId, ids));
   handle("board:pin", ({ sessionId, scriptId, pinned }) => board.pin(sessionId, scriptId, pinned));
   handle("board:undo", ({ sessionId, messageId }) => board.undo(sessionId, messageId));
+  handle("board:link-speaker", async ({ sessionId, speaker, characterId }) => {
+    await board.linkSpeaker(sessionId, speaker, characterId);
+    // The character now speaks in this series, so the writer should know it.
+    const { ws, session } = await board.findSession(sessionId);
+    const series = ws.series.find((s) => s.id === session.seriesId);
+    if (series && !series.characterIds.includes(characterId)) {
+      await updateSeries({ id: series.id, characterIds: [...series.characterIds, characterId] });
+    }
+    return null;
+  });
 
   handle("assets:pick-images", async () => {
     const options: Electron.OpenDialogOptions = {
@@ -138,7 +176,14 @@ export function registerIpc() {
     return result.canceled ? [] : stageImages(result.filePaths);
   });
   handle("assets:stage-paths", stageImages);
-  handle("assets:create", createAsset);
+  // A saved place's photos are checked in the background (free; never blocks saving).
+  const checkSaved = <T extends { id: string; kind: string }>(asset: T): T => {
+    if (asset.kind === "environment") {
+      void checkPlace(asset.id).catch((e) => console.warn("[place] check failed:", e));
+    }
+    return asset;
+  };
+  handle("assets:create", async (input) => checkSaved(await createAsset(input)));
   handle("assets:create-batch", createProductBatch);
   handle("products:group", ({ stagedIds }) => {
     if (stagedIds.length > MAX_IMPORT_PHOTOS) {
@@ -146,7 +191,7 @@ export function registerIpc() {
     }
     return groupProducts(stagedIds.map((id) => imageRefPath({ source: "staged", id })));
   });
-  handle("assets:update", updateAsset);
+  handle("assets:update", async (id, input) => checkSaved(await updateAsset(id, input)));
   handle("assets:delete", async (id) => {
     const using = await board.approvedSessionsUsing(id);
     if (using.length) {
@@ -158,6 +203,11 @@ export function registerIpc() {
     describeAsset(kind, name, refPaths(await getWorkspace(), images)),
   );
 
+  handle("assets:check-place", ({ images }) => checkPlaceImages(images));
+  handle("assets:estimate-clean", estimateClean);
+  handle("assets:clean-place-photo", async ({ image, finding }) =>
+    cleanPlacePhoto(await placePhotoPath(image), finding),
+  );
   handle("assets:estimate-angles", ({ model, count }) => estimateAngles(model, count));
   handle("assets:generate-angles", async ({ model, angles, description, images }) =>
     generateAngles({
@@ -167,6 +217,36 @@ export function registerIpc() {
       referencePaths: refPaths(await getWorkspace(), images),
     }),
   );
+
+  handle("video:jobs", async (sessionId) => ({
+    jobs: await video.jobsFor(sessionId),
+    averages: video.currentAverages(),
+  }));
+  handle("video:start", ({ sessionId, scriptId }) => video.start(sessionId, scriptId));
+  handle("video:make-all", async ({ sessionId, scriptIds }) => {
+    if (scriptIds.length) {
+      const ids = await board.scriptsToCommit(sessionId, scriptIds);
+      await approveSession(sessionId, ids);
+    }
+    return video.runAll(sessionId);
+  });
+  handle("video:stop", ({ sessionId, scriptId }) => video.stop(sessionId, scriptId));
+  handle("video:retry-shot", ({ sessionId, scriptId, shot }) =>
+    video.retryShot(sessionId, scriptId, shot),
+  );
+  handle("video:fix", ({ sessionId, scriptId, changes, take }) =>
+    video.fix(sessionId, scriptId, changes, undefined, take),
+  );
+  handle("video:restore", ({ sessionId, scriptId, take }) =>
+    video.restore(sessionId, scriptId, take),
+  );
+  handle("video:set-model", ({ sessionId, scriptId, model }) =>
+    video.setModel(sessionId, scriptId, model),
+  );
+  handle("video:take", ({ sessionId, scriptId, action, model }) =>
+    video.take(sessionId, scriptId, action, model),
+  );
+  handle("video:save", ({ sessionId, scriptId }) => video.saveFinal(sessionId, scriptId));
 
   handle("usage:balances", balances);
 

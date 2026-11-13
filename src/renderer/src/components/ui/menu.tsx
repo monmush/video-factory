@@ -1,4 +1,5 @@
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
+import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const Menu = MenuPrimitive.Root;
@@ -41,4 +42,43 @@ function MenuItem({
   );
 }
 
-export { Menu, MenuItem, MenuPopup, MenuTrigger };
+const MenuGroup = MenuPrimitive.Group;
+const MenuRadioGroup = MenuPrimitive.RadioGroup;
+
+function MenuGroupLabel({ className, ...props }: MenuPrimitive.GroupLabel.Props) {
+  return (
+    <MenuPrimitive.GroupLabel
+      className={cn("px-2.5 pt-2 pb-1 font-medium text-muted-foreground text-xs", className)}
+      {...props}
+    />
+  );
+}
+
+/** A choice in a radio group, with a check on the chosen one. */
+function MenuRadioItem({ className, children, ...props }: MenuPrimitive.RadioItem.Props) {
+  return (
+    <MenuPrimitive.RadioItem
+      className={cn(
+        "grid min-h-8 cursor-pointer grid-cols-[1rem_1fr] items-center gap-2 rounded-md py-1 pr-2.5 pl-2 text-sm outline-none data-highlighted:bg-accent",
+        className,
+      )}
+      {...props}
+    >
+      <MenuPrimitive.RadioItemIndicator className="col-start-1">
+        <Check className="size-4" />
+      </MenuPrimitive.RadioItemIndicator>
+      <span className="col-start-2 min-w-0">{children}</span>
+    </MenuPrimitive.RadioItem>
+  );
+}
+
+export {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+};

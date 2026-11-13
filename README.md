@@ -2,6 +2,8 @@
 
 A macOS desktop app (Electron) for producing short AI-generated storytelling videos in batches: series setup, a script board with an AI chat agent, a character/product/environment library, and generation through fal.ai and ElevenLabs. Work in progress.
 
+Start with [docs/README.md](docs/README.md) for product decisions and evidence, and [project/TODO.md](project/TODO.md) for current work.
+
 ## Develop
 
 Requires Node 22.12+ and pnpm 10 (`corepack enable`). macOS is the primary target.

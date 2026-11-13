@@ -10,6 +10,8 @@ import {
   type Script,
   type Session,
 } from "../shared/ipc";
+import { checkScript, committedIds, finishedScripts } from "../shared/ready-check";
+import { copyScript } from "../shared/versions";
 import { applyUndo, dropTouch, recordTouch, type TurnLog, turnUndo } from "./board-undo";
 import { mediaDir, writeJsonAtomic } from "./paths";
 import * as writer from "./script-writer";
@@ -46,8 +48,51 @@ export async function findSession(sessionId: string) {
   return { ws, session };
 }
 
-export function assertEditable(session: Session) {
-  if (session.approvedAt) throw new Error("Kịch bản đã chốt để làm video");
+/**
+ * Scripts sent to video. They never change; edits go to a new version
+ * (docs/VIDEO_COMMIT_DECISIONS.md, "Moving between Kịch bản and Video").
+ */
+const lockedIds = (session: Session, board: Board) => new Set(committedIds(session, board.scripts));
+
+/** Ids of the session's scripts sent to video. */
+export async function sentScriptIds(sessionId: string): Promise<Set<string>> {
+  const { session } = await findSession(sessionId);
+  return lockedIds(session, await load(sessionId));
+}
+
+/** Inserts a new version of `source` after its chain and returns it. */
+function insertCopy(b: Board, source: Script): Script {
+  const { copy, index } = copyScript(b.scripts, source, { id: randomUUID(), now: now() });
+  b.scripts.splice(index, 0, copy);
+  return copy;
+}
+
+/**
+ * The script an agent edit should change: the script itself, or for one sent
+ * to video, its new version in this turn (made on first use and recorded as
+ * added, so the turn's undo removes it).
+ */
+function editTarget(b: Board, locked: ReadonlySet<string>, log: TurnLog, script: Script) {
+  if (!locked.has(script.id)) return { target: script, copied: false, created: false };
+  log.copies ??= new Map();
+  const existing = b.scripts.find((x) => x.id === log.copies?.get(script.id) && !x.deletedAt);
+  if (existing) return { target: existing, copied: true, created: false };
+  const copy = insertCopy(b, script);
+  copy.mark = "edited";
+  const undoState = turnUndo(b, log);
+  if (undoState) undoState.added = [...(undoState.added ?? []), copy.id];
+  log.touched.add(copy.id);
+  log.copies.set(script.id, copy.id);
+  return { target: copy, copied: true, created: true };
+}
+
+/** Takes back a version this turn made when it turned out identical. */
+function dropCopy(b: Board, log: TurnLog, copy: Script) {
+  copy.deletedAt = now();
+  for (const [source, id] of log.copies ?? []) if (id === copy.id) log.copies?.delete(source);
+  const undoState = turnUndo(b, log);
+  if (undoState?.added) undoState.added = undoState.added.filter((id) => id !== copy.id);
+  log.touched.delete(copy.id);
 }
 
 function load(sessionId: string): Promise<Board> {
@@ -177,6 +222,7 @@ export async function writerContext(sessionId: string): Promise<writer.WriterCon
     model: choice.model,
     effort: choice.effort,
     guidance: series.guidance,
+    notes: { every: ws.notes ?? [], series: series.notes ?? [] },
     characters: pick(series.characterIds),
     products: pick(series.productIds),
     environments: pick(series.environmentIds),
@@ -213,8 +259,6 @@ export function clearMarks(board: Board) {
 export async function send(sessionId: string, text: string, refs: string[]): Promise<null> {
   const clean = text.trim();
   if (!clean) return null;
-  const { session } = await findSession(sessionId);
-  assertEditable(session);
   await begin(sessionId, clean, refs, true);
   return null;
 }
@@ -323,17 +367,28 @@ async function editScripts(
 ) {
   const targets =
     plan.targets === "all" ? ordered : plan.targets.flatMap((n) => ordered[n - 1] ?? []);
-  const chosen = targets.filter((s) => s.status === "ready");
-  if (chosen.length === 0) {
+  const ready = targets.filter((s) => s.status === "ready");
+  if (ready.length === 0) {
     await say({ text: "Chưa có kịch bản nào để sửa." });
     return;
   }
-  const ids = new Set(chosen.map((s) => s.id));
-  for (const id of ids) runningScripts.add(id);
-  await mutateBoard(sessionId, (b) => {
+  // Scripts sent to video are edited on a new version (a fresh copy each).
+  const { session } = await findSession(sessionId);
+  const copies: string[] = [];
+  const chosen = await mutateBoard(sessionId, (b) => {
+    const locked = lockedIds(session, b);
+    const list = ready.map((s) => {
+      if (!locked.has(s.id)) return s;
+      const copy = insertCopy(b, s);
+      copies.push(copy.id);
+      return structuredClone(copy);
+    });
+    const ids = new Set(list.map((s) => s.id));
+    for (const id of ids) runningScripts.add(id);
     for (const s of b.scripts) if (ids.has(s.id)) s.status = "writing";
     const reply = b.messages.at(-1);
-    if (reply?.pending) reply.text = `Đang sửa ${chosen.length} kịch bản…`;
+    if (reply?.pending) reply.text = `Đang sửa ${list.length} kịch bản…`;
+    return list;
   });
 
   const outcomes = await Promise.all(
@@ -364,20 +419,36 @@ async function editScripts(
     }),
   );
 
-  const changed = chosen.filter((_, i) => outcomes[i] === "changed");
+  // Copies are new cards: undo removes them rather than restoring them.
+  const changed = chosen.filter((s, i) => outcomes[i] === "changed" && !copies.includes(s.id));
+  const changedCopies = chosen.filter((s, i) => outcomes[i] === "changed" && copies.includes(s.id));
+  const unchangedCopies = chosen.filter(
+    (s, i) => outcomes[i] !== "changed" && copies.includes(s.id),
+  );
+  // A copy that did not change is only a duplicate: take it away again.
+  if (unchangedCopies.length) {
+    await mutateBoard(sessionId, (b) => {
+      for (const s of b.scripts)
+        if (unchangedCopies.some((c) => c.id === s.id)) s.deletedAt = now();
+    }).catch(() => {});
+  }
+  const count = changed.length + changedCopies.length;
   const failed = outcomes.filter((o) => o === "failed").length;
   const text =
-    changed.length === 0
+    count === 0
       ? failed
         ? `Chưa sửa được ${failed} kịch bản.`
         : "Không có kịch bản nào cần sửa."
-      : `Đã sửa ${changed.length} kịch bản.${failed ? ` ${failed} kịch bản chưa sửa được.` : ""}`;
+      : `Đã sửa ${count} kịch bản.${
+          changedCopies.length ? " Kịch bản đã có video được sửa trên bản mới." : ""
+        }${failed ? ` ${failed} kịch bản chưa sửa được.` : ""}`;
   await say({
     text,
-    ...(changed.length
+    ...(count
       ? {
           undo: {
             before: changed.map((s) => ({ ...s, status: "ready", mark: null })),
+            ...(changedCopies.length ? { added: changedCopies.map((s) => s.id) } : {}),
             undone: false,
           },
         }
@@ -398,7 +469,9 @@ async function writeCard(
     const card = board.scripts.find((s) => s.id === scriptId);
     if (!card) return false;
     let written: writer.WrittenScript;
-    if (card.brief.kind === "variant") {
+    if (card.brief.kind === "copy") {
+      throw new Error("Bản sao không cần viết");
+    } else if (card.brief.kind === "variant") {
       const { sourceId } = card.brief;
       const source = board.scripts.find((s) => s.id === sourceId);
       if (!source?.lines.length) throw new Error("Không còn kịch bản gốc");
@@ -431,8 +504,6 @@ export async function variant(
   scriptId: string,
   direction?: string,
 ): Promise<null> {
-  const { session } = await findSession(sessionId);
-  assertEditable(session);
   const card = newScript({
     brief: {
       kind: "variant",
@@ -463,8 +534,6 @@ export async function variant(
 }
 
 export async function retry(sessionId: string, scriptId: string): Promise<null> {
-  const { session } = await findSession(sessionId);
-  assertEditable(session);
   runningScripts.add(scriptId);
   const ok = await mutateBoard(sessionId, (b) => {
     const s = b.scripts.find((x) => x.id === scriptId);
@@ -478,10 +547,24 @@ export async function retry(sessionId: string, scriptId: string): Promise<null> 
 }
 
 async function changeBoard(sessionId: string, change: (b: Board) => void): Promise<null> {
-  const { session } = await findSession(sessionId);
-  assertEditable(session);
   await mutateBoard(sessionId, change);
   return null;
+}
+
+/**
+ * "Sửa" on a script sent to video: a new version after its chain, ready to
+ * edit through the chat and made into its own video. Returns its id.
+ */
+export async function copy(sessionId: string, scriptId: string): Promise<string> {
+  const { session } = await findSession(sessionId);
+  return mutateBoard(sessionId, (b) => {
+    const source = b.scripts.find((s) => s.id === scriptId && !s.deletedAt);
+    if (!source) throw new Error("Không tìm thấy kịch bản");
+    if (!lockedIds(session, b).has(source.id)) throw new Error("Kịch bản này vẫn sửa được");
+    clearMarks(b);
+    const card = insertCopy(b, source);
+    return card.id;
+  });
 }
 
 export const remove = (sessionId: string, ids: string[]) =>
@@ -501,8 +584,11 @@ export const pin = (sessionId: string, scriptId: string, pinned: boolean) =>
   });
 
 /** Restores every script a chat turn changed, and removes the scripts it added. */
-export const undo = (sessionId: string, messageId: string) =>
-  changeBoard(sessionId, (b) => applyUndo(b, messageId));
+export async function undo(sessionId: string, messageId: string): Promise<null> {
+  const { session } = await findSession(sessionId);
+  await mutateBoard(sessionId, (b) => applyUndo(b, messageId, lockedIds(session, b)));
+  return null;
+}
 
 // ---------------------------------------------------------------- agent turns
 
@@ -511,26 +597,26 @@ export async function orderedScripts(sessionId: string): Promise<Script[]> {
   return boardOrder((await load(sessionId)).scripts);
 }
 
-async function editableSession(sessionId: string) {
-  const { session } = await findSession(sessionId);
-  assertEditable(session);
-}
-
-/** Replaces fields of one ready script, written by the agent itself. */
+/**
+ * Replaces fields of one ready script, written by the agent itself. A script
+ * sent to video is left alone and the edit goes to its new version;
+ * `copied` says so.
+ */
 export async function agentUpdate(
   sessionId: string,
   scriptId: string,
   patch: Partial<Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">>,
   log: TurnLog,
-): Promise<Script> {
-  await editableSession(sessionId);
+): Promise<{ script: Script; copied: boolean }> {
+  const { session } = await findSession(sessionId);
   return mutateBoard(sessionId, (b) => {
     const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
     if (!s) throw new Error("Không tìm thấy kịch bản");
     if (s.status !== "ready") throw new Error("Kịch bản đang được viết, thử lại sau");
-    recordTouch(b, log, s);
-    Object.assign(s, patch, { mark: "edited", updatedAt: now() });
-    return structuredClone(s);
+    const { target, copied } = editTarget(b, lockedIds(session, b), log, s);
+    if (!copied) recordTouch(b, log, target);
+    Object.assign(target, patch, { mark: "edited", updatedAt: now() });
+    return { script: structuredClone(target), copied };
   });
 }
 
@@ -540,7 +626,6 @@ export async function agentAdd(
   plan: { topics: writer.Topic[]; direction: string; targetSec: number | null },
   log: TurnLog,
 ): Promise<{ written: Script[]; failed: number }> {
-  await editableSession(sessionId);
   const ctx = await writerContext(sessionId);
   const cards = plan.topics.map((t) =>
     newScript({
@@ -569,26 +654,39 @@ export async function agentAdd(
   return { written, failed: results.filter((ok) => !ok).length };
 }
 
-/** Rewrites several scripts in parallel with the script writer, in place. */
+/**
+ * Rewrites several scripts in parallel with the script writer, in place.
+ * Scripts sent to video are rewritten on their new version (`copied` counts them).
+ */
 export async function agentRewrite(
   sessionId: string,
   targets: Script[],
   instruction: string,
   targetSec: number | null,
   log: TurnLog,
-): Promise<{ changed: Script[]; same: number; failed: number }> {
-  await editableSession(sessionId);
+): Promise<{ changed: Script[]; same: number; failed: number; copied: number }> {
+  const { session } = await findSession(sessionId);
   const ctx = await writerContext(sessionId);
-  const chosen = targets.filter((s) => s.status === "ready");
-  const ids = new Set(chosen.map((s) => s.id));
+  const ready = targets.filter((s) => s.status === "ready");
   const fresh = new Set<string>();
-  for (const id of ids) runningScripts.add(id);
-  await mutateBoard(sessionId, (b) => {
-    for (const s of b.scripts) {
-      if (!ids.has(s.id)) continue;
-      if (recordTouch(b, log, s)) fresh.add(s.id);
-      s.status = "writing";
+  const copies = new Set<string>();
+  const created = new Set<string>();
+  const chosen = await mutateBoard(sessionId, (b) => {
+    const locked = lockedIds(session, b);
+    const list: Script[] = [];
+    for (const before of ready) {
+      const s = b.scripts.find((x) => x.id === before.id);
+      if (s?.status !== "ready") continue;
+      const edit = editTarget(b, locked, log, s);
+      const target = edit.target;
+      if (edit.created) created.add(target.id);
+      if (edit.copied) copies.add(target.id);
+      else if (recordTouch(b, log, target)) fresh.add(target.id);
+      target.status = "writing";
+      runningScripts.add(target.id);
+      list.push({ ...structuredClone(target), status: "ready" });
     }
+    return list;
   });
   const outcomes = await Promise.all(
     chosen.map(async (before) => {
@@ -612,6 +710,7 @@ export async function agentRewrite(
         s.status = "ready";
         if (!written) {
           if (fresh.has(s.id)) dropTouch(b, log, s.id);
+          if (created.has(s.id)) dropCopy(b, log, s);
           return { outcome: failed ? ("failed" as const) : ("same" as const) };
         }
         Object.assign(s, written, { mark: "edited", updatedAt: now() });
@@ -624,17 +723,35 @@ export async function agentRewrite(
     changed: outcomes.flatMap((o) => ("script" in o && o.script ? o.script : [])),
     same: outcomes.filter((o) => o.outcome === "same").length,
     failed: outcomes.filter((o) => o.outcome === "failed").length,
+    copied: [...copies].filter((id) => outcomes.some((o) => "script" in o && o.script?.id === id))
+      .length,
   };
 }
 
-export async function agentDelete(sessionId: string, scriptIds: string[], log: TurnLog) {
-  await editableSession(sessionId);
-  await mutateBoard(sessionId, (b) => {
+/**
+ * Deletes scripts for the agent. Scripts sent to video stay: deleting one
+ * removes a paid video from view, so only the operator does that. Returns
+ * the ids it left alone.
+ */
+export async function agentDelete(
+  sessionId: string,
+  scriptIds: string[],
+  log: TurnLog,
+): Promise<string[]> {
+  const { session } = await findSession(sessionId);
+  return mutateBoard(sessionId, (b) => {
+    const locked = lockedIds(session, b);
+    const kept: string[] = [];
     for (const s of b.scripts) {
       if (!scriptIds.includes(s.id) || s.deletedAt || s.status === "writing") continue;
+      if (locked.has(s.id)) {
+        kept.push(s.id);
+        continue;
+      }
       recordTouch(b, log, s);
       s.deletedAt = now();
     }
+    return kept;
   });
 }
 
@@ -647,4 +764,56 @@ export async function assertApprovable(sessionId: string): Promise<void> {
   if (scripts.length === 0) throw new Error("Chưa có kịch bản");
   if (scripts.some((s) => s.status === "writing")) throw new Error("Đang viết kịch bản");
   if (!scripts.some((s) => s.status === "ready")) throw new Error("Chưa có kịch bản viết xong");
+}
+
+/**
+ * The scripts an approval commits: the given ones, or every finished one.
+ * Refuses scripts already committed, unfinished or blocked (the ready check
+ * shows why), so nothing is ever committed twice.
+ */
+export async function scriptsToCommit(sessionId: string, ids?: string[]): Promise<string[]> {
+  const { ws, session } = await findSession(sessionId);
+  if (!session.approvedAt) await assertApprovable(sessionId);
+  const board = await load(sessionId);
+  const done = committedIds(session, board.scripts);
+  const open = finishedScripts(board.scripts).filter((s) => !done.includes(s.id));
+  const chosen = ids ? open.filter((s) => ids.includes(s.id)) : open;
+  if (ids && chosen.length !== new Set(ids).size)
+    throw new Error("Kịch bản này không làm video được");
+  if (chosen.some((s) => checkScript(s, ws.assets).blockers.length)) {
+    throw new Error("Có kịch bản cần sửa trước khi tạo video");
+  }
+  if (chosen.length === 0) throw new Error("Không còn kịch bản nào để tạo video");
+  return chosen.map((s) => s.id);
+}
+
+/**
+ * Lines spoken by `speaker` that match no library character go to
+ * `characterId`. Committed scripts never change.
+ */
+export async function linkSpeaker(
+  sessionId: string,
+  speaker: string,
+  characterId: string,
+): Promise<null> {
+  const { ws, session } = await findSession(sessionId);
+  const character = ws.assets.find((a) => a.id === characterId && a.kind === "character");
+  if (!character) throw new Error("Không tìm thấy nhân vật");
+  const key = speaker.trim().toLocaleLowerCase("vi");
+  await mutateBoard(sessionId, (board) => {
+    const done = committedIds(session, board.scripts);
+    for (const script of board.scripts) {
+      if (done.includes(script.id) || script.status !== "ready") continue;
+      let changed = false;
+      for (const line of script.lines) {
+        const known = line.characterId && ws.assets.some((a) => a.id === line.characterId);
+        if (known || line.speaker.trim().toLocaleLowerCase("vi") !== key) continue;
+        line.characterId = character.id;
+        line.speaker = character.name;
+        changed = true;
+      }
+      if (changed) script.updatedAt = now();
+    }
+  });
+  return null;
 }

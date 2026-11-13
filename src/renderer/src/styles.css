@@ -200,6 +200,32 @@
   animation: line-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
+/* Hold buttons (components/ui/hold-button.tsx): a quick tap nudges as a hint. */
+@keyframes hold-nudge {
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+@utility hold-nudge {
+  animation: hold-nudge 350ms ease-in-out;
+}
+
+/* Something new to try (the dialogue play button once the voice is ready). */
+@keyframes ring-out {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 10px color-mix(in oklab, var(--primary) 0%, transparent);
+  }
+}
+@utility ring-out {
+  animation: ring-out 1.4s ease-out 3;
+}
+
 /* Long sidebar names (sidebar.tsx ScrollingName): fade at the right edge; on hover,
    glide left to the end, swapping the fade to the left edge. --shift and --dur are set inline. */
 @property --fade-l {
@@ -285,4 +311,24 @@
       animation-duration: 0ms !important;
     }
   }
+}
+
+/* Scroll areas that run up to a container edge (session chat): content fades out
+   under the top edge instead of being cut. No fade at the very top; it grows over
+   the first 32px of scrolling. */
+@property --fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes fade-top-in {
+  to {
+    --fade-top: 32px;
+  }
+}
+@utility scroll-fade-top {
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top));
+  animation: fade-top-in linear both;
+  animation-timeline: scroll(self);
+  animation-range: 0 32px;
 }

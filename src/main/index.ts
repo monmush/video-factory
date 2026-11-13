@@ -4,6 +4,7 @@ import { closeAll as closeChats } from "./chat/runtime";
 import { registerIpc } from "./ipc";
 import { clearStaging, handleMediaProtocol, registerMediaScheme } from "./media";
 import { readSettings } from "./settings";
+import { startRunner, stopRunner } from "./video/runner";
 
 // Development never touches the packaged app's data: it gets its own folder,
 // and HYAN_DATA_DIR points either at a disposable one. Electron's own storage
@@ -91,6 +92,8 @@ app.whenReady().then(() => {
   registerIpc();
   void clearStaging();
   createWindow();
+  // Unfinished video jobs continue; paid requests are polled, never resent.
+  void startRunner().catch((error) => console.error("[video] could not start", error));
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -98,7 +101,10 @@ app.whenReady().then(() => {
 });
 
 // Stop the users' Claude processes with the app.
-app.on("before-quit", closeChats);
+app.on("before-quit", () => {
+  closeChats();
+  stopRunner();
+});
 
 app.on("window-all-closed", () => {
   if (!isMac) app.quit();

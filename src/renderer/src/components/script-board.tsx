@@ -1,12 +1,17 @@
 import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "@shared/board";
 import type { Asset, Script } from "@shared/ipc";
+import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
+import type { VideoJob } from "@shared/video-job";
+import { Link } from "@tanstack/react-router";
 import {
   ChevronRight,
+  Clapperboard,
   CopyPlus,
   GripVertical,
   Maximize2,
   MessageSquare,
   MessageSquarePlus,
+  Pencil,
   Pin,
   PinOff,
   RotateCw,
@@ -33,9 +38,11 @@ import { api } from "@/lib/api";
 import {
   addRefs,
   boardLayout,
+  editAsNewVersion,
   FULL_CARDS_MAX,
   requestChatFocus,
   startScriptDrag,
+  testCardId,
   toggleRef,
   useBoard,
   useBoardView,
@@ -43,6 +50,7 @@ import {
 import { useLiveWriting } from "@/lib/chat";
 import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
+import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { AssetThumb } from "./asset-picker";
 import { Button } from "./ui/button";
@@ -67,10 +75,18 @@ import { MenuItem } from "./ui/menu";
 //     selection when the dragged card is in it); right-click offers the
 //     card's actions, for the whole selection where that makes sense;
 //   - card buttons make a new card beside the original; chat edits in place;
+//   - scripts sent to video are read-only with a mark linking to the video;
+//     "Sửa" (and any chat edit) makes a new version after them
+//     (docs/VIDEO_COMMIT_DECISIONS.md, "Moving between Kịch bản and Video");
+//   - a series' first batch dims every card but the test video (one video
+//     first, docs/VIDEO_COMMIT_DECISIONS.md); a click on a dimmed gallery card
+//     makes it the test, the list view and right-click menu offer it;
 //   - no warnings on cards: the writer fixes its own output before it lands.
 //     The estimated length is neutral information, never coloured.
 
 const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+/** Not the test video: quieter but readable, and brighter under the pointer. */
+const DIMMED = "opacity-50 hover:opacity-80 focus-within:opacity-80";
 
 interface CardActions {
   variant: (id: string, direction?: string) => void;
@@ -86,6 +102,8 @@ interface CardActions {
   refMany: (ids: string[]) => void;
   /** Opens the card's "Tùy chỉnh" prompt. */
   customise: (id: string) => void;
+  /** A script sent to video: makes its new version and opens it in the chat. */
+  edit: (id: string) => void;
 }
 
 interface Notice {
@@ -104,12 +122,14 @@ function isCardClick(e: MouseEvent) {
 export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const [view, setView] = useBoardView(sessionId);
-  const session = useWorkspace().sessions.find((s) => s.id === sessionId);
+  const { sessions } = useWorkspace();
+  const session = sessions.find((s) => s.id === sessionId);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
   const [customiseId, setCustomiseId] = useState<string | null>(null);
   const [box, setBox] = useState<Box | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  const videoJobs = useVideoJobs(sessionId);
 
   useEffect(() => {
     if (!notice) return;
@@ -119,11 +139,26 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
 
   if (!board || !session) return null;
   const scripts = boardOrder(board.scripts);
-  const editable = !session.approvedAt;
+  const sent = new Set(committedIds(session, board.scripts));
+  const jobOf = (id: string) => (sent.has(id) ? (videoJobs?.jobs.get(id) ?? null) : undefined);
   const pending = board.messages.some((m) => m.pending);
   const refs = view.refs.filter((id) => scripts.some((s) => s.id === id));
   const selected = selection.filter((id) => scripts.some((s) => s.id === id));
   const layout = boardLayout(view, scripts.length);
+  // One video first: every finished card but the test is dimmed, until the
+  // pointer or focus is on "Tạo cả N video".
+  const finished = finishedScripts(board.scripts);
+  const nudge = !session.approvedAt && isFirstBatch(session, sessions) && finished.length > 1;
+  const testId = nudge
+    ? testCardId(
+        view,
+        finished.map((s) => s.id),
+      )
+    : null;
+  const isDimmed = (id: string) => nudge && id !== testId && !view.previewAll;
+  const testChoice = nudge
+    ? { isTest: (id: string) => id === testId, pick: (id: string) => setView({ testId: id }) }
+    : null;
 
   const run = async (action: () => Promise<unknown>) => {
     try {
@@ -156,6 +191,11 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       addRefs(sessionId, ids);
       requestChatFocus(sessionId);
     },
+    edit: (id) =>
+      run(async () => {
+        await editAsNewVersion(sessionId, id);
+        setSelection([]);
+      }),
     customise: (id) => {
       if (layout === "list") setView({ activeId: id });
       setCustomiseId(id);
@@ -179,7 +219,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     if (e.key === "Enter") {
       e.preventDefault();
       actions.open(id);
-    } else if ((e.key === "Delete" || e.key === "Backspace") && editable) {
+    } else if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       actions.remove(id);
     }
@@ -199,9 +239,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const dragProps = (script: Script, number: number) => ({
     onPointerDown: (e: PointerEvent<HTMLElement>) => {
       // Dialogue and staging stay selectable as text; controls stay clickable.
-      e.currentTarget.draggable =
-        editable &&
-        !(e.target as HTMLElement).closest("dl, [data-staging], button, input, textarea, form");
+      e.currentTarget.draggable = !(e.target as HTMLElement).closest(
+        "dl, [data-staging], button, input, textarea, form",
+      );
     },
     onDragStart: (e: DragEvent<HTMLElement>) => {
       const ids = selected.includes(script.id)
@@ -264,7 +304,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
 
   const shared: SharedProps = {
     sessionId,
-    editable,
+    jobOf,
     refs,
     actions,
     onCardKey,
@@ -273,6 +313,8 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     dragProps,
     customiseId,
     clearCustomise: () => setCustomiseId(null),
+    isDimmed,
+    testChoice,
   };
 
   return (
@@ -355,7 +397,8 @@ interface Box {
 
 interface SharedProps {
   sessionId: string;
-  editable: boolean;
+  /** Sent to video: its job, or null before the job exists. Undefined when not sent. */
+  jobOf: (id: string) => VideoJob | null | undefined;
   /** Scripts referenced in the chat composer. */
   refs: string[];
   actions: CardActions;
@@ -374,6 +417,10 @@ interface SharedProps {
   /** A card whose "Tùy chỉnh" prompt the right-click menu asked to open. */
   customiseId: string | null;
   clearCustomise: () => void;
+  /** One video first: cards other than the test are dimmed (never disabled). */
+  isDimmed: (id: string) => boolean;
+  /** Present while the nudge shows: which card is the test, and choosing another. */
+  testChoice: { isTest: (id: string) => boolean; pick: (id: string) => void } | null;
 }
 
 /** Arrow keys move focus between the [data-card] elements in a container. */
@@ -454,9 +501,10 @@ function ListView({
                 aria-selected={isActive}
                 tabIndex={0}
                 className={cn(
-                  "group relative flex cursor-pointer items-stretch rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "group relative flex cursor-pointer items-stretch rounded-lg outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
                   isActive ? "bg-accent" : "hover:bg-accent/60",
                   isSelected && "ring-2 ring-ring/60 ring-inset",
+                  shared.isDimmed(script.id) && DIMMED,
                 )}
                 onClick={(e) => {
                   if (!shared.onSelectClick(e, script.id)) setView({ activeId: script.id });
@@ -465,7 +513,7 @@ function ListView({
                 onKeyDown={(e) => shared.onCardKey(e, script.id)}
                 {...shared.dragProps(script, i + 1)}
               >
-                {shared.editable && <DragHandle className="top-2.5 left-0" />}
+                <DragHandle className="top-2.5 left-0" />
                 <div className="min-w-0 flex-1 px-2.5 py-2">
                   <span className="flex items-center gap-1.5">
                     <span className="text-xs text-muted-foreground tabular-nums">#{i + 1}</span>
@@ -478,8 +526,15 @@ function ListView({
                     >
                       {script.title || "…"}
                     </span>
+                    <VersionTag script={script} />
                     {script.pinned && <Pin className="size-3 shrink-0" />}
                     <MarkBadge mark={script.mark} />
+                    {shared.jobOf(script.id) !== undefined && (
+                      <Clapperboard
+                        className="size-3 shrink-0 text-muted-foreground"
+                        aria-label="Đã gửi làm video"
+                      />
+                    )}
                     <span className="flex-1" />
                     {seconds > 0 && (
                       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -513,7 +568,9 @@ function ScriptCard({
   inGallery,
   ...shared
 }: SharedProps & { script: Script; number: number; inGallery?: boolean }) {
-  const { editable, refs, actions, onCardKey, selected, customiseId, clearCustomise } = shared;
+  const { refs, actions, onCardKey, selected, customiseId, clearCustomise } = shared;
+  const job = shared.jobOf(script.id);
+  const isSent = job !== undefined;
   const assets = useWorkspace().assets;
   const [prompting, setPrompting] = useState(false);
   const [showStaging, setShowStaging] = useState(false);
@@ -530,6 +587,7 @@ function ScriptCard({
   const liveWriting = useLiveWriting(script.id);
   const writing = script.status === "writing" || liveWriting;
   const isRef = refs.includes(script.id);
+  const dimmed = shared.isDimmed(script.id);
   const products = script.productIds.flatMap((id) => assets.find((a) => a.id === id) ?? []);
   const seconds = script.lines.length ? estimateSeconds(script.lines) : 0;
   const speaker = (line: Script["lines"][number]) =>
@@ -545,18 +603,25 @@ function ScriptCard({
         data-script-id={inGallery ? script.id : undefined}
         tabIndex={inGallery ? 0 : undefined}
         className={cn(
-          "group relative flex flex-col rounded-xl border bg-card p-4 shadow-xs/5 outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          editable && "cursor-grab active:cursor-grabbing",
+          "group relative flex flex-col rounded-xl border bg-card p-4 shadow-xs/5 outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
+          "cursor-grab active:cursor-grabbing",
           inGallery && selected.includes(script.id) && "ring-2 ring-ring/60",
+          inGallery && dimmed && cn(DIMMED, "cursor-pointer"),
         )}
+        title={inGallery && dimmed ? "Chọn làm video thử" : undefined}
         onKeyDown={(e) => inGallery && onCardKey(e, script.id)}
-        onClick={(e) => inGallery && shared.onSelectClick(e, script.id)}
+        onClick={(e) => {
+          if (!inGallery || shared.onSelectClick(e, script.id)) return;
+          // Full cards have no click action of their own, so a click on a dimmed one picks it.
+          if (dimmed && isCardClick(e)) shared.testChoice?.pick(script.id);
+        }}
         {...shared.dragProps(script, number)}
       >
-        {editable && <DragHandle className="top-4.5 left-0.5" />}
+        <DragHandle className="top-4.5 left-0.5" />
         <header className="flex items-start gap-2">
           <span className="flex items-center gap-1 pt-0.5 text-xs text-muted-foreground tabular-nums">
             #{number}
+            <VersionTag script={script} />
             {isRef && <RefMark />}
           </span>
           <div className="min-w-0 flex-1">
@@ -583,6 +648,19 @@ function ScriptCard({
           </div>
           {script.pinned && <Pin className="mt-1 size-3.5 shrink-0" aria-label="Đã ghim" />}
           <MarkBadge mark={script.mark} />
+          {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
+          {!inGallery &&
+            shared.testChoice &&
+            script.status === "ready" &&
+            !shared.testChoice.isTest(script.id) && (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => shared.testChoice?.pick(script.id)}
+              >
+                Chọn làm video thử
+              </Button>
+            )}
         </header>
 
         {script.lines.length > 0 ? (
@@ -643,12 +721,10 @@ function ScriptCard({
         ) : (
           <div className="mt-3 flex items-center gap-2 text-muted-foreground">
             Chưa viết được.
-            {editable && (
-              <Button variant="outline" size="xs" onClick={() => actions.retry(script.id)}>
-                <RotateCw />
-                Thử lại
-              </Button>
-            )}
+            <Button variant="outline" size="xs" onClick={() => actions.retry(script.id)}>
+              <RotateCw />
+              Thử lại
+            </Button>
           </div>
         )}
 
@@ -663,34 +739,37 @@ function ScriptCard({
               </span>
             )}
           </div>
-          {editable && (
-            <div
-              className={cn(
-                "flex shrink-0 items-center opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100",
-                prompting && "opacity-100",
-              )}
-            >
-              {script.status === "ready" && (
-                <>
-                  <IconAction label="Tạo biến thể" onClick={() => actions.variant(script.id)}>
-                    <CopyPlus />
-                  </IconAction>
-                  <IconAction
-                    label="Tùy chỉnh"
-                    pressed={prompting}
-                    onClick={() => setPrompting(!prompting)}
-                  >
-                    <WandSparkles />
-                  </IconAction>
-                </>
-              )}
-              <RefAction script={script} isRef={isRef} actions={actions} />
-              <PinAction script={script} actions={actions} />
-              <IconAction label="Xóa" onClick={() => actions.remove(script.id)}>
-                <Trash2 />
+          <div
+            className={cn(
+              "flex shrink-0 items-center opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100",
+              prompting && "opacity-100",
+            )}
+          >
+            {isSent && (
+              <IconAction label="Sửa" onClick={() => actions.edit(script.id)}>
+                <Pencil />
               </IconAction>
-            </div>
-          )}
+            )}
+            {script.status === "ready" && (
+              <>
+                <IconAction label="Tạo biến thể" onClick={() => actions.variant(script.id)}>
+                  <CopyPlus />
+                </IconAction>
+                <IconAction
+                  label="Tùy chỉnh"
+                  pressed={prompting}
+                  onClick={() => setPrompting(!prompting)}
+                >
+                  <WandSparkles />
+                </IconAction>
+              </>
+            )}
+            <RefAction script={script} isRef={isRef} actions={actions} />
+            <PinAction script={script} actions={actions} />
+            <IconAction label="Xóa" onClick={() => actions.remove(script.id)}>
+              <Trash2 />
+            </IconAction>
+          </div>
         </footer>
 
         {prompting && (
@@ -713,7 +792,9 @@ function CompactCard({
   number,
   ...shared
 }: SharedProps & { script: Script; number: number }) {
-  const { editable, refs, actions, onCardKey, selected, customiseId, clearCustomise } = shared;
+  const { refs, actions, onCardKey, selected, customiseId, clearCustomise } = shared;
+  const job = shared.jobOf(script.id);
+  const isSent = job !== undefined;
   const [prompting, setPrompting] = useState(false);
   useEffect(() => {
     if (customiseId !== script.id) return;
@@ -723,6 +804,7 @@ function CompactCard({
   const isRef = refs.includes(script.id);
   const liveWriting = useLiveWriting(script.id);
   const writing = script.status === "writing" || liveWriting;
+  const dimmed = shared.isDimmed(script.id);
   return (
     <CardMenu script={script} shared={shared} canOpen>
       <article
@@ -733,20 +815,25 @@ function CompactCard({
         // biome-ignore lint/a11y/noNoninteractiveTabindex: cards are focusable for opening (Enter) and deleting
         tabIndex={0}
         className={cn(
-          "group relative flex cursor-pointer flex-col rounded-xl border bg-card p-3.5 shadow-xs/5 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring",
+          "group relative flex cursor-pointer flex-col rounded-xl border bg-card p-3.5 shadow-xs/5 outline-none transition-opacity hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring",
           selected.includes(script.id) && "ring-2 ring-ring/60",
+          dimmed && DIMMED,
         )}
+        title={dimmed ? "Chọn làm video thử" : undefined}
         onClick={(e) => {
-          if (shared.onSelectClick(e, script.id)) return;
-          if (isCardClick(e)) actions.open(script.id);
+          if (shared.onSelectClick(e, script.id) || !isCardClick(e)) return;
+          // A dimmed card's first click picks it as the test; "Mở" still opens it.
+          if (dimmed) shared.testChoice?.pick(script.id);
+          else actions.open(script.id);
         }}
         onKeyDown={(e) => onCardKey(e, script.id)}
         {...shared.dragProps(script, number)}
       >
-        {editable && <DragHandle className="top-4.5 left-0.5" />}
+        <DragHandle className="top-4.5 left-0.5" />
         <header className="flex items-start gap-2">
           <span className="flex items-center gap-1 pt-0.5 text-xs text-muted-foreground tabular-nums">
             #{number}
+            <VersionTag script={script} />
             {isRef && <RefMark />}
           </span>
           <h3 className="min-w-0 flex-1 font-semibold leading-snug line-clamp-2">
@@ -754,6 +841,7 @@ function CompactCard({
           </h3>
           {script.pinned && <Pin className="mt-1 size-3.5 shrink-0" aria-label="Đã ghim" />}
           <MarkBadge mark={script.mark} />
+          {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
         </header>
         <p
           className={cn(
@@ -776,7 +864,12 @@ function CompactCard({
             <IconAction label="Mở" onClick={() => actions.open(script.id)}>
               <Maximize2 />
             </IconAction>
-            {editable && script.status === "ready" && (
+            {isSent && (
+              <IconAction label="Sửa" onClick={() => actions.edit(script.id)}>
+                <Pencil />
+              </IconAction>
+            )}
+            {script.status === "ready" && (
               <>
                 <IconAction label="Tạo biến thể" onClick={() => actions.variant(script.id)}>
                   <CopyPlus />
@@ -790,18 +883,16 @@ function CompactCard({
                 </IconAction>
               </>
             )}
-            {editable && script.status === "failed" && (
+            {script.status === "failed" && (
               <IconAction label="Thử lại" onClick={() => actions.retry(script.id)}>
                 <RotateCw />
               </IconAction>
             )}
-            {editable && <RefAction script={script} isRef={isRef} actions={actions} />}
-            {editable && <PinAction script={script} actions={actions} />}
-            {editable && (
-              <IconAction label="Xóa" onClick={() => actions.remove(script.id)}>
-                <Trash2 />
-              </IconAction>
-            )}
+            <RefAction script={script} isRef={isRef} actions={actions} />
+            <PinAction script={script} actions={actions} />
+            <IconAction label="Xóa" onClick={() => actions.remove(script.id)}>
+              <Trash2 />
+            </IconAction>
           </div>
         </footer>
         {prompting && (
@@ -836,9 +927,9 @@ function CardMenu({
   canOpen?: boolean;
   children: ReactElement;
 }) {
-  const { editable, refs, actions, selected } = shared;
+  const { refs, actions, selected } = shared;
   const group = selected.length > 1 && selected.includes(script.id) ? selected : null;
-  if (!editable && !canOpen) return children;
+  const isSent = shared.jobOf(script.id) !== undefined;
 
   return (
     <ContextMenu>
@@ -865,7 +956,21 @@ function CardMenu({
                 Mở
               </MenuItem>
             )}
-            {editable && script.status === "ready" && (
+            {shared.testChoice &&
+              script.status === "ready" &&
+              !shared.testChoice.isTest(script.id) && (
+                <MenuItem onClick={() => shared.testChoice?.pick(script.id)}>
+                  <Clapperboard />
+                  Chọn làm video thử
+                </MenuItem>
+              )}
+            {isSent && (
+              <MenuItem onClick={() => actions.edit(script.id)}>
+                <Pencil />
+                Sửa
+              </MenuItem>
+            )}
+            {script.status === "ready" && (
               <>
                 <MenuItem onClick={() => actions.variant(script.id)}>
                   <CopyPlus />
@@ -877,30 +982,26 @@ function CardMenu({
                 </MenuItem>
               </>
             )}
-            {editable && script.status === "failed" && (
+            {script.status === "failed" && (
               <MenuItem onClick={() => actions.retry(script.id)}>
                 <RotateCw />
                 Thử lại
               </MenuItem>
             )}
-            {editable && (
-              <>
-                <ContextMenuSeparator />
-                <MenuItem onClick={() => actions.toggleRef(script.id)}>
-                  {refs.includes(script.id) ? <MessageSquare /> : <MessageSquarePlus />}
-                  {refs.includes(script.id) ? "Bỏ nhắc trong chat" : "Nhắc trong chat"}
-                </MenuItem>
-                <MenuItem onClick={() => actions.pin(script.id, !script.pinned)}>
-                  {script.pinned ? <PinOff /> : <Pin />}
-                  {script.pinned ? "Bỏ ghim" : "Ghim"}
-                </MenuItem>
-                <ContextMenuSeparator />
-                <MenuItem destructive onClick={() => actions.remove(script.id)}>
-                  <Trash2 />
-                  Xóa
-                </MenuItem>
-              </>
-            )}
+            <ContextMenuSeparator />
+            <MenuItem onClick={() => actions.toggleRef(script.id)}>
+              {refs.includes(script.id) ? <MessageSquare /> : <MessageSquarePlus />}
+              {refs.includes(script.id) ? "Bỏ nhắc trong chat" : "Nhắc trong chat"}
+            </MenuItem>
+            <MenuItem onClick={() => actions.pin(script.id, !script.pinned)}>
+              {script.pinned ? <PinOff /> : <Pin />}
+              {script.pinned ? "Bỏ ghim" : "Ghim"}
+            </MenuItem>
+            <ContextMenuSeparator />
+            <MenuItem destructive onClick={() => actions.remove(script.id)}>
+              <Trash2 />
+              Xóa
+            </MenuItem>
           </>
         )}
       </ContextMenuPopup>
@@ -977,6 +1078,39 @@ function VariantForm({
 function RefMark() {
   return (
     <MessageSquare className="size-3 shrink-0 text-foreground" aria-label="Đang nhắc trong chat" />
+  );
+}
+
+/** "bản 2" on a new version of a script sent to video. */
+function VersionTag({ script }: { script: Script }) {
+  if (!script.version) return null;
+  return <span className="whitespace-nowrap">· bản {script.version}</span>;
+}
+
+/** On a script sent to video: where its video stands; opens the Video tab. */
+function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null | undefined }) {
+  const label =
+    job?.status === "done"
+      ? "Có video"
+      : job?.status === "review"
+        ? "Chờ xem thử"
+        : job?.status === "stopped"
+          ? "Video đã dừng"
+          : job?.status === "failed"
+            ? "Video lỗi"
+            : "Đang tạo video";
+  return (
+    <Link
+      to="/sessions/$sessionId/videos"
+      params={{ sessionId }}
+      className={cn(
+        "flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px text-2xs font-medium whitespace-nowrap text-muted-foreground hover:text-foreground",
+        job?.status === "failed" && "text-destructive-foreground",
+      )}
+    >
+      <Clapperboard className="size-3" />
+      {label}
+    </Link>
   );
 }
 
