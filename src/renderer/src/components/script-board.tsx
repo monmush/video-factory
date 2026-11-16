@@ -1,5 +1,5 @@
 import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "@shared/board";
-import type { Asset, Script } from "@shared/ipc";
+import type { Script } from "@shared/ipc";
 import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
 import type { VideoJob } from "@shared/video-job";
 import { Link } from "@tanstack/react-router";
@@ -52,7 +52,7 @@ import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
-import { AssetThumb } from "./asset-picker";
+import { ProductPicker } from "./product-picker";
 import { Button } from "./ui/button";
 import {
   ContextMenu,
@@ -104,6 +104,10 @@ interface CardActions {
   customise: (id: string) => void;
   /** A script sent to video: makes its new version and opens it in the chat. */
   edit: (id: string) => void;
+  /** One product for the script (null: none); only what is about the product is rewritten. */
+  setProduct: (id: string, productId: string | null) => void;
+  /** Takes back the card's last product change. */
+  undoProduct: (id: string) => void;
 }
 
 interface Notice {
@@ -122,7 +126,7 @@ function isCardClick(e: MouseEvent) {
 export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const [view, setView] = useBoardView(sessionId);
-  const { sessions } = useWorkspace();
+  const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
@@ -201,6 +205,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       setCustomiseId(id);
     },
     retry: (id) => run(() => api.invoke("board:retry", { sessionId, scriptId: id })),
+    setProduct: (id, productId) =>
+      run(() => api.invoke("board:set-product", { sessionId, scriptId: id, productId })),
+    undoProduct: (id) => run(() => api.invoke("board:undo-product", { sessionId, scriptId: id })),
     toggleRef: (id) => {
       if (toggleRef(sessionId, id)) requestChatFocus(sessionId);
     },
@@ -302,8 +309,11 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     e.preventDefault();
   };
 
+  const seriesProductIds = series.find((x) => x.id === session.seriesId)?.productIds ?? [];
   const shared: SharedProps = {
     sessionId,
+    seriesProductIds,
+    sourceOf: (id) => board.scripts.find((x) => x.id === id),
     jobOf,
     refs,
     actions,
@@ -397,6 +407,10 @@ interface Box {
 
 interface SharedProps {
   sessionId: string;
+  /** The series' products: offered first in the product picker. */
+  seriesProductIds: readonly string[];
+  /** Any script on the board by id, deleted ones included (a new version's source). */
+  sourceOf: (id: string) => Script | undefined;
   /** Sent to video: its job, or null before the job exists. Undefined when not sent. */
   jobOf: (id: string) => VideoJob | null | undefined;
   /** Scripts referenced in the chat composer. */
@@ -588,8 +602,21 @@ function ScriptCard({
   const writing = script.status === "writing" || liveWriting;
   const isRef = refs.includes(script.id);
   const dimmed = shared.isDimmed(script.id);
-  const products = script.productIds.flatMap((id) => assets.find((a) => a.id === id) ?? []);
   const seconds = script.lines.length ? estimateSeconds(script.lines) : 0;
+  // After a product change: the lines it rewrote, against the script before it.
+  const undo = script.productUndo;
+  const earlier =
+    undo && !undo.copy
+      ? undo.lines
+      : undo?.copy && script.brief.kind === "copy"
+        ? shared.sourceOf(script.brief.sourceId)?.lines
+        : undefined;
+  const rewrote = (i: number) =>
+    Boolean(
+      earlier &&
+        earlier.length === script.lines.length &&
+        earlier[i]?.text !== script.lines[i]?.text,
+    );
   const speaker = (line: Script["lines"][number]) =>
     assets.find((a) => a.id === line.characterId)?.name ?? line.speaker;
 
@@ -648,6 +675,16 @@ function ScriptCard({
           </div>
           {script.pinned && <Pin className="mt-1 size-3.5 shrink-0" aria-label="Đã ghim" />}
           <MarkBadge mark={script.mark} />
+          {undo && script.status === "ready" && (
+            <Button
+              variant="ghost-muted"
+              size="xs"
+              className="-my-0.5 shrink-0"
+              onClick={() => actions.undoProduct(script.id)}
+            >
+              Hoàn tác
+            </Button>
+          )}
           {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
           {!inGallery &&
             shared.testChoice &&
@@ -683,7 +720,13 @@ function ScriptCard({
                     <dt className={cn("text-muted-foreground", reveal && "line-in")} style={style}>
                       {speaker(line)}
                     </dt>
-                    <dd className={cn(reveal && "line-in")} style={style}>
+                    <dd
+                      className={cn(
+                        reveal && "line-in",
+                        rewrote(i) && "-mx-1 rounded-sm bg-accent px-1",
+                      )}
+                      style={style}
+                    >
                       {line.text}
                     </dd>
                   </Fragment>
@@ -730,9 +773,14 @@ function ScriptCard({
 
         <footer className="mt-auto flex min-h-7 items-end gap-2 pt-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-            {products.map((product) => (
-              <ProductTag key={product.id} product={product} />
-            ))}
+            {(script.lines.length > 0 || script.changing) && (
+              <ProductPicker
+                script={script}
+                seriesProductIds={shared.seriesProductIds}
+                disabled={script.status !== "ready"}
+                onPick={(productId) => actions.setProduct(script.id, productId)}
+              />
+            )}
             {seconds > 0 && (
               <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">
                 {formatSeconds(seconds)}
@@ -1119,15 +1167,6 @@ function MarkBadge({ mark }: { mark: Script["mark"] }) {
   return (
     <span className="shrink-0 rounded-full border bg-accent px-1.5 py-px text-2xs font-medium text-accent-foreground">
       {mark === "new" ? "Mới" : "Đã sửa"}
-    </span>
-  );
-}
-
-function ProductTag({ product }: { product: Asset }) {
-  return (
-    <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-      <AssetThumb asset={product} className="size-5 rounded" />
-      <span className="truncate">{product.name}</span>
     </span>
   );
 }

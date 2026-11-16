@@ -1,11 +1,14 @@
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserWindow, dialog } from "electron";
-import { batchResolution, batchVideoModel, outputSize } from "../../shared/batch-settings";
+import { batchMediaLevel, outputSize } from "../../shared/batch-settings";
 import type { Asset } from "../../shared/ipc";
+import { mediaLevel } from "../../shared/media-level";
+import { isNetworkError } from "../../shared/net-error";
 import { cutoutsToMake } from "../../shared/product-shot";
 import { committedIds } from "../../shared/ready-check";
 import {
+  castOf,
   heldSpans,
   heldTiming,
   holdInserts,
@@ -23,7 +26,9 @@ import {
 } from "../../shared/video-fix";
 import {
   actionKey,
+  applyLivePlan,
   applyPlan,
+  backOnline,
   followBatch,
   frameFor,
   holdsSec,
@@ -39,20 +44,27 @@ import {
   nextActions,
   nextAverage,
   pickNext,
+  plannedFrame,
+  repairNetworkFailure,
   resumeJob,
   resumesOnStart,
+  retryNetworkNow,
   retryShot as retryShotState,
   revFile,
   runThrough,
   type StepAverages,
   settle,
-  shotFailed,
   shotModel,
+  spentUsd,
+  stepReportedFailure,
+  stepThrew,
   stopJob,
   type VideoJob,
+  waitingForNetwork,
+  wentOffline,
   withShotAudio,
 } from "../../shared/video-job";
-import { videoModel } from "../../shared/video-models";
+import { DEFAULT_VIDEO_MODEL, fitResolution, videoModel } from "../../shared/video-models";
 import { chooseTake, chosenView, deleteTake, focusTake, startTake } from "../../shared/video-takes";
 import { getBoard } from "../board";
 import { assetDir } from "../media";
@@ -82,9 +94,14 @@ import {
   download,
   type FrameInputs,
   generateVoice,
+  type LiveFiles,
   pollFrame,
+  pollLiveFrame,
+  pollLiveShot,
   pollShot,
   submitFrame,
+  submitLiveFrame,
+  submitLiveShot,
   submitShot,
 } from "./steps";
 
@@ -176,12 +193,18 @@ async function update(key: string, change: (job: VideoJob) => VideoJob): Promise
 async function loadAll(): Promise<void> {
   await loadAverages();
   const ws = await getWorkspace();
+  const repair = repairOf(ws.assets);
   for (const session of ws.sessions) {
     const dir = join(mediaDir(session.seriesId, session.id), "videos");
     const names = await readdir(dir).catch(() => [] as string[]);
     for (const name of names) {
       try {
-        const job = migrateJob(JSON.parse(await readFile(join(dir, name, JOB_FILE), "utf8")));
+        // A job that failed only because the connection was gone continues from where it was.
+        const job = repair(
+          migrateJob(JSON.parse(await readFile(join(dir, name, JOB_FILE), "utf8"))),
+        );
+        // A plan interrupted by a restart is made again when asked.
+        delete job.planning;
         jobs.set(jobKey(job), job);
       } catch {
         // Not a job folder.
@@ -189,6 +212,13 @@ async function loadAll(): Promise<void> {
     }
   }
 }
+
+/** Undoes failures and fallbacks that were only network trouble (src/shared/video-job.ts). */
+const repairOf = (all: readonly Asset[]) => (job: VideoJob) =>
+  repairNetworkFailure(job, (id) => {
+    const product = all.find((a) => a.id === id);
+    return product ? cutoutsToMake(product) : 0;
+  });
 
 function ensureLoaded() {
   loaded ??= loadAll();
@@ -228,7 +258,13 @@ export async function jobsFor(sessionId: string): Promise<VideoJob[]> {
   return [...jobs.values()].filter((j) => j.sessionId === sessionId);
 }
 
-async function createJob(sessionId: string, scriptId: string, test = false): Promise<VideoJob> {
+async function createJob(
+  sessionId: string,
+  scriptId: string,
+  test = false,
+  /** "idle": made only to be planned; it waits for its hold. */
+  status?: "idle",
+): Promise<VideoJob> {
   const ws = await getWorkspace();
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
@@ -249,14 +285,19 @@ async function createJob(sessionId: string, scriptId: string, test = false): Pro
     title: script.title,
     lines: script.lines,
     useEnvironment,
-    // Snapshot of the batch's model (else the series', else the default):
-    // changing either later never changes this video.
-    model: batchVideoModel(session, series).id,
-    // 720p when the model cannot make 1080p (nothing would be gained).
-    resolution: batchResolution(session, series, batchVideoModel(session, series).id).id,
+    // Experiment branch: the user chooses a Media level, not a model. Without a
+    // live plan the fixed pipeline uses the default speaking model.
+    model: DEFAULT_VIDEO_MODEL,
+    resolution: fitResolution(
+      DEFAULT_VIDEO_MODEL,
+      mediaLevel(batchMediaLevel(session, series).id).output,
+    ),
     now: nowIso(),
   });
   if (job.lines.length === 0) throw new Error("Kịch bản không có lời thoại");
+  // Follows the batch until it is planned (src/main/video/runner.ts, runPlan).
+  job.level = batchMediaLevel(session, series).id;
+  if (status) job.status = status;
   // A video made on its own while its series has none yet is the test video:
   // it stops once after the cheap steps (docs/VIDEO_REVIEW_DECISIONS.md).
   // The pause ends for good once a video of the series has been kept (downloaded).
@@ -280,9 +321,72 @@ export async function enqueue(sessionId: string, scriptIds: string[]): Promise<v
 export async function start(sessionId: string, scriptId: string): Promise<null> {
   await ensureLoaded();
   const key = keyOf(sessionId, scriptId);
-  if (!jobs.has(key)) await createJob(sessionId, scriptId, true);
-  await update(key, (job) => resumeJob(job, nowIso()));
+  const current = jobs.get(key);
+  if (current?.planning) throw new Error("Đang lên kế hoạch");
+  // Waiting for the connection: try again now instead.
+  if (current?.offline && (current.status === "running" || current.status === "waiting")) {
+    await update(key, (job) => retryNetworkNow(job, Date.now()));
+    return null;
+  }
+  if (!current) await createJob(sessionId, scriptId, true);
+  const repair = repairOf(await assets());
+  await update(key, (job) => resumeJob(repair(job), nowIso()));
   return null;
+}
+
+/**
+ * Experiment branch: the plan now, before any hold, so it is shown with its
+ * prices. Free (the user's own AI); runs beside the queue, never in it. The
+ * video then waits, idle, for its hold.
+ */
+export async function planOnly(sessionId: string, scriptId: string): Promise<null> {
+  await ensureLoaded();
+  const key = keyOf(sessionId, scriptId);
+  if (!jobs.has(key)) await createJob(sessionId, scriptId, true, "idle");
+  const job = jobs.get(key) as VideoJob;
+  if (job.plan || job.planning || job.status !== "idle") return null;
+  const planning = await update(key, (j) => ({ ...j, planning: true }));
+  if (!planning) return null;
+  try {
+    await runPlan(key, planning);
+  } finally {
+    await update(key, (j) => {
+      const { planning: _, ...rest } = j;
+      return rest;
+    });
+  }
+  return null;
+}
+
+/** Planned (or not yet) but nothing made or sent: the plan can be thrown away for free. */
+const unstarted = (job: VideoJob) =>
+  job.status === "idle" && !job.planning && !job.dialogue && spentUsd(job) === 0;
+
+/**
+ * The plan no longer fits the script (its product changed) or the batch (its
+ * Media level changed): the video goes back to "Lên kế hoạch", with the
+ * script's lines as they are now. Refused once anything was made.
+ */
+export async function dropPlan(sessionId: string, scriptId: string): Promise<null> {
+  await ensureLoaded();
+  const job = jobs.get(keyOf(sessionId, scriptId));
+  if (!job) return null;
+  if (!unstarted(job)) throw new Error("Video đã bắt đầu tạo");
+  await createJob(sessionId, scriptId, true, "idle");
+  return null;
+}
+
+/** Whether a script's video has started (anything made or spent, or a plan being made); false with no job. */
+export async function videoStarted(sessionId: string, scriptId: string): Promise<boolean> {
+  await ensureLoaded();
+  const job = jobs.get(keyOf(sessionId, scriptId));
+  return Boolean(job && !unstarted(job));
+}
+
+/** "Lập lại": the plan made again at the batch's Media level as it is now (free, the user's AI). */
+export async function replan(sessionId: string, scriptId: string): Promise<null> {
+  await dropPlan(sessionId, scriptId);
+  return planOnly(sessionId, scriptId);
 }
 
 /**
@@ -296,10 +400,11 @@ export async function runAll(sessionId: string): Promise<null> {
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
   const board = await getBoard(sessionId);
+  const repair = repairOf(ws.assets);
   for (const scriptId of committedIds(session, board.scripts)) {
     const key = keyOf(sessionId, scriptId);
     if (!jobs.has(key)) await createJob(sessionId, scriptId);
-    await update(key, (job) => runThrough(job, nowIso()));
+    await update(key, (job) => runThrough(repair(job), nowIso()));
   }
   return null;
 }
@@ -468,6 +573,8 @@ function pump() {
   const pollEvery = POLL_MS[providerMode()];
   for (const job of all) {
     const key = jobKey(job);
+    // No connection: nothing starts before the next try.
+    if (waitingForNetwork(job, Date.now())) continue;
     for (const action of nextActions(job, busyFor(key))) {
       const busyKey = `${key}|${actionKey(action)}`;
       if (action.kind === "poll-shot" || action.kind === "poll-frame") {
@@ -514,6 +621,25 @@ async function perform(key: string, action: JobAction): Promise<void> {
 const fail = (key: string, error: unknown) =>
   update(key, (job) => ({ ...job, status: "failed", error: (error as Error).message }));
 
+/**
+ * Network trouble (src/shared/net-error.ts): the step is left as it was, so
+ * nothing counts as a failed attempt and saved request ids are kept; the job
+ * tries again after a pause. Returns false for any other error.
+ */
+async function offline(key: string, error: unknown): Promise<boolean> {
+  if (!isNetworkError(error)) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = (error as { cause?: { code?: string } })?.cause?.code;
+  console.warn(`[video] offline, will retry: ${message}${cause ? ` (${cause})` : ""}`);
+  await update(key, (j) => wentOffline(j, message, Date.now()));
+  return true;
+}
+
+/** A step reached the provider: the connection is back. */
+async function online(key: string) {
+  if (jobs.get(key)?.offline) await update(key, backOnline);
+}
+
 async function assets(): Promise<Asset[]> {
   return (await getWorkspace()).assets;
 }
@@ -523,8 +649,11 @@ async function runPlan(key: string, job: VideoJob) {
   const startedAt = Date.now();
   try {
     await mkdir(jobDir(job), { recursive: true });
-    const plan = await directJob(job, jobDir(job));
+    // The Media level is fixed here: the plan is made for it.
+    const { level } = await batchNow(job);
+    const { plan, live } = await directJob({ ...job, level }, jobDir(job));
     await writeJsonAtomic(join(jobDir(job), "plan.json"), plan);
+    if (live) await writeJsonAtomic(join(jobDir(job), "live-plan.json"), live);
     measured("plan", (Date.now() - startedAt) / 1000);
     const all = await assets();
     // Cut-outs a product shot may still need, for the price shown until it is made.
@@ -535,9 +664,22 @@ async function runPlan(key: string, job: VideoJob) {
         return product ? { ...f, cutouts: cutoutsToMake(product) } : f;
       }),
     });
-    await update(key, (j) =>
-      j.plan ? j : { ...withCutouts(applyPlan(j, plan)), phaseStartedAt: nowIso() },
-    );
+    await update(key, (j) => {
+      if (j.plan) return j;
+      const planned = live ? applyLivePlan(j, live) : applyPlan(j, plan);
+      return {
+        ...withCutouts(planned),
+        level,
+        // A live plan is made at its level's size; the fixed pipeline at what its model makes.
+        resolution: live
+          ? mediaLevel(level).output
+          : fitResolution(j.model, mediaLevel(level).output),
+        // Experiment branch: every planned video stops after voice and keyframes,
+        // the cheap checkpoint, unless it was started to run through.
+        ...(live && !j.reviewed ? { pause: true } : {}),
+        phaseStartedAt: nowIso(),
+      };
+    });
   } catch (error) {
     await fail(key, error);
   }
@@ -555,6 +697,7 @@ async function runVoice(key: string, job: VideoJob) {
     if (!current.dialogue || !current.lineSpans) {
       const dialogue = revFile(current, "dialogue", "mp3");
       const result = await generateVoice(current, await assets(), join(dir, dialogue));
+      await online(key);
       timing = result.timing;
       const saved = await update(key, (j) => ({
         ...j,
@@ -603,6 +746,7 @@ async function runVoice(key: string, job: VideoJob) {
     }
     await update(key, (j) => ({ ...withShotAudio(j, inputs), phaseStartedAt: nowIso() }));
   } catch (error) {
+    if (await offline(key, error)) return;
     await fail(key, error);
   }
 }
@@ -689,6 +833,8 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
         if (!cutout) {
           // Never a reason to fail the video: without a cut-out the photo is used.
           const made = await productCutout(product, dir).catch((error) => {
+            // No connection: try the cut-out again later, never settle for the photo.
+            if (isNetworkError(error)) throw error;
             console.warn("[video] product cut-out failed:", (error as Error).message);
             return null;
           });
@@ -702,8 +848,8 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
         if (cutout) {
           if (jobs.get(key)?.status !== "running") return;
           const latest = jobs.get(key)?.frames.find((f) => f.id === frameId) ?? frame;
-          const requestId = await submitFrame(job, latest, inputs);
-          await patchFrame({ requestId, submittedAt: nowIso() });
+          await patchFrame({ ...(await sendFrame(job, latest, inputs)), submittedAt: nowIso() });
+          await online(key);
           return;
         }
       }
@@ -726,8 +872,9 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
       return;
     }
     // The series' kept look: reused as it is, unless the operator asked for a correction.
+    // A planned keyframe is never replaced by it: its framing is the plan's.
     const kept = frame.kind === "character" && inputs.lookPaths?.get(frame.characterId ?? "");
-    if (kept && !frame.note) {
+    if (kept && !frame.note && !planned(job, frame)) {
       const file = frameFile(job, frame);
       await copyFile(kept, join(dir, file));
       await patchFrame({ file, source: "look" });
@@ -735,13 +882,49 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
     }
     // Stopped meanwhile: send nothing new.
     if (jobs.get(key)?.status !== "running") return;
-    const requestId = await submitFrame(job, frame, inputs);
-    await patchFrame({ requestId, submittedAt: nowIso() });
+    await patchFrame({ ...(await sendFrame(job, frame, inputs)), submittedAt: nowIso() });
+    await online(key);
   } catch (error) {
-    await patchFrame(
-      frame.retried ? { error: (error as Error).message } : { retried: true, error: undefined },
-    );
+    // No connection: not an attempt; the still is sent again once it is back.
+    if (isNetworkError(error)) {
+      await offline(key, error);
+      return;
+    }
+    await frameFailed(key, frameId, (error as Error).message);
   }
+}
+
+const planned = plannedFrame;
+
+/** The place and the cast, in the director's order, for a live plan's placeholders. */
+async function liveFiles(job: VideoJob): Promise<LiveFiles> {
+  const ws = await getWorkspace();
+  const series = ws.series.find((s) => s.id === job.seriesId);
+  const place = series?.environmentIds
+    .map((id) => ws.assets.find((a) => a.id === id))
+    .find((a): a is Asset => Boolean(a?.images.length));
+  const cast = castOf(job.lines)
+    .map((id) => ws.assets.find((a) => a.id === id))
+    .filter((a): a is Asset => Boolean(a));
+  return { place, cast, dir: jobDir(job) };
+}
+
+/** Sends a still: a planned keyframe by the plan's endpoint and input, else the fixed request. */
+async function sendFrame(
+  job: VideoJob,
+  frame: JobFrame,
+  inputs: FrameInputs,
+): Promise<{ requestId: string; endpoint?: string }> {
+  if (planned(job, frame)) return submitLiveFrame(job, frame, await liveFiles(job));
+  return { requestId: await submitFrame(job, frame, inputs) };
+}
+
+/** The provider said a still failed: an attempt (falls back after two, for a planned keyframe). */
+async function frameFailed(key: string, frameId: string, message: string) {
+  const next = await update(key, (j) => stepReportedFailure(j, { frame: frameId }, message));
+  const frame = next?.frames.find((f) => f.id === frameId);
+  if (frame?.fallback && !frame.retried)
+    console.warn(`[video] keyframe ${frame.keyframe} falls back:`, message);
 }
 
 /** What fixture mode shows for a still: the place for scenes, the cover for people. */
@@ -763,14 +946,19 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
   const patchFrame = patchFrameOf(key, frameId);
   let url = frame.resultUrl;
   if (!url) {
-    const result = await pollFrame(job, frame).catch(() => null);
-    if (!result || result.state === "pending") return;
+    // Always the endpoint the request went to.
+    // Network trouble: the saved request is asked again later, never sent again.
+    const result = await (frame.endpoint ? pollLiveFrame(job, frame) : pollFrame(job, frame)).catch(
+      async (error) => {
+        if (!(await offline(key, error))) console.warn("[video] poll-frame:", error);
+        return null;
+      },
+    );
+    if (!result) return;
+    await online(key);
+    if (result.state === "pending") return;
     if (result.state === "failed") {
-      await patchFrame(
-        frame.retried
-          ? { requestId: undefined, error: result.message }
-          : { requestId: undefined, retried: true },
-      );
+      await frameFailed(key, frameId, result.message);
       return;
     }
     url = result.url;
@@ -784,7 +972,14 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
       : undefined;
   const file = frameFile(job, frame);
   const path = join(jobDir(job), plate ?? file);
-  await download(url, path, { framePath: await fixtureStill(job, frame) });
+  try {
+    await download(url, path, { framePath: await fixtureStill(job, frame) });
+  } catch (error) {
+    // Paid and on record: only the download is tried again.
+    if (await offline(key, error)) return;
+    throw error;
+  }
+  await online(key);
   // Layer C: compare with the plan; one free-of-thought redo for cents.
   const problem = job.plan ? await checkStill(frame, path, job.plan, job.sessionId) : null;
   if (problem && !frame.redone && jobs.get(key)?.status === "running") {
@@ -824,15 +1019,18 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
   });
 }
 
-/** The batch's model and its own resolution (unfitted), as they are now. */
-async function batchNow(job: VideoJob): Promise<{ model: string; resolution: string }> {
+/**
+ * The batch's settings as they are now. Experiment branch: its Media level;
+ * the fixed pipeline's model is the default, at the level's size.
+ */
+async function batchNow(
+  job: VideoJob,
+): Promise<{ model: string; resolution: string; level: string }> {
   const ws = await getWorkspace();
   const session = ws.sessions.find((s) => s.id === job.sessionId);
   const series = ws.series.find((s) => s.id === job.seriesId);
-  return {
-    model: batchVideoModel(session, series).id,
-    resolution: batchResolution(session, series).id,
-  };
+  const level = batchMediaLevel(session, series).id;
+  return { model: DEFAULT_VIDEO_MODEL, resolution: mediaLevel(level).output, level };
 }
 
 async function runSubmitShot(key: string, initial: VideoJob, index: number) {
@@ -890,9 +1088,28 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
       });
       return;
     }
+    if (job.live && shot.route && !shot.fallback) {
+      // Planned: the plan's endpoint and input, recorded with the request.
+      const sent = await submitLiveShot(
+        job,
+        shot,
+        join(dir, frame.file),
+        shot.audio ? join(dir, shot.audio) : undefined,
+        dir,
+      );
+      await update(key, (j) => ({
+        ...j,
+        shots: j.shots.map((s) =>
+          s.index === index ? { ...s, state: "rendering", ...sent, submittedAt: nowIso() } : s,
+        ),
+      }));
+      await online(key);
+      return;
+    }
     if (!shot.audio) throw new Error("Thiếu âm thanh");
     let still = join(dir, frame.file);
-    if (shot.framing === "close") {
+    // A planned keyframe already has its framing: never cropped.
+    if (shot.framing === "close" && !shot.keyframe) {
       // Closer framing: cropped from the same still, so nothing new is generated.
       const closer = join(dir, `close-${frame.file}`);
       await cropCloser(still, closer);
@@ -917,12 +1134,12 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
           : s,
       ),
     }));
+    await online(key);
   } catch (error) {
-    // Refused at submission (nothing charged): counts as a failed attempt.
-    await update(key, (j) => ({
-      ...j,
-      shots: j.shots.map((s) => (s.index === index ? shotFailed(s, (error as Error).message) : s)),
-    }));
+    // No connection: not an attempt; sent once it is back. Refused at
+    // submission (nothing charged): counts as a failed attempt.
+    if (isNetworkError(error)) await offline(key, error);
+    else await update(key, (j) => stepThrew(j, { shot: index }, error, Date.now()));
   }
 }
 
@@ -933,13 +1150,18 @@ async function runPollShot(key: string, job: VideoJob, index: number) {
   let url = shot.resultUrl;
   if (!url) {
     // Network trouble: try again on a later tick.
-    const result = await pollShot(job, shot).catch(() => null);
-    if (!result || result.state === "pending") return;
+    // Always the endpoint the request went to.
+    const result = await (shot.endpoint ? pollLiveShot(job, shot) : pollShot(job, shot)).catch(
+      async (error) => {
+        if (!(await offline(key, error))) console.warn("[video] poll-shot:", error);
+        return null;
+      },
+    );
+    if (!result) return;
+    await online(key);
+    if (result.state === "pending") return;
     if (result.state === "failed") {
-      await update(key, (j) => ({
-        ...j,
-        shots: j.shots.map((s) => (s.index === index ? shotFailed(s, result.message) : s)),
-      }));
+      await update(key, (j) => stepReportedFailure(j, { shot: index }, result.message));
       return;
     }
     url = result.url;
@@ -953,10 +1175,17 @@ async function runPollShot(key: string, job: VideoJob, index: number) {
     measured("shot", (Date.now() - Date.parse(shot.submittedAt ?? nowIso())) / 1000);
   }
   const clip = revFile(job, `shot-${String(index + 1).padStart(2, "0")}`, "mp4");
-  await download(url, join(dir, clip), {
-    audioPath: shot.audio ? join(dir, shot.audio) : undefined,
-    size: outputSize(job.resolution),
-  });
+  try {
+    await download(url, join(dir, clip), {
+      audioPath: shot.audio ? join(dir, shot.audio) : undefined,
+      size: outputSize(job.resolution),
+    });
+  } catch (error) {
+    // Paid and on record: only the download is tried again.
+    if (await offline(key, error)) return;
+    throw error;
+  }
+  await online(key);
   const clipSec = await probeSeconds(join(dir, clip));
   await update(key, (j) => {
     const done = {

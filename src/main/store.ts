@@ -10,7 +10,9 @@ import {
   type Session,
   type Workspace,
 } from "../shared/ipc";
+import { mediaLevel } from "../shared/media-level";
 import { MAX_NOTE_LENGTH, type Note, type NoteArea, putNote } from "../shared/notes";
+import { mixProblem, type ProductMix } from "../shared/product-mix";
 import { videoModel } from "../shared/video-models";
 import { dataFile, mediaDir, writeJsonAtomic } from "./paths";
 
@@ -93,6 +95,7 @@ export function createSeries(input: SeriesInput): Promise<Series> {
       environmentIds: assetIds(ws, input.environmentIds ?? [], "environment"),
       ...(input.videoModel ? { videoModel: videoModel(input.videoModel).id } : {}),
       ...(input.resolution ? { resolution: outputResolution(input.resolution) } : {}),
+      ...(input.mediaLevel ? { mediaLevel: mediaLevel(input.mediaLevel).id } : {}),
       createdAt: now(),
       updatedAt: now(),
     };
@@ -114,6 +117,7 @@ export function updateSeries(
     // Unknown ids are saved as the default, so a series never names a missing model.
     if (input.videoModel !== undefined) series.videoModel = videoModel(input.videoModel).id;
     if (input.resolution !== undefined) series.resolution = outputResolution(input.resolution);
+    if (input.mediaLevel !== undefined) series.mediaLevel = mediaLevel(input.mediaLevel).id;
     for (const [kind, field] of Object.entries(SERIES_ASSET_FIELD) as [
       AssetKind,
       keyof SeriesInput & keyof Series,
@@ -146,7 +150,12 @@ export function updateSession(input: {
   id: string;
   name?: string;
   pinned?: boolean;
-  settings?: { videoModel?: string | null; resolution?: string | null };
+  settings?: {
+    videoModel?: string | null;
+    resolution?: string | null;
+    mediaLevel?: string | null;
+    productMix?: ProductMix | null;
+  };
 }): Promise<Session> {
   return mutate((ws) => {
     const session = ws.sessions.find((s) => s.id === input.id);
@@ -162,6 +171,25 @@ export function updateSession(input: {
       else if (model !== undefined) next.videoModel = videoModel(model).id;
       if (resolution === null) delete next.resolution;
       else if (resolution !== undefined) next.resolution = outputResolution(resolution);
+      const level = input.settings.mediaLevel;
+      if (level === null) delete next.mediaLevel;
+      else if (level !== undefined) next.mediaLevel = mediaLevel(level).id;
+      const mix = input.settings.productMix;
+      if (mix === null || (mix && mix.length === 0)) delete next.productMix;
+      else if (mix) {
+        const problem = mixProblem(mix, (id) =>
+          ws.assets.some((a) => a.id === id && a.kind === "product"),
+        );
+        if (problem) throw new Error(problem);
+        next.productMix = mix.map(({ productId, share }) => ({ productId, share }));
+        // A product in the mix is one the series uses: the writer must know it.
+        const series = ws.series.find((s) => s.id === session.seriesId);
+        if (series) {
+          for (const { productId } of mix) {
+            if (!series.productIds.includes(productId)) series.productIds.push(productId);
+          }
+        }
+      }
       if (Object.keys(next).length) session.settings = next;
       else delete session.settings;
     }

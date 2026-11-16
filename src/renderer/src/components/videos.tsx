@@ -1,6 +1,8 @@
 import { boardOrder, estimateSeconds, estimateUsd, formatSeconds } from "@shared/board";
 import { formatCost } from "@shared/credits";
 import { mediaUrl, type Script } from "@shared/ipc";
+import { mediaLevel } from "@shared/media-level";
+import { isNetworkMessage, OFFLINE_MESSAGE } from "@shared/net-error";
 import { committedIds, finishedScripts } from "@shared/ready-check";
 import {
   canFix,
@@ -16,9 +18,9 @@ import {
   frameFor,
   type JobShot,
   jobPhase,
+  liveCostTable,
   lossIfStoppedUsd,
   madeByProvider,
-  modelLocked,
   remainingSec,
   type StepAverages,
   spentUsd,
@@ -57,8 +59,10 @@ import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { markHeard, useHeard, useNow, useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
+import { LivePlanTable } from "./live-plan";
+import { MediaLevelPicker } from "./media-level-picker";
 import { Page } from "./page";
-import { makeLabel, useMakeVideos } from "./ready-check";
+import { makeLabel, useBatchMediaLevel, useMakeVideos } from "./ready-check";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -97,6 +101,7 @@ export function VideosList({ sessionId }: { sessionId: string }) {
         frames: make.frames,
         model: make.model,
         resolution: make.resolution,
+        level: make.level,
         cutoutUsd: make.cutouts(s),
       }),
     0,
@@ -120,6 +125,7 @@ export function VideosList({ sessionId }: { sessionId: string }) {
             frames: make.frames,
             model: make.model,
             resolution: make.resolution,
+            level: make.level,
             cutoutUsd: make.cutouts(s),
           }))
     );
@@ -167,12 +173,12 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   // (docs/VIDEO_COMMIT_DECISIONS.md, "Auto mode"). Made videos first; scripts
   // still waiting follow as one group.
   return (
-    <Page className="pt-4">
+    <Page className="pt-0">
+      <MediaStrip sessionId={sessionId} />
       {showAll && (
         <div className="mb-3 flex min-h-9 items-center gap-2.5">
           <h3 className="flex-1 text-sm text-muted-foreground tabular-nums">
             {committed.length > 0 ? `Còn ${count} video` : `${count} video`}
-            {` · ${videoModel(make.model).name}`}
           </h3>
           {error && <span className="text-xs text-destructive-foreground">{error}</span>}
           {rest.length > 0 && makeAll.needsCheck(restIds) ? (
@@ -205,10 +211,51 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   );
 }
 
+/**
+ * Experiment branch: the batch's Media level, always in view while videos are
+ * made. It applies to videos not yet planned; a planned one keeps its level
+ * and offers "Lập lại" (the series' own level is its default).
+ */
+function MediaStrip({ sessionId }: { sessionId: string }) {
+  const { sessions, series } = useWorkspace();
+  const session = sessions.find((s) => s.id === sessionId);
+  const own = series.find((s) => s.id === session?.seriesId);
+  const level = useBatchMediaLevel(sessionId);
+  const [error, setError] = useState<string | null>(null);
+  const set = async (id: string) => {
+    setError(null);
+    try {
+      // The series' own level means following the series again.
+      await api.invoke("session:update", {
+        id: sessionId,
+        settings: { mediaLevel: id === mediaLevel(own?.mediaLevel).id ? null : id },
+      });
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  return (
+    <div className="sticky top-0 z-10 mb-1 flex min-h-12 flex-wrap items-center gap-x-2.5 gap-y-1 bg-background py-2">
+      <span className="text-sm font-medium">Media</span>
+      <MediaLevelPicker value={level.id} onChange={set} />
+      {level.inherited && <span className="text-xs text-muted-foreground">Theo series</span>}
+      {error && <span className="text-xs text-destructive-foreground">{error}</span>}
+    </div>
+  );
+}
+
+/** What the rest of a video costs; "+?" when a planned step has no known price. */
+function holdPrice(job: VideoJob): string {
+  const unknown = liveCostTable(job)?.unknownSteps ?? 0;
+  return `~${formatCost(costToFinishUsd(job))}${unknown ? " +?" : ""}`;
+}
+
 const minutes = (seconds: number) => `còn ~${Math.max(1, Math.round(seconds / 60))} phút`;
 
 function statusLine(job: VideoJob | null, script: Script, averages: StepAverages, now: number) {
+  if (job?.planning) return "Lên cảnh quay";
   if (!job || job.status === "idle") return formatSeconds(estimateSeconds(script.lines));
+  if (job.offline && (job.status === "running" || job.status === "waiting")) return OFFLINE_MESSAGE;
   const done = doneShots(job);
   const total = job.shots.length;
   switch (job.status) {
@@ -222,7 +269,9 @@ function statusLine(job: VideoJob | null, script: Script, averages: StepAverages
       return `Đã dừng · ${done}/${total} cảnh`;
     case "failed": {
       const failed = job.shots.filter((s) => s.state === "failed").length;
-      return failed ? `Lỗi ${failed} cảnh · ${done}/${total} cảnh` : `Lỗi · ${job.error ?? ""}`;
+      if (failed) return `Lỗi ${failed} cảnh · ${done}/${total} cảnh`;
+      // Failed on a lost connection before that was told apart: continuing is safe.
+      return isNetworkMessage(job.error) ? "Mất kết nối" : `Lỗi · ${job.error ?? ""}`;
     }
   }
   const left = minutes(remainingSec(job, averages, now));
@@ -275,12 +324,6 @@ function VideoCard({
       setError(errorMessage(e));
     }
   };
-  const estimate = estimateUsd(script.lines, {
-    frames: make.frames,
-    model: make.model,
-    resolution: make.resolution,
-    cutoutUsd: make.cutouts(script),
-  });
 
   // Takes with other models: tabs; the selected one is shown and acted on.
   const [tab, setTab] = useState<string | null>(null);
@@ -322,8 +365,8 @@ function VideoCard({
     setTab(model);
   };
 
-  // Tabs once the model is fixed (a single take too, so the model is always named).
-  const showTabs = Boolean(job && modelLocked(job));
+  // Experiment branch: takes with another model are hidden; the plan picks models.
+  const showTabs = false;
   const several = takes.length > 1;
   /** What a whole video with the selected take's model cost; null when unknown. */
   const ownCost = job && selectedModel ? takeCostUsd(job, selectedModel) : null;
@@ -332,24 +375,30 @@ function VideoCard({
   let cost: string | null = null;
   let action: ReactNode = null;
   if (!committed) {
+    // Experiment branch: sending only puts it on this tab; planning shows the price.
     if (ownMake)
-      action = make.needsCheck([script.id]) ? (
-        <Button variant="outline" onClick={() => make.open([script.id])}>
-          {makeLabel(1, { hold: false })}
-          <ButtonPrice>~{formatCost(estimate)}</ButtonPrice>
+      action = (
+        <Button
+          variant="outline"
+          onClick={() =>
+            make.needsCheck([script.id]) ? make.open([script.id]) : make.make([script.id])
+          }
+        >
+          Tạo video
         </Button>
-      ) : (
-        <HoldButton tone="outline" onHold={() => make.make([script.id])}>
-          {makeLabel(1)}
-          <ButtonPrice>~{formatCost(estimate)}</ButtonPrice>
-        </HoldButton>
       );
+  } else if (job?.planning) {
+    // Planning is free and short: nothing to do but wait for it.
+    action = null;
   } else if (!job || job.status === "idle") {
-    action = (
+    // Experiment branch: the plan and its prices first; the hold makes exactly that plan.
+    action = job?.plan ? (
       <HoldButton onHold={() => run(() => api.invoke("video:start", ids))}>
         {makeLabel(1)}
-        <ButtonPrice>~{formatCost(job ? costToFinishUsd(job) : estimate)}</ButtonPrice>
+        <ButtonPrice>{holdPrice(job)}</ButtonPrice>
       </HoldButton>
+    ) : (
+      <Button onClick={() => run(() => api.invoke("video:plan", ids))}>Lên kế hoạch</Button>
     );
   } else if (active && working) {
     // This take so far, and all-in when finished.
@@ -372,7 +421,7 @@ function VideoCard({
     action = (
       <HoldButton onHold={() => run(() => api.invoke("video:start", ids))}>
         Giữ để quay
-        <ButtonPrice>~{formatCost(costToFinishUsd(job))}</ButtonPrice>
+        <ButtonPrice>{holdPrice(job)}</ButtonPrice>
       </HoldButton>
     );
   } else if (view?.status === "done" || active) {
@@ -590,34 +639,40 @@ function VideoCard({
           <span className={cn(view?.status === "failed" && "text-destructive-foreground")}>
             {statusLine(view, script, averages, now)}
           </span>
-          {!showTabs && " · "}
-          {showTabs ? null : job && !modelLocked(job) ? (
-            // Not shot yet: this video's own model, overriding the batch.
-            <VideoModelMenu
-              label="Mô hình AI"
-              value={job.model}
-              trigger={
-                <button
-                  type="button"
-                  className="cursor-pointer underline decoration-dotted underline-offset-2 hover:text-foreground"
-                />
-              }
-              triggerContent={videoModel(job.model).name}
-              resolution={job.resolution === "1080p" ? "1080p" : "720p"}
-              price={(m) => ({
-                usd: costToFinishUsd(followBatch({ ...job, ownModel: m.id }, make.batch)),
-                seconds: job.dialogueSec ?? estimateSeconds(script.lines),
-              })}
-              onChange={(model) => run(() => api.invoke("video:set-model", { ...ids, model }))}
-            />
-          ) : (
-            videoModel(make.model).name
-          )}
+          {/* Experiment branch: the Media level, not a model; the plan names the models. */}
+          {/* Videos made before levels existed keep their model's name. */}
+          {` · ${job && !job.level ? videoModel(job.model).name : mediaLevel(job?.plan || (job && job.status !== "idle") ? job.level : make.level).label}`}
           {cost && ` · ${cost}`}
         </span>
+        {job?.offline && active && working && (
+          <Button
+            variant="ghost-muted"
+            size="xs"
+            onClick={() => run(() => api.invoke("video:start", ids))}
+          >
+            <RotateCw />
+            Thử lại
+          </Button>
+        )}
         {view?.dialogue && <DialogueButton job={view} />}
         {error && <span className="text-xs text-destructive-foreground">{error}</span>}
       </div>
+      {/* Planned at another level than the batch's now: re-planning is free but slow, so only on request. */}
+      {view?.status === "idle" && view.plan && !view.planning && view.level !== make.level && (
+        <div className="mt-1 flex items-center gap-2 pl-7.5 text-xs text-muted-foreground">
+          Kế hoạch theo {mediaLevel(view.level).label}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => run(() => api.invoke("video:replan", ids))}
+          >
+            Lập lại
+          </Button>
+        </div>
+      )}
+      {(view?.status === "idle" || view?.status === "review") && view.live && (
+        <LivePlanTable job={view} />
+      )}
       {view && view.status !== "idle" && (
         <JobBody
           key={selectedModel ?? ""}

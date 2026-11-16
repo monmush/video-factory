@@ -1,5 +1,6 @@
 import { withoutCues } from "./cues";
 import type { Script, ScriptLine } from "./ipc";
+import { guideBudgetUsd, mediaLevel } from "./media-level";
 import { videoModel, videoUsd } from "./video-models";
 
 /**
@@ -90,6 +91,11 @@ export interface EstimateOpts {
    * ever; `cutoutUsd` in src/shared/product-shot.ts). Only with a place.
    */
   cutoutUsd?: number;
+  /**
+   * Experiment branch: the Media level. With a place the live director plans
+   * the video, so before its plan it is priced at the level's guide budget.
+   */
+  level?: string | null;
 }
 
 /** The picture of a video from these lines. Excludes voice, images and retries. */
@@ -118,9 +124,13 @@ export const estimateUsd = (
   lines: (Pick<ScriptLine, "text"> & Partial<Pick<ScriptLine, "characterId">>)[],
   opts: EstimateOpts = {},
 ) =>
-  estimateVideoUsd(lines, opts.model, opts.resolution) +
-  estimateVoiceUsd(lines) +
-  (opts.frames ? speakingCharacters(lines).length * FRAME_USD + (opts.cutoutUsd ?? 0) : 0);
+  opts.level && opts.frames
+    ? estimateVoiceUsd(lines) +
+      guideBudgetUsd(mediaLevel(opts.level), estimateSeconds(lines)) +
+      (opts.cutoutUsd ?? 0)
+    : estimateVideoUsd(lines, opts.model, opts.resolution) +
+      estimateVoiceUsd(lines) +
+      (opts.frames ? speakingCharacters(lines).length * FRAME_USD + (opts.cutoutUsd ?? 0) : 0);
 
 /**
  * A typical script of about 45 seconds: ten lines of fourteen syllables, two

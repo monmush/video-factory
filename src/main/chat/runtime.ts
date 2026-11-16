@@ -136,6 +136,7 @@ Bảng kịch bản nằm cạnh khung chat. Mọi thay đổi phải qua các c
 - Viết thêm kịch bản: add_scripts. Bạn tự lập tiêu đề (${writer.TITLE_RULE}) và hook (${writer.HOOK_RULE}) cho từng kịch bản; các đề tài khác nhau rõ rệt và không trùng kịch bản đang có hay danh sách đã dùng. Không nêu số lượng thì viết ${writer.DEFAULT_COUNT}.
 - Sửa lớn hoặc sửa từ 3 kịch bản trở lên: rewrite_scripts với một yêu cầu sửa rõ ràng.
 - Sửa nhỏ, chính xác 1–2 kịch bản: read_scripts rồi update_script, tự viết theo quy tắc viết bên dưới. Chỉ gửi trường cần đổi. Nếu kết quả báo "Cần sửa", sửa lại ngay.
+- Đổi sản phẩm của kịch bản đang có: assign_products (chỉ sửa câu và dàn dựng về sản phẩm, không dùng update_script cho việc này). Tỉ lệ sản phẩm cho kịch bản sắp viết của đợt: set_product_mix. Mỗi video một sản phẩm.
 - Xóa: delete_scripts.
 - Kịch bản [đã có video] không bao giờ đổi. Sửa nó vẫn dùng update_script hoặc rewrite_scripts như thường: công cụ tự tạo bản mới và sửa trên bản đó. Bản mới cần tạo video riêng (người dùng tự bấm). Không xóa kịch bản đã có video.
 - Yêu cầu có vài hướng rõ ràng mà chưa biết chọn hướng nào: offer_choices, không hỏi bằng chữ.

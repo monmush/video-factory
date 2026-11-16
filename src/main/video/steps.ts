@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { app } from "electron";
 import { outputResolution, outputSize } from "../../shared/batch-settings";
 import { syllables, VOICE_USD_PER_CHAR } from "../../shared/board";
 import { voiceText } from "../../shared/cues";
 import type { Asset } from "../../shared/ipc";
+import { fitDuration, placeholderOf, placeholdersIn, readMediaUrl } from "../../shared/live-plan";
 import {
   type Alignment,
   type Gaze,
@@ -16,9 +17,12 @@ import {
 } from "../../shared/shot-plan";
 import {
   billedSeconds,
+  frameUsd,
   type JobFrame,
   type JobShot,
   lineSpans,
+  liveSeconds,
+  shotEstimateUsd,
   shotModel,
   type VideoJob,
 } from "../../shared/video-job";
@@ -31,7 +35,8 @@ import { assetDir } from "../media";
 import { elevenLabsClient, falClient, providerMode } from "../providers";
 import { logUsage } from "../usage";
 import { PROVIDER_VOICES, VOICE_DIRECTION } from "../voices";
-import { fixtureClip, loopAudio, probeSeconds, type Size } from "./ffmpeg";
+import { fixtureClip, loopAudio, padAudio, probeSeconds, type Size } from "./ffmpeg";
+import { fixtureNetwork } from "./fixture-net";
 import { shotEndpoint } from "./shot-models";
 
 // The paid steps of a video job, live and fixture. Live requests follow the
@@ -88,6 +93,7 @@ export async function generateVoice(
   const chars = inputs.reduce((n, i) => n + i.text.length, 0);
 
   if (isFixture()) {
+    fixtureNetwork();
     await wait(3000);
     // Lines back to back at their estimated length, over the sample dialogue.
     let at = 0;
@@ -346,7 +352,10 @@ export async function submitFrame(
   frame: JobFrame,
   inputs: FrameInputs,
 ): Promise<string> {
-  if (isFixture()) return `fixture-${randomUUID()}`;
+  if (isFixture()) {
+    fixtureNetwork();
+    return `fixture-${randomUUID()}`;
+  }
   const { paths, prompt } = frameRequest(job, frame, inputs);
   // A redo after the automatic check says what was wrong with the first attempt.
   if (frame.redone && frame.check) {
@@ -379,6 +388,7 @@ const FIXTURE_FRAME_MS = 3000;
 
 export async function pollFrame(job: VideoJob, frame: JobFrame): Promise<StepPoll> {
   if (isFixture()) {
+    fixtureNetwork();
     const elapsed = Date.now() - Date.parse(frame.submittedAt ?? new Date().toISOString());
     return elapsed < FIXTURE_FRAME_MS
       ? { state: "pending" }
@@ -433,7 +443,10 @@ export async function submitShot(
   framePath: string,
   audioPath: string,
 ): Promise<string> {
-  if (isFixture()) return `fixture-${randomUUID()}`;
+  if (isFixture()) {
+    fixtureNetwork();
+    return `fixture-${randomUUID()}`;
+  }
   const client = await fal();
   const [imageUrl] = await uploadImages(client, [framePath]);
   const audioUrl = await uploadFile(client, audioPath, "audio/mpeg");
@@ -478,6 +491,7 @@ export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> 
   // Always the model that made this request: its endpoint holds the result.
   const model = shotModel(job, shot);
   if (isFixture()) {
+    fixtureNetwork();
     const elapsed = Date.now() - Date.parse(shot.submittedAt ?? new Date().toISOString());
     if (shot.failures < fixtureFailures(shot.index + 1) && elapsed > fixtureShotMs(shot) * 0.6) {
       return { state: "failed", message: "Lỗi giả lập" };
@@ -519,6 +533,7 @@ export async function download(
   out: string,
   fixture?: { framePath?: string; audioPath?: string; size?: Size },
 ): Promise<void> {
+  if (url.startsWith("fixture:")) fixtureNetwork();
   if (url === "fixture:cover" && fixture?.framePath) {
     await copyFile(fixture.framePath, out);
     return;
@@ -537,4 +552,221 @@ export async function download(
   const res = await fetch(parsed, { signal: AbortSignal.timeout(180_000) });
   if (!res.ok) throw new Error(`Không tải được (${res.status})`);
   await writeFile(out, Buffer.from(await res.arrayBuffer()));
+}
+
+// ---------------------------------------------------------------------------
+// Experiment branch: the live plan's keyframes and shots, by one generic
+// executor (docs/LIVE_DIRECTOR_EXPERIMENT.md). Endpoint and input come from
+// the plan; code resolves the placeholders, uploads the files, submits through
+// the queue (the request id is saved before anything else), polls the same
+// endpoint and reads the first image or video URL from the result.
+// ---------------------------------------------------------------------------
+
+/** Local files behind a keyframe's placeholders: the place's and the cast's photos, earlier keyframes. */
+export interface LiveFiles {
+  place?: Asset;
+  /** Characters in order of first speaking (the director's cast1, cast2…). */
+  cast: Asset[];
+  /** The job folder, where earlier keyframes are. */
+  dir: string;
+}
+
+function placeholderPath(job: VideoJob, name: string, files: LiveFiles): string {
+  const place = /^place-(\d+)$/.exec(name);
+  if (place && files.place) {
+    const image = files.place.images[Number(place[1]) - 1];
+    if (image) return join(assetDir(files.place.id), image.file);
+  }
+  const cast = /^cast(\d+)-(\d+)$/.exec(name);
+  if (cast) {
+    const person = files.cast[Number(cast[1]) - 1];
+    const image = person?.images[Number(cast[2]) - 1];
+    if (person && image) return join(assetDir(person.id), image.file);
+  }
+  const keyframe = /^keyframe:(.+)$/.exec(name);
+  if (keyframe) {
+    const file = job.frames.find((f) => f.id === `kf:${keyframe[1]}`)?.file;
+    if (file) return join(files.dir, file);
+  }
+  throw new Error(`Không tìm thấy tệp cho {{${name}}}`);
+}
+
+/** The input with every placeholder replaced by an uploaded URL (each file uploaded once). */
+async function resolveInput(
+  client: Fal,
+  input: Record<string, unknown>,
+  paths: Map<string, { path: string; audio?: boolean }>,
+): Promise<Record<string, unknown>> {
+  const urls = new Map<string, string>();
+  for (const [name, { path, audio }] of paths) {
+    urls.set(
+      name,
+      audio
+        ? await uploadFile(client, path, "audio/mpeg")
+        : ((await uploadImages(client, [path], 2048))[0] as string),
+    );
+  }
+  const walk = (v: unknown): unknown => {
+    const p = placeholderOf(v);
+    if (p) {
+      const url = urls.get(p);
+      if (!url) throw new Error(`Không tìm thấy tệp cho {{${p}}}`);
+      return url;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    }
+    return v;
+  };
+  return walk(input) as Record<string, unknown>;
+}
+
+/** Adds the operator's correction and the still check's reason to the request's prompt. */
+function withCorrections(input: Record<string, unknown>, frame: JobFrame): Record<string, unknown> {
+  const extra = [
+    frame.redone && frame.check
+      ? `A previous attempt was rejected because it showed: ${frame.check}. Avoid that.`
+      : "",
+    frame.note ? `Important correction, follow it exactly: ${frame.note}` : "",
+  ].filter(Boolean);
+  if (!extra.length || typeof input.prompt !== "string") return input;
+  return { ...input, prompt: `${input.prompt} ${extra.join(" ")}` };
+}
+
+/** Submits a planned keyframe; returns the request id and the endpoint it went to. */
+export async function submitLiveFrame(
+  job: VideoJob,
+  frame: JobFrame,
+  files: LiveFiles,
+): Promise<{ requestId: string; endpoint: string }> {
+  const keyframe = job.live?.plan.keyframes.find((k) => k.id === frame.keyframe);
+  if (!keyframe) throw new Error("Không tìm thấy khung hình trong kế hoạch");
+  const paths = new Map(
+    placeholdersIn(keyframe.input).map((name) => [
+      name,
+      { path: placeholderPath(job, name, files) },
+    ]),
+  );
+  if (isFixture()) {
+    fixtureNetwork();
+    return { requestId: `fixture-${randomUUID()}`, endpoint: keyframe.endpoint };
+  }
+  const client = await fal();
+  const input = await resolveInput(client, withCorrections(keyframe.input, frame), paths);
+  const requestId = await falSubmit(client, keyframe.endpoint, input, {
+    purpose: "video-frame",
+    sessionId: job.sessionId,
+    scriptId: job.scriptId,
+    frame: frame.id,
+  });
+  return { requestId, endpoint: keyframe.endpoint };
+}
+
+/** Polls a planned keyframe at the endpoint it was sent to. */
+export async function pollLiveFrame(job: VideoJob, frame: JobFrame): Promise<StepPoll> {
+  const unit = frameUsd(job, frame);
+  if (isFixture()) {
+    fixtureNetwork();
+    const elapsed = Date.now() - Date.parse(frame.submittedAt ?? new Date().toISOString());
+    return elapsed < FIXTURE_FRAME_MS
+      ? { state: "pending" }
+      : { state: "done", url: "fixture:cover", costUsd: unit };
+  }
+  const client = await fal();
+  const result = await falPoll<unknown>(
+    client,
+    frame.endpoint as string,
+    frame.requestId as string,
+    {
+      purpose: "video-frame",
+      // The plan's price for it, from the session's recorded rates.
+      cost: () => unit,
+      costIsEstimate: true,
+      sessionId: job.sessionId,
+      scriptId: job.scriptId,
+    },
+  );
+  if (result.state === "pending") return { state: "pending" };
+  if (result.state === "failed") return result;
+  const url = readMediaUrl(result.data, "image");
+  if (!url) return { state: "failed", message: "Không nhận được ảnh" };
+  return { state: "done", url, costUsd: unit };
+}
+
+/**
+ * Submits a planned lip-sync or motion shot. Lip-sync audio shorter than the
+ * model's minimum is padded with silence first (trimmed again in assembly);
+ * a motion clip is asked to last at least the shot.
+ */
+export async function submitLiveShot(
+  job: VideoJob,
+  shot: JobShot,
+  framePath: string,
+  audioPath: string | undefined,
+  dir: string,
+): Promise<{ requestId: string; endpoint: string }> {
+  const live = job.live;
+  const route = live?.plan.routes[shot.index];
+  if (!live || !route?.endpoint || !route.input)
+    throw new Error("Cảnh này không có trong kế hoạch");
+  const endpoint = route.endpoint;
+  let input = route.input;
+  const paths = new Map<string, { path: string; audio?: boolean }>();
+  for (const name of placeholdersIn(input)) {
+    if (name === "keyframe") paths.set(name, { path: framePath });
+    else if (name === "audio") {
+      if (!audioPath) throw new Error("Thiếu âm thanh");
+      let path = audioPath;
+      const min = live.rates[endpoint]?.minSeconds;
+      if (min && (shot.audioSec ?? 0) < min) {
+        path = join(dir, `min${min}-${basename(audioPath)}`);
+        await padAudio(audioPath, min, path);
+      }
+      paths.set(name, { path, audio: true });
+    } else paths.set(name, { path: placeholderPath(job, name, { cast: [], dir }) });
+  }
+  if (route.route === "motion")
+    input = fitDuration(live.schemas[endpoint], input, liveSeconds(shot)).input;
+  if (isFixture()) {
+    fixtureNetwork();
+    return { requestId: `fixture-${randomUUID()}`, endpoint };
+  }
+  const client = await fal();
+  const requestId = await falSubmit(client, endpoint, await resolveInput(client, input, paths), {
+    purpose: "video-shot",
+    sessionId: job.sessionId,
+    scriptId: job.scriptId,
+    shot: shot.index,
+  });
+  return { requestId, endpoint };
+}
+
+/** Polls a planned shot at the endpoint it was sent to. */
+export async function pollLiveShot(job: VideoJob, shot: JobShot): Promise<StepPoll> {
+  const usd = shotEstimateUsd(job, shot);
+  if (isFixture()) {
+    fixtureNetwork();
+    const elapsed = Date.now() - Date.parse(shot.submittedAt ?? new Date().toISOString());
+    if (shot.failures < fixtureFailures(shot.index + 1) && elapsed > fixtureShotMs(shot) * 0.6) {
+      return { state: "failed", message: "Lỗi giả lập" };
+    }
+    if (elapsed < fixtureShotMs(shot)) return { state: "pending" };
+    return { state: "done", url: "fixture:shot", costUsd: usd, seconds: liveSeconds(shot) };
+  }
+  const client = await fal();
+  const result = await falPoll<unknown>(client, shot.endpoint as string, shot.requestId as string, {
+    purpose: "video-shot",
+    // The plan's price for it, from the session's recorded rates and its real length.
+    cost: () => usd,
+    costIsEstimate: true,
+    sessionId: job.sessionId,
+    scriptId: job.scriptId,
+    shot: shot.index,
+  });
+  if (result.state === "pending") return { state: "pending" };
+  if (result.state === "failed") return result;
+  const url = readMediaUrl(result.data, "video");
+  if (!url) return { state: "failed", message: "Không nhận được video" };
+  return { state: "done", url, costUsd: usd };
 }

@@ -4,13 +4,15 @@ import { DEFAULT_TARGET_SEC, estimateSeconds } from "../../shared/board";
 import { formatCost } from "../../shared/credits";
 import type { Asset, ChatPart, Script } from "../../shared/ipc";
 import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
+import { mixProblem } from "../../shared/product-mix";
 import type { PlannedShot } from "../../shared/shot-plan";
 import { canFix, type FixChange } from "../../shared/video-fix";
 import { frameFor, isGenerated, jobPhase, spentUsd, type VideoJob } from "../../shared/video-job";
 import * as board from "../board";
 import { dataFile } from "../paths";
+import { setProduct } from "../product-change";
 import * as writer from "../script-writer";
-import { getWorkspace, removeNote, saveNote } from "../store";
+import { getWorkspace, removeNote, saveNote, updateSeries, updateSession } from "../store";
 import * as video from "../video/runner";
 
 // The agent's only way to change anything: typed tools over the session's
@@ -74,6 +76,22 @@ const numberOf = (ordered: Script[], id: string) => ordered.findIndex((s) => s.i
 const key = (s: string) => s.replace(/^@/, "").replace(/\s+/g, " ").trim().toLowerCase();
 const named = (assets: Asset[], name: string) =>
   assets.find((a) => key(a.name) === key(name) || key(a.handle) === key(name));
+
+/** "@handle" or name of a library product; "không" (or empty) for no product. */
+function productArg(assets: Asset[], value: string): Asset | null {
+  if (/^(không|khong|none|-)?$/i.test(key(value))) return null;
+  const product = named(
+    assets.filter((a) => a.kind === "product"),
+    value,
+  );
+  if (!product) {
+    const names = assets.filter((a) => a.kind === "product").map((a) => `@${a.handle}`);
+    throw new Error(
+      `Không có sản phẩm "${value}". Thư viện có: ${names.join(", ") || "(chưa có)"}.`,
+    );
+  }
+  return product;
+}
 
 const STATUS: Record<VideoJob["status"], string> = {
   idle: "chưa bắt đầu",
@@ -273,6 +291,7 @@ export const TOOLS = [
     async run(_args, host) {
       const ordered = await board.orderedScripts(host.sessionId);
       const sent = await board.sentScriptIds(host.sessionId);
+      const { assets } = await getWorkspace();
       host.label("Xem bảng kịch bản");
       if (ordered.length === 0) return "Bảng chưa có kịch bản nào.";
       return ordered
@@ -286,7 +305,10 @@ export const TOOLS = [
           const tags = `${s.pinned ? " [ghim]" : ""}${sent.has(s.id) ? " [đã có video]" : ""}${
             s.version ? ` [bản ${s.version}]` : ""
           }`;
-          return `#${i + 1}${tags} ${s.title || "(chưa có tiêu đề)"} — ${s.hook}${state}`;
+          const product = assets.find((a) => a.id === s.productIds[0])?.name;
+          return `#${i + 1}${tags} ${s.title || "(chưa có tiêu đề)"} — ${s.hook}${state}${
+            product ? ` [${product}]` : ""
+          }`;
         })
         .join("\n");
     },
@@ -386,6 +408,12 @@ export const TOOLS = [
           z.object({
             title: z.string().min(1).describe(writer.TITLE_RULE),
             hook: z.string().min(1).describe(writer.HOOK_RULE),
+            product: z
+              .string()
+              .optional()
+              .describe(
+                '@handle sản phẩm của video này, hoặc "không"; bỏ trống thì theo tỉ lệ sản phẩm của đợt',
+              ),
           }),
         )
         .min(1)
@@ -395,13 +423,31 @@ export const TOOLS = [
     },
     pending: "Lập đề tài",
     async run({ topics, direction, target_seconds }, host) {
+      const { ws, series } = await seriesOf(host.sessionId);
+      const given = topics.map((t) =>
+        t.product === undefined ? undefined : (productArg(ws.assets, t.product)?.id ?? null),
+      );
+      // A library product named for a topic joins the series, so the writer knows it.
+      const missing = given.filter(
+        (id): id is string => Boolean(id) && !series.productIds.includes(id as string),
+      );
+      if (missing.length) {
+        await updateSeries({
+          id: series.id,
+          productIds: [...new Set([...series.productIds, ...missing])],
+        });
+      }
       host.label(`Viết ${topics.length} kịch bản mới`);
       const outcome = await unlessStopped(
         host,
         board.agentAdd(
           host.sessionId,
           {
-            topics,
+            topics: topics.map((t, i) => ({
+              title: t.title,
+              hook: t.hook,
+              ...(given[i] !== undefined ? { productId: given[i] } : {}),
+            })),
             direction: direction?.trim() ?? "",
             targetSec: writer.clampTarget(target_seconds),
           },
@@ -411,8 +457,10 @@ export const TOOLS = [
       if (outcome === STOPPED) return "Người dùng đã dừng. Các thẻ đang viết sẽ tự viết xong.";
       const { written, failed } = outcome;
       const ordered = await board.orderedScripts(host.sessionId);
+      const productName = (s: Script) =>
+        ws.assets.find((a) => a.id === s.productIds[0])?.name ?? "không sản phẩm";
       const lines = written.map(
-        (s) => `#${numberOf(ordered, s.id)} ${s.title} (~${seconds(s)} giây)`,
+        (s) => `#${numberOf(ordered, s.id)} ${s.title} (~${seconds(s)} giây, ${productName(s)})`,
       );
       return `Đã viết ${written.length} kịch bản:\n${lines.join("\n")}${
         failed
@@ -461,6 +509,109 @@ export const TOOLS = [
       ]
         .filter(Boolean)
         .join(" ");
+    },
+  }),
+
+  define({
+    name: "set_product_mix",
+    description:
+      "Đặt tỉ lệ sản phẩm cho các kịch bản SẮP viết của đợt này (add_scripts tự chia sản phẩm theo tỉ lệ và theo những gì đã có trên bảng). Kịch bản đã có không đổi; muốn đổi thì dùng assign_products. Tổng phải là 100. Gửi products rỗng để bỏ tỉ lệ (người viết tự chọn từ series).",
+    shape: {
+      products: z
+        .array(
+          z.object({
+            product: z.string().describe("@handle sản phẩm"),
+            percent: z.number().int().min(1).max(100),
+          }),
+        )
+        .max(12),
+    },
+    pending: "Đặt tỉ lệ sản phẩm",
+    async run({ products }, host) {
+      host.label("Đặt tỉ lệ sản phẩm");
+      const { assets } = await getWorkspace();
+      const mix = products.map((p) => {
+        const product = productArg(assets, p.product);
+        if (!product) throw new Error('Tỉ lệ chỉ gồm sản phẩm, không có "không"');
+        return { productId: product.id, share: p.percent };
+      });
+      const problem = mixProblem(mix, () => true);
+      if (problem) throw new Error(problem);
+      await updateSession({
+        id: host.sessionId,
+        settings: { productMix: mix.length ? mix : null },
+      });
+      if (!mix.length) return "Đã bỏ tỉ lệ sản phẩm; người viết tự chọn từ series.";
+      const name = (id: string) => assets.find((a) => a.id === id)?.name ?? id;
+      return `Đã lưu tỉ lệ: ${mix.map((e) => `${name(e.productId)} ${e.share}%`).join(", ")}. Áp dụng cho kịch bản viết sau; kịch bản đã có không đổi.`;
+    },
+  }),
+
+  define({
+    name: "assign_products",
+    description:
+      'Đổi sản phẩm của kịch bản đang có, mỗi video một sản phẩm. Người viết chỉ sửa những câu nhắc hoặc tả sản phẩm và phần dàn dựng về sản phẩm; mọi câu khác giữ nguyên. Kịch bản [đã có video] được đổi trên bản mới. product là @handle hoặc "không". Chờ đến khi sửa xong.',
+    shape: {
+      assignments: z
+        .array(
+          z.object({
+            number: z.number().int().min(1),
+            product: z.string().describe('@handle sản phẩm, hoặc "không"'),
+          }),
+        )
+        .min(1)
+        .max(30),
+    },
+    pending: "Đổi sản phẩm",
+    async run({ assignments }, host) {
+      const { scripts } = await pick(
+        host.sessionId,
+        assignments.map((a) => a.number),
+      );
+      const { assets } = await getWorkspace();
+      const targets = assignments.map((a, i) => ({
+        number: a.number,
+        script: scripts[i] as Script,
+        product: productArg(assets, a.product),
+      }));
+      host.label(`Đổi sản phẩm ${list(assignments.map((a) => a.number))}`);
+      const results = await unlessStopped(
+        host,
+        Promise.all(
+          targets.map(async (t) => {
+            try {
+              return {
+                ...t,
+                change: await setProduct(
+                  host.sessionId,
+                  t.script.id,
+                  t.product?.id ?? null,
+                  host.log,
+                ),
+              };
+            } catch (error) {
+              return { ...t, error: error instanceof Error ? error.message : String(error) };
+            }
+          }),
+        ),
+      );
+      if (results === STOPPED) return "Người dùng đã dừng. Các kịch bản đang sửa sẽ tự sửa xong.";
+      const after = await board.orderedScripts(host.sessionId);
+      return results
+        .map((r) => {
+          const to = r.product?.name ?? "không sản phẩm";
+          if ("error" in r) return `#${r.number}: chưa đổi được (${r.error}).`;
+          if (!r.change) return `#${r.number} đã là ${to}.`;
+          const where = r.change.copied
+            ? `đã có video nên đổi trên bản mới #${numberOf(after, r.change.script.id)}`
+            : `#${r.number}`;
+          const what = [
+            r.change.changedLines ? `${r.change.changedLines} câu` : "",
+            r.change.stagingChanged ? "dàn dựng" : "",
+          ].filter(Boolean);
+          return `${where} → ${to}: sửa ${what.join(" và ") || "không câu nào"}.`;
+        })
+        .join("\n");
     },
   }),
 

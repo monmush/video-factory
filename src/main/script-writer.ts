@@ -379,6 +379,79 @@ ${asJson(ctx, script)}`,
   return checkLength ? withinLength(ctx, written, targetSec) : written;
 }
 
+// ---------------------------------------------------------------- product per video
+
+/**
+ * The context with one product given (docs/SCRIPT_BOARD_DECISIONS.md,
+ * "Product per video"): the writer then names only that one, or none for
+ * null. Undefined leaves the series' products for the writer to choose from.
+ */
+export function withProduct(
+  ctx: WriterContext,
+  productId: string | null | undefined,
+  library: readonly Asset[],
+): WriterContext {
+  if (productId === undefined) return ctx;
+  const product =
+    productId === null
+      ? undefined
+      : (ctx.products.find((p) => p.id === productId) ??
+        library.find((a) => a.id === productId && a.kind === "product"));
+  return { ...ctx, products: product ? [product] : [] };
+}
+
+/** Exactly the one product given, whatever the writer listed. */
+export const oneProduct = (written: WrittenScript, productId: string | null | undefined) =>
+  productId === undefined ? written : { ...written, productIds: productId ? [productId] : [] };
+
+/**
+ * A narrow revision for a new product: only the lines that name or describe
+ * the product, and the product's part of the staging, are rewritten (taste and
+ * features checked against the new product's description); every other line,
+ * the title and the hook stay word for word.
+ */
+export async function reviseProduct(
+  ctx: WriterContext,
+  script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
+  from: Asset | null,
+  to: Asset | null,
+  targetSec = DEFAULT_TARGET_SEC,
+): Promise<WrittenScript> {
+  const target = { ...ctx, products: to ? [to] : [] };
+  if (textAiMode() === "fixture") return fixtureProductSwap(script, from, to);
+  const both = { ...ctx, products: [from, to].filter((a): a is Asset => Boolean(a)) };
+  const answer = await askText({
+    system: writerSystem(target, targetSec),
+    prompt: `Đổi sản phẩm của kịch bản dưới đây ${from ? `từ ${from.name}` : "(chưa có sản phẩm)"} sang ${
+      to ? `${to.name} (@${to.handle})` : "không có sản phẩm"
+    }. Đây là sửa hẹp:
+- Chỉ viết lại những câu thoại nhắc tên hoặc tả sản phẩm (tên, hương vị, màu, mùi, cách pha, đặc điểm). Điều nói về sản phẩm mới phải có trong mô tả của nó; bỏ điều mô tả không nói.
+- Mọi câu thoại khác giữ nguyên từng chữ, cùng người nói, cùng thứ tự. Giữ nguyên tiêu đề và hook.
+- "staging": chỉ sửa phần nói về sản phẩm (tên, chỗ đặt); giữ nguyên phần còn lại.
+${
+  to
+    ? `- "products" là ["@${to.handle}"].${from ? "" : " Nhắc sản phẩm một lần, tự nhiên, ở câu hợp nhất; chỉ thêm hoặc sửa đúng câu đó."}`
+    : '- Không có sản phẩm: bỏ tên và mô tả sản phẩm khỏi lời thoại, sửa câu cho tự nhiên; "products" là [].'
+}${
+  from?.description
+    ? `
+
+Sản phẩm cũ (${from.name}): ${from.description}`
+    : ""
+}
+
+Kịch bản:
+${asJson(both, script)}`,
+    purpose: "revise-script-product",
+    sessionId: ctx.sessionId,
+    model: ctx.model,
+    effort: ctx.effort,
+    temperature: 0.3,
+  });
+  const written = normalise(target, parseJsonObject<RawScript>(answer));
+  return { ...written, title: script.title, hook: script.hook, productIds: to ? [to.id] : [] };
+}
+
 // ---------------------------------------------------------------- fixture mode
 
 const pause = (min: number, max: number) =>
@@ -466,3 +539,47 @@ async function fixtureRevise(
   await pause(700, 2000);
   return { ...script, staging: `${script.staging} (Đã áp dụng: ${instruction})`.trim() };
 }
+
+/** Fixture mode: the product's name swapped in the lines and staging, deterministically. */
+async function fixtureProductSwap(
+  script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
+  from: Asset | null,
+  to: Asset | null,
+): Promise<WrittenScript> {
+  await pause(900, 900);
+  const named = (text: string) =>
+    Boolean(from && text.toLocaleLowerCase("vi").includes(from.name.toLocaleLowerCase("vi")));
+  const swap = (text: string) =>
+    from && to ? text.replace(new RegExp(escapeRegExp(from.name), "gi"), to.name) : text;
+  let lines = script.lines.map((l) => ({ ...l, text: swap(l.text) }));
+  let staging = swap(script.staging);
+  if (from && !to) {
+    const kept = lines.filter((l) => !named(l.text));
+    if (kept.length >= 2) lines = kept;
+    staging = staging
+      .split(/(?<=\.)\s+/)
+      .filter((part) => !named(part))
+      .join(" ");
+  }
+  if (!from && to) {
+    const last = lines.at(-2) ?? lines.at(-1);
+    lines = [
+      ...lines,
+      {
+        characterId: last?.characterId ?? null,
+        speaker: last?.speaker ?? "",
+        text: `Vậy mình pha ấm ${to.name} nhé.`,
+      },
+    ];
+    staging = `${staging} ${to.name} đặt cạnh ấm trà.`.trim();
+  }
+  return {
+    title: script.title,
+    hook: script.hook,
+    lines,
+    productIds: to ? [to.id] : [],
+    staging,
+  };
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

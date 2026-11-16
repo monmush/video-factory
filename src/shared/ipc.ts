@@ -3,6 +3,7 @@
 // every capability it needs is a channel listed here.
 
 import type { Note } from "./notes";
+import type { ProductMix } from "./product-mix";
 import type { FixChange } from "./video-fix";
 import type { StepAverages, VideoJob } from "./video-job";
 
@@ -28,6 +29,8 @@ export interface Series {
   videoModel?: string;
   /** Output size ("720p" | "1080p") for this series' batches; missing: 720p. */
   resolution?: string;
+  /** Experiment branch: the Media level for this series' batches (src/shared/media-level.ts). */
+  mediaLevel?: string;
   /** Set when pinned to the top of the sidebar. */
   pinnedAt?: string;
   /** Learned preferences for this series (src/shared/notes.ts), saved from the chat. */
@@ -45,6 +48,13 @@ export interface SessionSettings {
   videoModel?: string;
   /** Output size of the final video: "720p" or "1080p". */
   resolution?: string;
+  /** Experiment branch: the Media level (src/shared/media-level.ts). */
+  mediaLevel?: string;
+  /**
+   * Products the batch's new scripts feature, in shares summing to 100
+   * (src/shared/product-mix.ts). Missing: the writer chooses from the series.
+   */
+  productMix?: ProductMix;
 }
 
 export interface Session {
@@ -80,7 +90,12 @@ export interface ScriptLine {
 
 /** What a card's writer was asked, so "Thử lại" can ask again. */
 export type ScriptBrief = (
-  | { kind: "topic"; direction?: string }
+  | {
+      kind: "topic";
+      direction?: string;
+      /** The product given to it (the batch's mix or the chat); null: none. Missing: the writer chooses. */
+      productId?: string | null;
+    }
   | { kind: "variant"; sourceId: string; direction?: string }
   /** A new version of a script already sent to video: copied, never written. */
   | { kind: "copy"; sourceId: string }
@@ -119,6 +134,16 @@ export interface Script {
    */
   versionOf?: string;
   version?: number;
+  /** While `status` is "writing": what is being done, when it is not a whole rewrite. */
+  changing?: "product";
+  /**
+   * The product was changed on the card (src/main/product-change.ts): what
+   * "Hoàn tác" brings back, or `copy` when the change made this new version.
+   * Cleared by the next change to the board.
+   */
+  productUndo?:
+    | { copy: true }
+    | { copy?: false; productIds: string[]; lines: ScriptLine[]; staging: string };
   createdAt: string;
   updatedAt: string;
 }
@@ -392,6 +417,7 @@ export interface SeriesInput {
   /** Omit to keep the current choice (on create: the default). */
   videoModel?: string;
   resolution?: string;
+  mediaLevel?: string;
 }
 
 export interface Workspace {
@@ -694,6 +720,16 @@ export interface IpcContract {
   };
   /** Restores every script an in-place edit changed. */
   "board:undo": { args: [input: { sessionId: string; messageId: string }]; result: null };
+  /**
+   * One product for a script (null: none): only the lines and staging about
+   * the product are rewritten. A script with a video changes on a new version.
+   */
+  "board:set-product": {
+    args: [input: { sessionId: string; scriptId: string; productId: string | null }];
+    result: null;
+  };
+  /** Takes back the card's last product change. */
+  "board:undo-product": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   "assets:pick-images": { args: []; result: StagedImage[] };
   "assets:stage-paths": { args: [paths: string[]]; result: StagedImage[] };
   "assets:create": { args: [input: AssetInput]; result: Asset };
@@ -745,6 +781,13 @@ export interface IpcContract {
   "video:jobs": { args: [sessionId: string]; result: VideoJobs };
   /** Starts a committed script with no job yet, or continues a stopped or failed one. */
   "video:start": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  /**
+   * Experiment branch: plans a committed script now, before any hold (free:
+   * the user's own AI). The video then waits for its hold with the plan shown.
+   */
+  "video:plan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  /** Experiment branch: throws away a plan nothing was made from and plans again at the batch's level. */
+  "video:replan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   /**
    * "Make everything" on the Video tab: commits `scriptIds` (not yet sent) and
    * runs every unfinished video of the session to the end, with no stop.
@@ -826,6 +869,8 @@ export const IPC_CHANNELS = [
   "board:restore",
   "board:pin",
   "board:undo",
+  "board:set-product",
+  "board:undo-product",
   "board:link-speaker",
   "assets:pick-images",
   "assets:stage-paths",
@@ -848,6 +893,8 @@ export const IPC_CHANNELS = [
   "ai:set-text-provider",
   "video:jobs",
   "video:start",
+  "video:plan",
+  "video:replan",
   "video:make-all",
   "video:stop",
   "video:retry-shot",

@@ -1,6 +1,7 @@
 import { type OutputResolution, RESOLUTIONS } from "@shared/batch-settings";
-import { formatSeconds, perVideo } from "@shared/board";
+import { formatSeconds } from "@shared/board";
 import { formatCost } from "@shared/credits";
+import type { MediaLevelId } from "@shared/media-level";
 import {
   fitResolution,
   minutesFor45,
@@ -11,7 +12,7 @@ import {
 } from "@shared/video-models";
 import { ChevronDown } from "lucide-react";
 import { type ReactElement, type ReactNode, useState } from "react";
-import { useWorkspace } from "@/lib/workspace";
+import { MediaLevelPicker } from "./media-level-picker";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -231,41 +232,20 @@ export function ResolutionPicker({
 
 /**
  * A series' output settings, the defaults for its batches; laid out like the
- * asset rows. Prices are for a typical 45-second video.
+ * asset rows. Experiment branch: the Media level only.
  */
 export function SeriesOutputFields({
-  environmentIds,
-  videoModel: model,
-  resolution,
-  onVideoModel,
-  onResolution,
+  mediaLevel,
+  onMediaLevel,
 }: {
-  /** Generated stills (and their price) need a place with photos. */
-  environmentIds: string[];
-  videoModel?: string;
-  resolution: OutputResolution;
-  onVideoModel: (id: string) => void;
-  onResolution: (value: OutputResolution) => void;
+  mediaLevel: MediaLevelId;
+  onMediaLevel: (value: MediaLevelId) => void;
 }) {
-  const { assets } = useWorkspace();
-  const frames = environmentIds.some((id) => assets.find((a) => a.id === id)?.images.length);
   return (
     <div className="grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
-      <span className="text-xs leading-tight text-muted-foreground">Mô hình AI</span>
+      <span className="text-xs leading-tight text-muted-foreground">Media</span>
       <div className="flex min-w-0">
-        <VideoModelMenu
-          label="Mô hình AI"
-          value={model}
-          onChange={onVideoModel}
-          resolution={resolution}
-          price={(m) =>
-            perVideo([], { frames, model: m.id, resolution: fitResolution(m.id, resolution) })
-          }
-        />
-      </div>
-      <span className="text-xs leading-tight text-muted-foreground">Độ phân giải</span>
-      <div className="flex">
-        <ResolutionPicker value={resolution} model={model} onChange={onResolution} />
+        <MediaLevelPicker value={mediaLevel} onChange={onMediaLevel} />
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
-import { DEFAULT_RESOLUTION, type OutputResolution } from "@shared/batch-settings";
 import type { StagedImage } from "@shared/ipc";
+import { DEFAULT_MEDIA_LEVEL, type MediaLevelId } from "@shared/media-level";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { AssetDialog } from "@/components/asset-dialog";
@@ -28,11 +28,10 @@ export function SeriesNewPage() {
     "series-new:environments",
     [],
   );
-  // Empty: the default model.
-  const [videoModel, setVideoModel, clearVideoModel] = useDraft("series-new:video-model", "");
-  const [resolution, setResolution, clearResolution] = useDraft<OutputResolution>(
-    "series-new:resolution",
-    DEFAULT_RESOLUTION,
+  // Experiment branch: the Media level in place of model and resolution.
+  const [level, setLevel, clearLevel] = useDraft<MediaLevelId>(
+    "series-new:media-level",
+    DEFAULT_MEDIA_LEVEL,
   );
   // Images dropped on the composer open as a new environment, added to this series once saved.
   const [dropped, setDropped] = useState<StagedImage[] | null>(null);
@@ -60,8 +59,7 @@ export function SeriesNewPage() {
         characterIds,
         productIds,
         environmentIds,
-        ...(videoModel ? { videoModel } : {}),
-        resolution,
+        mediaLevel: level,
       });
       await refreshWorkspace();
       for (const clear of [
@@ -70,8 +68,7 @@ export function SeriesNewPage() {
         clearCharacters,
         clearProducts,
         clearEnvironments,
-        clearVideoModel,
-        clearResolution,
+        clearLevel,
       ])
         clear();
       await navigate({ to: "/series/$seriesId", params: { seriesId: series.id } });
@@ -114,13 +111,7 @@ export function SeriesNewPage() {
               setEnvironmentIds(next.environmentIds);
             }}
           />
-          <SeriesOutputFields
-            environmentIds={environmentIds}
-            videoModel={videoModel || undefined}
-            resolution={resolution}
-            onVideoModel={setVideoModel}
-            onResolution={setResolution}
-          />
+          <SeriesOutputFields mediaLevel={level} onMediaLevel={setLevel} />
         </div>
       </Composer>
       <p className="mt-3 text-center text-xs text-muted-foreground">

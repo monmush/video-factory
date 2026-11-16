@@ -1,4 +1,5 @@
 import type { Series, Session } from "./ipc";
+import { type MediaLevelId, mediaLevel } from "./media-level";
 import { fitResolution, legacyModel, videoModel } from "./video-models";
 
 // Output settings of a batch (a session). Each is optional on the session;
@@ -55,6 +56,16 @@ export function batchResolution(
     ? { id: own, inherited: false }
     : { id: outputResolution(series?.resolution), inherited: true };
   return modelId === undefined ? picked : { ...picked, id: fitResolution(modelId, picked.id) };
+}
+
+/** Experiment branch: the resolved Media level, and whether it comes from the series (or the default). */
+export function batchMediaLevel(
+  session: Pick<Session, "settings"> | undefined,
+  series: Pick<Series, "mediaLevel"> | undefined,
+): { id: MediaLevelId; inherited: boolean } {
+  const own = session?.settings?.mediaLevel;
+  if (own) return { id: mediaLevel(own).id, inherited: false };
+  return { id: mediaLevel(series?.mediaLevel).id, inherited: true };
 }
 
 /**

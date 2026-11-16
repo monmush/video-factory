@@ -1,43 +1,34 @@
-import { batchResolution, type SessionSettingKey } from "@shared/batch-settings";
-import { perVideo } from "@shared/board";
-import { finishedScripts } from "@shared/ready-check";
-import { fitResolution, videoModel } from "@shared/video-models";
-import { type ReactNode, useState } from "react";
+import type { Asset } from "@shared/ipc";
+import { evenMix, mixTotal, type ProductMix, shortNames } from "@shared/product-mix";
+import { Plus, X } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { useBoard } from "@/lib/board";
 import { errorMessage } from "@/lib/errors";
 import { useWorkspace } from "@/lib/workspace";
+import { AssetThumb } from "./asset-picker";
 import { Page } from "./page";
-import { useBatchVideoModel, useNeedsFrames } from "./ready-check";
-import { ResolutionPicker, VideoModelMenu } from "./video-model-menu";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
-// "Thiết lập": the batch's output settings, one row each
-// (src/shared/batch-settings.ts). A row the batch has not set shows the
-// series' value. Changes apply to videos created afterwards only.
+// "Thiết lập": the batch's own settings, one row each
+// (src/shared/batch-settings.ts). Experiment branch: the Media level lives on
+// the Video tab, in view while videos are made; here is the product mix, the
+// target for scripts not yet written (src/shared/product-mix.ts).
 
 export function BatchSettings({ sessionId }: { sessionId: string }) {
-  const { sessions, series } = useWorkspace();
+  const { sessions, series, assets } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const own = series.find((s) => s.id === session?.seriesId);
-  const model = useBatchVideoModel(sessionId);
-  // The saved choice, before fitting it to the model: each model is priced at
-  // the size it would actually be made at.
-  const chosen = batchResolution(session, own).id;
-  const resolution = batchResolution(session, own, model.id);
-  const frames = useNeedsFrames(sessionId);
-  const board = useBoard(sessionId);
   const [error, setError] = useState<string | null>(null);
   if (!session) return null;
-  // Priced on this batch's own scripts (average per video), else a typical video.
-  const scripts = board ? finishedScripts(board.scripts) : [];
 
-  /** Sets one setting; the series' own value means following the series again. */
-  const set = async (key: SessionSettingKey, value: string, seriesValue: string) => {
+  const save = async (mix: ProductMix) => {
     setError(null);
     try {
       await api.invoke("session:update", {
         id: sessionId,
-        settings: { [key]: value === seriesValue ? null : value },
+        settings: { productMix: mix.length ? mix : null },
       });
     } catch (e) {
       setError(errorMessage(e));
@@ -47,22 +38,12 @@ export function BatchSettings({ sessionId }: { sessionId: string }) {
   return (
     <Page className="max-w-2xl pt-6">
       <div className="flex flex-col divide-y rounded-lg border">
-        <SettingRow label="Mô hình AI" inherited={model.inherited}>
-          <VideoModelMenu
-            label="Mô hình AI"
-            value={model.id}
-            onChange={(id) => set("videoModel", id, videoModel(own?.videoModel).id)}
-            resolution={chosen}
-            price={(m) =>
-              perVideo(scripts, { frames, model: m.id, resolution: fitResolution(m.id, chosen) })
-            }
-          />
-        </SettingRow>
-        <SettingRow label="Độ phân giải" inherited={resolution.inherited}>
-          <ResolutionPicker
-            value={chosen}
-            model={model.id}
-            onChange={(r) => set("resolution", r, batchResolution(undefined, own).id)}
+        <SettingRow label="Sản phẩm">
+          <MixEditor
+            saved={session.settings?.productMix ?? []}
+            products={assets.filter((a) => a.kind === "product")}
+            seriesProductIds={own?.productIds ?? []}
+            onSave={save}
           />
         </SettingRow>
       </div>
@@ -71,20 +52,117 @@ export function BatchSettings({ sessionId }: { sessionId: string }) {
   );
 }
 
-function SettingRow({
-  label,
-  inherited,
-  children,
+/**
+ * The mix as a row of products with their shares. Adding or removing one
+ * splits evenly again; a typed share is saved once the shares add up to 100.
+ */
+function MixEditor({
+  saved,
+  products,
+  seriesProductIds,
+  onSave,
 }: {
-  label: string;
-  /** The value comes from the series. */
-  inherited?: boolean;
-  children: ReactNode;
+  saved: ProductMix;
+  products: Asset[];
+  seriesProductIds: readonly string[];
+  onSave: (mix: ProductMix) => void;
 }) {
+  const [draft, setDraft] = useState(saved);
+  const savedKey = JSON.stringify(saved);
+  // A change saved elsewhere (the chat) replaces the draft.
+  useEffect(() => setDraft(JSON.parse(savedKey) as ProductMix), [savedKey]);
+  const names = shortNames(products.map((p) => p.name));
+  const shortName = (id: string) => names[products.findIndex((p) => p.id === id)] ?? "?";
+  const unused = products.filter((p) => !draft.some((e) => e.productId === p.id));
+  const inSeries = unused.filter((p) => seriesProductIds.includes(p.id));
+  const others = unused.filter((p) => !seriesProductIds.includes(p.id));
+  const total = mixTotal(draft);
+
+  const respread = (ids: string[]) => {
+    const next = evenMix(ids);
+    setDraft(next);
+    onSave(next);
+  };
+  const setShare = (id: string, value: string) => {
+    const share = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+    const next = draft.map((e) => (e.productId === id ? { ...e, share } : e));
+    setDraft(next);
+    if (mixTotal(next) === 100 && next.every((e) => e.share > 0)) onSave(next);
+  };
+
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+      {draft.length === 0 && <span className="text-xs text-muted-foreground">Theo series</span>}
+      {draft.map((entry) => {
+        const product = products.find((p) => p.id === entry.productId);
+        return (
+          <span key={entry.productId} className="flex items-center gap-1.5">
+            {product && <AssetThumb asset={product} className="size-5 rounded" />}
+            <span className="text-xs">{shortName(entry.productId)}</span>
+            <Input
+              size="sm"
+              type="number"
+              min={1}
+              max={100}
+              aria-label={`Tỉ lệ ${product?.name ?? ""}`}
+              className="w-14"
+              value={String(entry.share)}
+              onChange={(e) => setShare(entry.productId, e.target.value)}
+            />
+            <span className="text-xs text-muted-foreground">%</span>
+            <Button
+              variant="ghost-muted"
+              size="icon-xs"
+              aria-label={`Bỏ ${product?.name ?? ""}`}
+              onClick={() =>
+                respread(draft.map((e) => e.productId).filter((id) => id !== entry.productId))
+              }
+            >
+              <X />
+            </Button>
+          </span>
+        );
+      })}
+      {draft.length > 0 && total !== 100 && (
+        <span className="text-xs text-destructive-foreground tabular-nums">Tổng {total}%</span>
+      )}
+      {unused.length > 0 && (
+        <Menu>
+          <MenuTrigger render={<Button variant="outline" size="xs" />}>
+            <Plus />
+            Thêm
+          </MenuTrigger>
+          <MenuPopup align="end" className="max-h-80 w-60 overflow-y-auto">
+            {[
+              { label: "Series", list: inSeries },
+              { label: "Thư viện", list: others },
+            ]
+              .filter((g) => g.list.length)
+              .map((g) => (
+                <MenuGroup key={g.label}>
+                  <MenuGroupLabel>{g.label}</MenuGroupLabel>
+                  {g.list.map((p) => (
+                    <MenuItem
+                      key={p.id}
+                      onClick={() => respread([...draft.map((e) => e.productId), p.id])}
+                    >
+                      <AssetThumb asset={p} className="size-5 rounded" />
+                      <span className="truncate">{p.name}</span>
+                    </MenuItem>
+                  ))}
+                </MenuGroup>
+              ))}
+          </MenuPopup>
+        </Menu>
+      )}
+    </div>
+  );
+}
+
+function SettingRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-h-12 items-center gap-3 px-4 py-2">
       <span className="flex-1 font-medium">{label}</span>
-      {inherited && <span className="text-xs text-muted-foreground">Theo series</span>}
       {children}
     </div>
   );

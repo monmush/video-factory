@@ -19,6 +19,7 @@ import {
   estimateClean,
   placePhotoPath,
 } from "./place-check";
+import * as products from "./product-change";
 import { groupProducts } from "./product-grouping";
 import { clearKey, providersInfo, setKey } from "./providers";
 import { readSettings, writeSettings } from "./settings";
@@ -96,10 +97,9 @@ export function registerIpc() {
   });
   handle("session:approve", async (sessionId, scriptIds) => {
     const ids = await board.scriptsToCommit(sessionId, scriptIds);
-    const session = await approveSession(sessionId, ids);
-    // Committing starts the videos (one at a time, in commit order).
-    await video.enqueue(sessionId, ids);
-    return session;
+    // Experiment branch: committing only sends the scripts to the Video tab.
+    // Each video is planned there at the batch's Media level and made by its own hold.
+    return approveSession(sessionId, ids);
   });
 
   handle("board:get", board.getBoard);
@@ -151,7 +151,14 @@ export function registerIpc() {
   });
   handle("board:restore", ({ sessionId, ids }) => board.restore(sessionId, ids));
   handle("board:pin", ({ sessionId, scriptId, pinned }) => board.pin(sessionId, scriptId, pinned));
-  handle("board:undo", ({ sessionId, messageId }) => board.undo(sessionId, messageId));
+  handle("board:undo", ({ sessionId, messageId }) => products.undoTurn(sessionId, messageId));
+  handle("board:set-product", async ({ sessionId, scriptId, productId }) => {
+    await products.setProduct(sessionId, scriptId, productId);
+    return null;
+  });
+  handle("board:undo-product", ({ sessionId, scriptId }) =>
+    products.undoProduct(sessionId, scriptId),
+  );
   handle("board:link-speaker", async ({ sessionId, speaker, characterId }) => {
     await board.linkSpeaker(sessionId, speaker, characterId);
     // The character now speaks in this series, so the writer should know it.
@@ -223,6 +230,8 @@ export function registerIpc() {
     averages: video.currentAverages(),
   }));
   handle("video:start", ({ sessionId, scriptId }) => video.start(sessionId, scriptId));
+  handle("video:plan", ({ sessionId, scriptId }) => video.planOnly(sessionId, scriptId));
+  handle("video:replan", ({ sessionId, scriptId }) => video.replan(sessionId, scriptId));
   handle("video:make-all", async ({ sessionId, scriptIds }) => {
     if (scriptIds.length) {
       const ids = await board.scriptsToCommit(sessionId, scriptIds);

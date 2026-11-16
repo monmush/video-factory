@@ -10,6 +10,7 @@ import {
   type Script,
   type Session,
 } from "../shared/ipc";
+import { assignProducts } from "../shared/product-mix";
 import { checkScript, committedIds, finishedScripts } from "../shared/ready-check";
 import { copyScript } from "../shared/versions";
 import { applyUndo, dropTouch, recordTouch, type TurnLog, turnUndo } from "./board-undo";
@@ -248,9 +249,36 @@ export function newScript(fields: Pick<Script, "brief"> & Partial<Script>): Scri
   };
 }
 
-/** Marks show what the latest request did; a new request starts clean. */
+/** Marks show what the latest request did; a new request starts clean (and so does a card's undo). */
 export function clearMarks(board: Board) {
-  for (const s of board.scripts) s.mark = null;
+  for (const s of board.scripts) {
+    s.mark = null;
+    delete s.productUndo;
+  }
+}
+
+/**
+ * Products for new topic cards (docs/SCRIPT_BOARD_DECISIONS.md, "Product per
+ * video"): one named for a topic is kept; the others follow the batch's mix
+ * and what the board already has. Undefined: the writer chooses.
+ */
+async function topicProducts(
+  sessionId: string,
+  b: Board,
+  named: readonly (string | null | undefined)[],
+): Promise<(string | null | undefined)[]> {
+  const { session } = await findSession(sessionId);
+  const onBoard = boardOrder(b.scripts)
+    .filter((s) => s.status !== "failed")
+    .map((s) => s.productIds[0] ?? null);
+  const given = named.filter((p): p is string | null => p !== undefined);
+  const assigned = assignProducts(
+    session.settings?.productMix,
+    [...onBoard, ...given],
+    named.filter((p) => p === undefined).length,
+  );
+  let next = 0;
+  return named.map((p) => (p !== undefined ? p : assigned[next++]));
 }
 
 // ---------------------------------------------------------------- chat requests
@@ -340,6 +368,14 @@ async function addScripts(
     }),
   );
   for (const c of cards) runningScripts.add(c.id);
+  const products = await topicProducts(
+    sessionId,
+    await load(sessionId),
+    cards.map(() => undefined),
+  );
+  cards.forEach((c, i) => {
+    if (products[i] !== undefined && c.brief.kind === "topic") c.brief.productId = products[i];
+  });
   await mutateBoard(sessionId, (b) => {
     // "Mới" only tells later additions apart; a session's first batch is all new.
     if (!b.scripts.some((s) => !s.deletedAt)) for (const c of cards) c.mark = null;
@@ -410,7 +446,8 @@ async function editScripts(
       await mutateBoard(sessionId, (b) => {
         const s = b.scripts.find((x) => x.id === before.id);
         if (!s) return;
-        if (written) Object.assign(s, written, { mark: "edited", updatedAt: now() });
+        if (written)
+          Object.assign(s, written, { mark: "edited", productUndo: undefined, updatedAt: now() });
         // A stated length sticks, so later variants of this script keep it.
         if (written && plan.targetSec) s.brief = { ...s.brief, targetSec: plan.targetSec };
         s.status = "ready";
@@ -468,6 +505,7 @@ async function writeCard(
     const board = await load(sessionId);
     const card = board.scripts.find((s) => s.id === scriptId);
     if (!card) return false;
+    const library = (await getWorkspace()).assets;
     let written: writer.WrittenScript;
     if (card.brief.kind === "copy") {
       throw new Error("Bản sao không cần viết");
@@ -475,9 +513,29 @@ async function writeCard(
       const { sourceId } = card.brief;
       const source = board.scripts.find((s) => s.id === sourceId);
       if (!source?.lines.length) throw new Error("Không còn kịch bản gốc");
-      written = await writer.writeVariant(ctx, source, card.brief.direction, card.brief.targetSec);
+      // A variant features its source's product.
+      const product = source.productIds[0];
+      written = writer.oneProduct(
+        await writer.writeVariant(
+          writer.withProduct(ctx, product, library),
+          source,
+          card.brief.direction,
+          card.brief.targetSec,
+        ),
+        product,
+      );
     } else {
-      written = await writer.writeTopic(ctx, card, card.brief.direction, card.brief.targetSec);
+      // The product given to the topic (the batch's mix or the chat), else the writer's choice.
+      const { productId } = card.brief;
+      written = writer.oneProduct(
+        await writer.writeTopic(
+          writer.withProduct(ctx, productId, library),
+          card,
+          card.brief.direction,
+          card.brief.targetSec,
+        ),
+        productId,
+      );
     }
     runningScripts.delete(scriptId);
     await mutateBoard(sessionId, (b) => {
@@ -583,11 +641,133 @@ export const pin = (sessionId: string, scriptId: string, pinned: boolean) =>
     if (s) s.pinned = pinned;
   });
 
-/** Restores every script a chat turn changed, and removes the scripts it added. */
-export async function undo(sessionId: string, messageId: string): Promise<null> {
+/**
+ * Restores every script a chat turn changed, and removes the scripts it added.
+ * `editable`: scripts sent to video whose video has not started, which may
+ * still change (a product change edits them in place); returns the ones of
+ * those it restored, whose plan no longer fits.
+ */
+export async function undo(
+  sessionId: string,
+  messageId: string,
+  editable: ReadonlySet<string> = new Set(),
+): Promise<string[]> {
   const { session } = await findSession(sessionId);
-  await mutateBoard(sessionId, (b) => applyUndo(b, messageId, lockedIds(session, b)));
-  return null;
+  return mutateBoard(sessionId, (b) => {
+    const locked = new Set([...lockedIds(session, b)].filter((id) => !editable.has(id)));
+    const before = b.messages.find((m) => m.id === messageId)?.undo?.before ?? [];
+    applyUndo(b, messageId, locked);
+    return before.map((s) => s.id).filter((id) => editable.has(id));
+  });
+}
+
+// ---------------------------------------------------------------- product per video
+
+/**
+ * Starts a product change on one ready script (src/main/product-change.ts):
+ * on the script itself, or on a new version when `copy` (its video has
+ * started). Saves what undo needs in the same write: the chat turn's log, or
+ * on the card. Returns the script as the writer should revise it, or null
+ * when it already has that product.
+ */
+export async function beginProductChange(
+  sessionId: string,
+  scriptId: string,
+  productId: string | null,
+  opts: { copy: boolean; log?: TurnLog },
+): Promise<{ before: Script; targetId: string; created: boolean; copied: boolean } | null> {
+  return mutateBoard(sessionId, (b) => {
+    const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
+    if (!s) throw new Error("Không tìm thấy kịch bản");
+    if (s.status !== "ready") throw new Error("Kịch bản đang được viết, thử lại sau");
+    if ((s.productIds[0] ?? null) === productId && s.productIds.length <= 1) return null;
+    const { log } = opts;
+    if (!log) clearMarks(b);
+    let target = s;
+    let created = false;
+    if (opts.copy) {
+      if (log) {
+        const edit = editTarget(b, new Set([s.id]), log, s);
+        target = edit.target;
+        created = edit.created;
+      } else {
+        target = insertCopy(b, s);
+        target.productUndo = { copy: true };
+        created = true;
+      }
+    } else if (log) {
+      recordTouch(b, log, s);
+    } else {
+      s.productUndo = {
+        productIds: [...s.productIds],
+        lines: structuredClone(s.lines),
+        staging: s.staging,
+      };
+    }
+    const before = { ...structuredClone(target), status: "ready" as const };
+    target.status = "writing";
+    target.changing = "product";
+    runningScripts.add(target.id);
+    return { before, targetId: target.id, created, copied: opts.copy };
+  });
+}
+
+/** Ends a product change: the revised lines and staging, or the script as it was when writing failed. */
+export async function finishProductChange(
+  sessionId: string,
+  targetId: string,
+  written: writer.WrittenScript | null,
+  opts: { created: boolean; log?: TurnLog },
+): Promise<Script | null> {
+  runningScripts.delete(targetId);
+  return mutateBoard(sessionId, (b) => {
+    const s = b.scripts.find((x) => x.id === targetId);
+    if (!s) return null;
+    s.status = "ready";
+    delete s.changing;
+    if (written) {
+      Object.assign(s, {
+        lines: written.lines,
+        staging: written.staging,
+        productIds: written.productIds,
+        mark: "edited",
+        updatedAt: now(),
+      });
+      return structuredClone(s);
+    }
+    if (opts.created) {
+      if (opts.log) dropCopy(b, opts.log, s);
+      else s.deletedAt = now();
+    } else if (opts.log) dropTouch(b, opts.log, s.id);
+    else delete s.productUndo;
+    return null;
+  });
+}
+
+/** "Hoàn tác" on a card after a product change: its product, lines and staging back, or the new version gone. */
+export async function undoProductChange(
+  sessionId: string,
+  scriptId: string,
+): Promise<{ inPlace: boolean }> {
+  return mutateBoard(sessionId, (b) => {
+    const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
+    const undo = s?.productUndo;
+    if (!s || !undo) throw new Error("Không còn gì để hoàn tác");
+    if (s.status === "writing") throw new Error("Kịch bản đang được viết, thử lại sau");
+    delete s.productUndo;
+    if (undo.copy) {
+      s.deletedAt = now();
+      return { inPlace: false };
+    }
+    Object.assign(s, {
+      productIds: undo.productIds,
+      lines: undo.lines,
+      staging: undo.staging,
+      mark: null,
+      updatedAt: now(),
+    });
+    return { inPlace: true };
+  });
 }
 
 // ---------------------------------------------------------------- agent turns
@@ -615,7 +795,7 @@ export async function agentUpdate(
     if (s.status !== "ready") throw new Error("Kịch bản đang được viết, thử lại sau");
     const { target, copied } = editTarget(b, lockedIds(session, b), log, s);
     if (!copied) recordTouch(b, log, target);
-    Object.assign(target, patch, { mark: "edited", updatedAt: now() });
+    Object.assign(target, patch, { mark: "edited", productUndo: undefined, updatedAt: now() });
     return { script: structuredClone(target), copied };
   });
 }
@@ -623,17 +803,28 @@ export async function agentUpdate(
 /** Topic cards appear at once; dialogue is written into each in parallel. */
 export async function agentAdd(
   sessionId: string,
-  plan: { topics: writer.Topic[]; direction: string; targetSec: number | null },
+  plan: {
+    /** `productId`: the product named for that topic (null: none); missing: the batch's mix. */
+    topics: (writer.Topic & { productId?: string | null })[];
+    direction: string;
+    targetSec: number | null;
+  },
   log: TurnLog,
 ): Promise<{ written: Script[]; failed: number }> {
   const ctx = await writerContext(sessionId);
-  const cards = plan.topics.map((t) =>
+  const products = await topicProducts(
+    sessionId,
+    await load(sessionId),
+    plan.topics.map((t) => t.productId),
+  );
+  const cards = plan.topics.map((t, i) =>
     newScript({
       title: t.title,
       hook: t.hook,
       brief: {
         kind: "topic",
         ...(plan.direction ? { direction: plan.direction } : {}),
+        ...(products[i] !== undefined ? { productId: products[i] } : {}),
         targetSec: plan.targetSec ?? DEFAULT_TARGET_SEC,
       },
     }),
@@ -713,7 +904,7 @@ export async function agentRewrite(
           if (created.has(s.id)) dropCopy(b, log, s);
           return { outcome: failed ? ("failed" as const) : ("same" as const) };
         }
-        Object.assign(s, written, { mark: "edited", updatedAt: now() });
+        Object.assign(s, written, { mark: "edited", productUndo: undefined, updatedAt: now() });
         if (targetSec) s.brief = { ...s.brief, targetSec };
         return { outcome: "changed" as const, script: structuredClone(s) };
       }).catch(() => ({ outcome: "failed" as const }));
@@ -812,7 +1003,10 @@ export async function linkSpeaker(
         line.speaker = character.name;
         changed = true;
       }
-      if (changed) script.updatedAt = now();
+      if (changed) {
+        script.updatedAt = now();
+        delete script.productUndo;
+      }
     }
   });
   return null;

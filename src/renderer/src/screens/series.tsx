@@ -1,6 +1,6 @@
-import { outputResolution } from "@shared/batch-settings";
 import { boardOrder } from "@shared/board";
 import type { Asset, Series, Session } from "@shared/ipc";
+import { mediaLevel } from "@shared/media-level";
 import { Link, useParams } from "@tanstack/react-router";
 import { Ellipsis, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useId, useState } from "react";
@@ -307,8 +307,7 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
     productIds: series.productIds ?? [],
     environmentIds: series.environmentIds ?? [],
   });
-  const [videoModel, setVideoModel] = useState(series.videoModel);
-  const [resolution, setResolution] = useState(outputResolution(series.resolution));
+  const [level, setLevel] = useState(mediaLevel(series.mediaLevel).id);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
 
@@ -319,8 +318,7 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
         name,
         guidance,
         ...assets,
-        ...(videoModel ? { videoModel } : {}),
-        resolution,
+        mediaLevel: level,
       });
       await refreshWorkspace();
       onDone();
@@ -355,13 +353,7 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
           />
         </div>
         <SeriesAssetFields value={assets} onChange={setAssets} />
-        <SeriesOutputFields
-          environmentIds={assets.environmentIds}
-          videoModel={videoModel}
-          resolution={resolution}
-          onVideoModel={setVideoModel}
-          onResolution={setResolution}
-        />
+        <SeriesOutputFields mediaLevel={level} onMediaLevel={setLevel} />
         {error && <p className="text-destructive-foreground">{error}</p>}
       </div>
       <DialogFooter className="justify-end">

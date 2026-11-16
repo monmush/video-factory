@@ -65,7 +65,11 @@ export async function checkStill(
       problems.push(`packaging ${seen.packaging}`);
     }
     if (frame.kind === "character") {
-      if (seen.people !== undefined && seen.people !== 1) problems.push(`${seen.people} people`);
+      // A planned over-the-shoulder keyframe shows part of the other person.
+      const overShoulder = /shoulder/i.test(frame.framing ?? "");
+      if (!overShoulder && seen.people !== undefined && seen.people !== 1) {
+        problems.push(`${seen.people} people`);
+      }
       const seat = plan.seats.find((s) => s.characterId === frame.characterId);
       const expected = plan.seats.length < 2 ? "camera" : seat?.looks;
       if (expected && expected !== "camera" && seen.looks && seen.looks !== expected) {

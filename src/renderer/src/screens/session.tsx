@@ -1,16 +1,15 @@
-import { boardOrder, estimateSeconds, estimateUsd, formatSeconds } from "@shared/board";
-import { formatCost } from "@shared/credits";
-import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
+import { boardOrder, estimateSeconds, formatSeconds } from "@shared/board";
+import { productCounts, shortNames } from "@shared/product-mix";
+import { committedIds, finishedScripts } from "@shared/ready-check";
 import { Link, Outlet, useMatches, useNavigate, useParams } from "@tanstack/react-router";
 import { LayoutGrid, Rows3 } from "lucide-react";
 import type { ReactNode } from "react";
 import { BatchSettings } from "@/components/batch-settings";
-import { makeLabel, useMakeVideos } from "@/components/ready-check";
+import { useMakeVideos } from "@/components/ready-check";
 import { ScriptBoard } from "@/components/script-board";
 import { Button } from "@/components/ui/button";
-import { ButtonPrice, HoldButton } from "@/components/ui/hold-button";
 import { VideosList } from "@/components/videos";
-import { boardLayout, testCardId, useBoard, useBoardView } from "@/lib/board";
+import { boardLayout, useBoard, useBoardView } from "@/lib/board";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
 import { NotFound } from "./not-found";
@@ -75,7 +74,7 @@ export function SessionLayout() {
  */
 function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: boolean }) {
   const board = useBoard(sessionId);
-  const { sessions } = useWorkspace();
+  const { sessions, assets } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const navigate = useNavigate();
   const [view, setView] = useBoardView(sessionId);
@@ -102,29 +101,25 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
   const layout = boardLayout(view, scripts.length);
   const finished = finishedScripts(board.scripts).filter((s) => !sent.includes(s.id));
   const finishedIds = finished.map((s) => s.id);
-  const nudge = !approved && isFirstBatch(session, sessions) && finished.length > 1;
-  const testId = testCardId(view, finishedIds);
-  const test = finished.find((s) => s.id === testId);
-  // Estimates, all-in; "…" until writing finishes.
   const seconds = finished.reduce((sum, s) => sum + estimateSeconds(s.lines), 0);
-  const usd = finished.reduce(
-    (sum, s) =>
-      sum +
-      estimateUsd(s.lines, {
-        frames: make.frames,
-        model: make.model,
-        resolution: make.resolution,
-        cutoutUsd: make.cutouts(s),
-      }),
-    0,
-  );
-  const price = (value: number) => (writing ? "…" : `~${formatCost(value)}`);
+  // Products across the board's scripts, in short names: the batch's mix as it stands.
+  const library = assets.filter((a) => a.kind === "product");
+  const names = shortNames(library.map((p) => p.name));
+  const short = new Map(library.map((p, i) => [p.id, names[i]]));
+  const mix = [...productCounts(scripts.filter((s) => s.status !== "failed")).counts]
+    .map(([id, n]) => `${short.get(id) ?? "?"} ${n}`)
+    .join(" · ");
 
   return (
     <div className="flex items-center gap-2">
-      {ready > 0 && !nudge && (
+      {mix && (
+        <span className="truncate px-1 text-xs text-muted-foreground tabular-nums" title="Sản phẩm">
+          {mix}
+        </span>
+      )}
+      {ready > 0 && (
         <span className="px-1 text-xs text-muted-foreground tabular-nums">
-          {writing ? "…" : `~${formatSeconds(seconds)} · ~${formatCost(usd)}`}
+          {writing ? "…" : `~${formatSeconds(seconds)}`}
         </span>
       )}
       {scripts.length > 0 && (
@@ -149,98 +144,21 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
         </fieldset>
       )}
       {make.error && <span className="text-xs text-destructive-foreground">{make.error}</span>}
-      {nudge && test ? (
-        <>
-          <MakeButton
-            tone="outline"
-            ids={finishedIds}
-            label={makeLabel(ready, { hold: !make.needsCheck(finishedIds) })}
-            price={price(usd)}
-            disabled={waiting}
-            make={make}
-            onPointerEnter={() => setView({ previewAll: true })}
-            onPointerLeave={() => setView({ previewAll: false })}
-            onFocus={() => setView({ previewAll: true })}
-            onBlur={() => setView({ previewAll: false })}
-          />
-          <MakeButton
-            ids={[test.id]}
-            label={makeLabel(1, { test: true, hold: !make.needsCheck([test.id]) })}
-            price={price(
-              estimateUsd(test.lines, {
-                frames: make.frames,
-                model: make.model,
-                resolution: make.resolution,
-                cutoutUsd: make.cutouts(test),
-              }),
-            )}
-            disabled={waiting}
-            make={make}
-          />
-        </>
-      ) : ready > 0 ? (
-        <MakeButton
-          ids={finishedIds}
-          label={makeLabel(ready, {
-            hold: !make.needsCheck(finishedIds),
-            // With other videos already made, say which scripts this makes.
-            remaining: sent.length > 0,
-            number: scripts.findIndex((s) => s.id === finishedIds[0]) + 1,
-          })}
-          price={price(usd)}
+      {ready > 0 ? (
+        // Experiment branch: no price here; the Media level is chosen on the Video tab.
+        <Button
           disabled={waiting}
-          make={make}
-        />
+          onClick={() =>
+            make.needsCheck(finishedIds) ? make.open(finishedIds) : make.make(finishedIds)
+          }
+        >
+          Tạo video
+        </Button>
       ) : (
         !approved && <Button disabled>Tạo video</Button>
       )}
       {make.dialog}
     </div>
-  );
-}
-
-/**
- * A make button: held for three seconds when nothing needs fixing, else a
- * plain click that opens the ready check.
- */
-function MakeButton({
-  ids,
-  label,
-  price,
-  disabled,
-  make,
-  tone = "primary",
-  ...pointer
-}: {
-  ids: string[];
-  label: string;
-  price: string;
-  disabled?: boolean;
-  make: ReturnType<typeof useMakeVideos>;
-  tone?: "primary" | "outline";
-  onPointerEnter?: () => void;
-  onPointerLeave?: () => void;
-  onFocus?: () => void;
-  onBlur?: () => void;
-}) {
-  if (make.needsCheck(ids)) {
-    return (
-      <Button
-        variant={tone === "primary" ? "default" : "outline"}
-        disabled={disabled}
-        onClick={() => make.open(ids)}
-        {...pointer}
-      >
-        {label}
-        <ButtonPrice>{price}</ButtonPrice>
-      </Button>
-    );
-  }
-  return (
-    <HoldButton tone={tone} disabled={disabled} onHold={() => make.make(ids)} {...pointer}>
-      {label}
-      <ButtonPrice>{price}</ButtonPrice>
-    </HoldButton>
   );
 }
 
