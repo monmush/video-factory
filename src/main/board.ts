@@ -8,16 +8,17 @@ import {
   type ChatMessage,
   resolveChoice,
   type Script,
+  type Series,
   type Session,
 } from "../shared/ipc";
-import { assignProducts } from "../shared/product-mix";
+import { mentionedProducts, newTopicProducts } from "../shared/product-mix";
 import { checkScript, committedIds, finishedScripts } from "../shared/ready-check";
 import { copyScript } from "../shared/versions";
 import { applyUndo, dropTouch, recordTouch, type TurnLog, turnUndo } from "./board-undo";
 import { mediaDir, writeJsonAtomic } from "./paths";
 import * as writer from "./script-writer";
 import { readSettings } from "./settings";
-import { getWorkspace } from "./store";
+import { getWorkspace, updateSeries } from "./store";
 
 export type { TurnLog };
 
@@ -259,26 +260,57 @@ export function clearMarks(board: Board) {
 
 /**
  * Products for new topic cards (docs/SCRIPT_BOARD_DECISIONS.md, "Product per
- * video"): one named for a topic is kept; the others follow the batch's mix
- * and what the board already has. Undefined: the writer chooses.
+ * video"): one named for a topic is kept; the others go to the products the
+ * request mentions, else follow the batch's mix, else are shared evenly over
+ * the series' products (rules: newTopicProducts). Products the request
+ * mentions join the series. Undefined: the writer chooses.
  */
 async function topicProducts(
   sessionId: string,
   b: Board,
   named: readonly (string | null | undefined)[],
+  request?: string,
 ): Promise<(string | null | undefined)[]> {
-  const { session } = await findSession(sessionId);
-  const onBoard = boardOrder(b.scripts)
-    .filter((s) => s.status !== "failed")
-    .map((s) => s.productIds[0] ?? null);
-  const given = named.filter((p): p is string | null => p !== undefined);
-  const assigned = assignProducts(
-    session.settings?.productMix,
-    [...onBoard, ...given],
-    named.filter((p) => p === undefined).length,
+  const { ws, session } = await findSession(sessionId);
+  const series = ws.series.find((s) => s.id === session.seriesId);
+  const mentioned = request
+    ? mentionedProducts(
+        request,
+        ws.assets.filter((a) => a.kind === "product"),
+      )
+    : [];
+  if (series) await joinSeries(series, mentioned);
+  const siblings = ws.sessions
+    .filter((s) => s.seriesId === session.seriesId)
+    .sort((x, y) => x.createdAt.localeCompare(y.createdAt));
+  return newTopicProducts({
+    named,
+    onBoard: boardOrder(b.scripts)
+      .filter((s) => s.status !== "failed")
+      .map((s) => s.productIds[0] ?? null),
+    mentioned,
+    savedMix: session.settings?.productMix,
+    seriesProductIds: series?.productIds ?? [],
+    offset: Math.max(
+      0,
+      siblings.findIndex((s) => s.id === sessionId),
+    ),
+  });
+}
+
+/** Library products used for this series' scripts join it, so the writer knows them. */
+export async function joinSeries(
+  series: Series,
+  productIds: readonly (string | null | undefined)[],
+) {
+  const missing = productIds.filter(
+    (id): id is string => Boolean(id) && !series.productIds.includes(id as string),
   );
-  let next = 0;
-  return named.map((p) => (p !== undefined ? p : assigned[next++]));
+  if (!missing.length) return;
+  await updateSeries({
+    id: series.id,
+    productIds: [...new Set([...series.productIds, ...missing])],
+  });
 }
 
 // ---------------------------------------------------------------- chat requests
@@ -336,7 +368,7 @@ async function runRequest(sessionId: string, replyId: string, text: string, refs
     const ordered = boardOrder((await load(sessionId)).scripts);
     const decision = await writer.route(ctx, ordered, text, refs);
     if (decision.action === "reply") await say({ text: decision.text });
-    else if (decision.action === "add") await addScripts(sessionId, ctx, decision, say);
+    else if (decision.action === "add") await addScripts(sessionId, ctx, decision, text, say);
     else await editScripts(sessionId, ctx, ordered, decision, say);
   } catch (error) {
     console.error("[board] request failed", error);
@@ -354,6 +386,7 @@ async function addScripts(
   sessionId: string,
   ctx: writer.WriterContext,
   plan: Extract<writer.Route, { action: "add" }>,
+  request: string,
   say: Say,
 ) {
   const cards = plan.topics.map((t) =>
@@ -372,6 +405,7 @@ async function addScripts(
     sessionId,
     await load(sessionId),
     cards.map(() => undefined),
+    request,
   );
   cards.forEach((c, i) => {
     if (products[i] !== undefined && c.brief.kind === "topic") c.brief.productId = products[i];
@@ -804,7 +838,7 @@ export async function agentUpdate(
 export async function agentAdd(
   sessionId: string,
   plan: {
-    /** `productId`: the product named for that topic (null: none); missing: the batch's mix. */
+    /** `productId`: the product named for that topic (null: none); missing: shared out (topicProducts). */
     topics: (writer.Topic & { productId?: string | null })[];
     direction: string;
     targetSec: number | null;

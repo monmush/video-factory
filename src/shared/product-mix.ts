@@ -1,9 +1,10 @@
 // A batch's product mix (docs/SCRIPT_BOARD_DECISIONS.md, "Product per
 // video"): which products the batch's videos feature, as whole percentages
 // summing to 100. It is a target for scripts not yet written: each new topic
-// is given the product the board is furthest behind on. Scripts already
-// written change only when someone asks. One product per video. Pure, so the
-// main process, the board and tests share it.
+// is given the product the board is furthest behind on. With no mix saved, the
+// series' products are shared evenly (defaultMix). Scripts already written
+// change only when someone asks. One product per video. Pure, so the main
+// process, the board and tests share it.
 
 export interface ProductShare {
   productId: string;
@@ -47,7 +48,7 @@ export function evenMix(productIds: readonly string[]): ProductMix {
  * its share of the board as it will be (ties: the earlier one in the mix).
  * `existing` is the product of each script already on the board (null: none);
  * those count toward the total whatever they feature. No mix: no assignment
- * (undefined), so the writer chooses as before.
+ * (undefined), so the writer chooses.
  */
 export function assignProducts(
   mix: ProductMix | undefined,
@@ -76,6 +77,76 @@ export function assignProducts(
     out.push(best.productId);
   }
   return out;
+}
+
+/**
+ * The mix used when none is saved: an even split over the series' products,
+ * starting `offset` places in, so successive batches do not all lead with the
+ * first product. Fewer than two products: no mix.
+ */
+export function defaultMix(productIds: readonly string[], offset: number): ProductMix {
+  const n = productIds.length;
+  if (n < 2) return [];
+  const start = ((Math.trunc(offset) % n) + n) % n;
+  return evenMix([...productIds.slice(start), ...productIds.slice(0, start)]);
+}
+
+/**
+ * Ids of the products whose `@handle` the text names, in order of first
+ * appearance. A handle counts only as a whole tag (`@hong-tra` is not in
+ * `@hong-tra-shan`), after the start of the text or a character that cannot be
+ * part of a handle; case does not matter.
+ */
+export function mentionedProducts(
+  text: string,
+  products: readonly { id: string; handle: string }[],
+): string[] {
+  const found: { id: string; at: number }[] = [];
+  const lower = text.toLowerCase();
+  for (const p of products) {
+    const tag = `@${p.handle.toLowerCase()}`;
+    if (tag.length < 2) continue;
+    for (let at = lower.indexOf(tag); at >= 0; at = lower.indexOf(tag, at + 1)) {
+      const before = at > 0 ? (lower[at - 1] as string) : "";
+      const after = lower[at + tag.length] ?? "";
+      if (!/[a-z0-9-]/.test(before) && !/[a-z0-9-]/.test(after)) {
+        found.push({ id: p.id, at });
+        break;
+      }
+    }
+  }
+  return [...new Set(found.sort((a, b) => a.at - b.at).map((f) => f.id))];
+}
+
+/**
+ * Products for new topics (docs/SCRIPT_BOARD_DECISIONS.md, "Product per
+ * video"). A product named for a topic (null: none) is kept. The others, in
+ * order of priority: shared evenly among the products the request mentions
+ * (counting only this request); the batch's saved mix; an even split over the
+ * series' products (`offset` rotates where it starts). Both mixes are balanced
+ * against `onBoard`, the product of each script already on the board. A series
+ * with fewer than two products and no mix: undefined, the writer chooses.
+ */
+export function newTopicProducts(input: {
+  named: readonly (string | null | undefined)[];
+  onBoard: readonly (string | null)[];
+  mentioned?: readonly string[];
+  savedMix?: ProductMix;
+  seriesProductIds: readonly string[];
+  offset: number;
+}): (string | null | undefined)[] {
+  const { named, onBoard, mentioned, savedMix, seriesProductIds, offset } = input;
+  const given = named.filter((p): p is string | null => p !== undefined);
+  const open = named.filter((p) => p === undefined).length;
+  const assigned = mentioned?.length
+    ? assignProducts(evenMix(mentioned), [], open)
+    : assignProducts(
+        savedMix?.length ? savedMix : defaultMix(seriesProductIds, offset),
+        [...onBoard, ...given],
+        open,
+      );
+  let next = 0;
+  return named.map((p) => (p !== undefined ? p : assigned[next++]));
 }
 
 /** How many scripts feature each product, in order of first appearance; none counted apart. */

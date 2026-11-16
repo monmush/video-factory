@@ -12,7 +12,7 @@ import * as board from "../board";
 import { dataFile } from "../paths";
 import { setProduct } from "../product-change";
 import * as writer from "../script-writer";
-import { getWorkspace, removeNote, saveNote, updateSeries, updateSession } from "../store";
+import { getWorkspace, removeNote, saveNote, updateSession } from "../store";
 import * as video from "../video/runner";
 
 // The agent's only way to change anything: typed tools over the session's
@@ -401,7 +401,7 @@ export const TOOLS = [
   define({
     name: "add_scripts",
     description:
-      "Thêm kịch bản mới. Bạn lập tiêu đề và hook cho từng kịch bản; người viết sẽ viết lời thoại song song. Chờ đến khi viết xong.",
+      "Thêm kịch bản mới. Bạn lập tiêu đề và hook cho từng kịch bản; người viết sẽ viết lời thoại song song. Chờ đến khi viết xong. Kết quả liệt kê sản phẩm của từng kịch bản; khi tóm tắt cho người dùng, dùng đúng tên sản phẩm đó.",
     shape: {
       topics: z
         .array(
@@ -412,7 +412,7 @@ export const TOOLS = [
               .string()
               .optional()
               .describe(
-                '@handle sản phẩm của video này, hoặc "không"; bỏ trống thì theo tỉ lệ sản phẩm của đợt',
+                '@handle sản phẩm của video này, hoặc "không". Bỏ trống thì các sản phẩm của series được chia đều (hoặc theo tỉ lệ của đợt nếu đã đặt). Khi người dùng nêu sản phẩm (bằng @handle hoặc tên), đặt product cho mọi đề tài theo đó',
               ),
           }),
         )
@@ -428,15 +428,7 @@ export const TOOLS = [
         t.product === undefined ? undefined : (productArg(ws.assets, t.product)?.id ?? null),
       );
       // A library product named for a topic joins the series, so the writer knows it.
-      const missing = given.filter(
-        (id): id is string => Boolean(id) && !series.productIds.includes(id as string),
-      );
-      if (missing.length) {
-        await updateSeries({
-          id: series.id,
-          productIds: [...new Set([...series.productIds, ...missing])],
-        });
-      }
+      await board.joinSeries(series, given);
       host.label(`Viết ${topics.length} kịch bản mới`);
       const outcome = await unlessStopped(
         host,
@@ -515,7 +507,7 @@ export const TOOLS = [
   define({
     name: "set_product_mix",
     description:
-      "Đặt tỉ lệ sản phẩm cho các kịch bản SẮP viết của đợt này (add_scripts tự chia sản phẩm theo tỉ lệ và theo những gì đã có trên bảng). Kịch bản đã có không đổi; muốn đổi thì dùng assign_products. Tổng phải là 100. Gửi products rỗng để bỏ tỉ lệ (người viết tự chọn từ series).",
+      "Đặt tỉ lệ sản phẩm cho các kịch bản SẮP viết của đợt này (add_scripts tự chia sản phẩm theo tỉ lệ và theo những gì đã có trên bảng). Kịch bản đã có không đổi; muốn đổi thì dùng assign_products. Tổng phải là 100. Gửi products rỗng để bỏ tỉ lệ (các sản phẩm của series được chia đều).",
     shape: {
       products: z
         .array(
@@ -541,7 +533,7 @@ export const TOOLS = [
         id: host.sessionId,
         settings: { productMix: mix.length ? mix : null },
       });
-      if (!mix.length) return "Đã bỏ tỉ lệ sản phẩm; người viết tự chọn từ series.";
+      if (!mix.length) return "Đã bỏ tỉ lệ sản phẩm; các sản phẩm của series sẽ được chia đều.";
       const name = (id: string) => assets.find((a) => a.id === id)?.name ?? id;
       return `Đã lưu tỉ lệ: ${mix.map((e) => `${name(e.productId)} ${e.share}%`).join(", ")}. Áp dụng cho kịch bản viết sau; kịch bản đã có không đổi.`;
     },

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { assignProducts, evenMix, mixProblem, productCounts, shortNames } from "./product-mix";
+import {
+  assignProducts,
+  defaultMix,
+  evenMix,
+  mentionedProducts,
+  mixProblem,
+  newTopicProducts,
+  productCounts,
+  shortNames,
+} from "./product-mix";
 
 const known = (id: string) => ["bach", "hong", "luc", "co"].includes(id);
 
@@ -72,5 +81,87 @@ describe("a batch's product mix", () => {
     // Never empties a name.
     expect(shortNames(["Trà", "Trà sen"])).toEqual(["Trà", "Trà sen"]);
     expect(shortNames(["Bạch Trà"])).toEqual(["Bạch Trà"]);
+  });
+});
+
+describe("the default mix", () => {
+  it("splits evenly over the series' products, rotated by the batch", () => {
+    expect(defaultMix(["a", "b", "c"], 0).map((e) => e.productId)).toEqual(["a", "b", "c"]);
+    expect(defaultMix(["a", "b", "c"], 1).map((e) => e.productId)).toEqual(["b", "c", "a"]);
+    expect(defaultMix(["a", "b", "c"], 4).map((e) => e.productId)).toEqual(["b", "c", "a"]);
+    expect(defaultMix(["a", "b"], 1).map((e) => e.share)).toEqual([50, 50]);
+  });
+
+  it("is empty for fewer than two products", () => {
+    expect(defaultMix(["a"], 0)).toEqual([]);
+    expect(defaultMix([], 3)).toEqual([]);
+  });
+});
+
+describe("products mentioned in a request", () => {
+  const products = [
+    { id: "hong", handle: "hong-tra" },
+    { id: "shan", handle: "hong-tra-shan" },
+    { id: "bach", handle: "bach-tra" },
+  ];
+
+  it("finds whole tags in order of first appearance, once each", () => {
+    expect(mentionedProducts("3 video @bach-tra và @hong-tra, thêm @bach-tra", products)).toEqual([
+      "bach",
+      "hong",
+    ]);
+  });
+
+  it("does not match a handle inside a longer one or a word", () => {
+    expect(mentionedProducts("về @hong-tra-shan", products)).toEqual(["shan"]);
+    expect(mentionedProducts("mail@hong-tra", products)).toEqual([]);
+    expect(mentionedProducts("(@hong-tra)", products)).toEqual(["hong"]);
+  });
+
+  it("ignores case", () => {
+    expect(mentionedProducts("@Hong-Tra", products)).toEqual(["hong"]);
+  });
+});
+
+describe("products for new topics", () => {
+  const base = { onBoard: [], seriesProductIds: ["a", "b", "c"], offset: 0 };
+
+  it("keeps a product named for a topic", () => {
+    expect(newTopicProducts({ ...base, named: ["c", null, undefined] })).toEqual(["c", null, "a"]);
+  });
+
+  it("shares a request's mentioned products evenly, counting only the request", () => {
+    expect(
+      newTopicProducts({
+        ...base,
+        onBoard: ["b", "b"],
+        named: [undefined, undefined, undefined, undefined],
+        mentioned: ["b", "c"],
+        savedMix: [{ productId: "a", share: 100 }],
+      }),
+    ).toEqual(["b", "c", "b", "c"]);
+  });
+
+  it("follows a saved mix before the default rotation", () => {
+    expect(
+      newTopicProducts({
+        ...base,
+        named: [undefined, undefined],
+        savedMix: [{ productId: "c", share: 100 }],
+      }),
+    ).toEqual(["c", "c"]);
+  });
+
+  it("rotates over the series' products, balanced against the board", () => {
+    expect(
+      newTopicProducts({ ...base, offset: 1, named: [undefined, undefined, undefined] }),
+    ).toEqual(["b", "c", "a"]);
+    expect(newTopicProducts({ ...base, onBoard: ["a", "b"], named: [undefined] })).toEqual(["c"]);
+  });
+
+  it("leaves the choice to the writer with fewer than two products", () => {
+    expect(newTopicProducts({ ...base, seriesProductIds: ["a"], named: [undefined] })).toEqual([
+      undefined,
+    ]);
   });
 });

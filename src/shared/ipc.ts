@@ -52,7 +52,7 @@ export interface SessionSettings {
   mediaLevel?: string;
   /**
    * Products the batch's new scripts feature, in shares summing to 100
-   * (src/shared/product-mix.ts). Missing: the writer chooses from the series.
+   * (src/shared/product-mix.ts). Missing: the series' products are shared evenly.
    */
   productMix?: ProductMix;
 }

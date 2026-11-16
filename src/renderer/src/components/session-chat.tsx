@@ -12,6 +12,7 @@ import {
   resolveChoice,
   type Script,
 } from "@shared/ipc";
+import { findHash, matchScripts } from "@shared/mentions";
 import { canFix } from "@shared/video-fix";
 import {
   Check,
@@ -39,8 +40,9 @@ import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
+import { useWorkspace } from "@/lib/workspace";
 import { Composer } from "./composer";
-import { ProductMixChip } from "./product-mix-editor";
+import { PickerList, usePicker, useProductMention } from "./mention-picker";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -88,7 +90,9 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   const scroller = useStickToBottom();
   const input = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
-  const [dismissedHash, setDismissedHash] = useState<number | null>(null);
+  const workspace = useWorkspace();
+  const seriesId = workspace.sessions.find((s) => s.id === sessionId)?.seriesId;
+  const seriesProductIds = workspace.series.find((s) => s.id === seriesId)?.productIds ?? [];
 
   // After installing or signing in from Terminal, coming back to the app
   // re-checks, so the banner clears without a click. A turn that failed for
@@ -127,34 +131,8 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     [sessionId],
   );
 
-  // `#query` right before the caret opens the script picker.
+  // `#query` right before the caret opens the script picker; `@query` the product one.
   const hash = findHash(text, caret);
-  const candidates =
-    hash && hash.start !== dismissedHash
-      ? matchScripts(scripts, hash.query).filter((s) => !view.refs.includes(s.id))
-      : [];
-  // The highlighted row starts at the top again whenever the query changes.
-  const pickerKey = hash ? `${hash.start}:${hash.query}` : "";
-  const [highlight, setHighlight] = useState({ key: "", index: 0 });
-  const active = highlight.key === pickerKey ? Math.min(highlight.index, candidates.length - 1) : 0;
-  const pickerKeys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (candidates.length === 0 || !hash || e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const step = e.key === "ArrowDown" ? 1 : -1;
-      setHighlight({
-        key: pickerKey,
-        index: (active + step + candidates.length) % candidates.length,
-      });
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      const script = candidates[active];
-      if (script) choose(script);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setDismissedHash(hash.start);
-    }
-  };
   const choose = (script: Script) => {
     if (!hash) return;
     const next = text.slice(0, hash.start) + text.slice(caret);
@@ -165,6 +143,26 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
       input.current?.focus();
       input.current?.setSelectionRange(hash.start, hash.start);
     });
+  };
+  const scriptPicker = usePicker(
+    hash,
+    hash ? matchScripts(scripts, hash.query).filter((s) => !view.refs.includes(s.id)) : [],
+    choose,
+  );
+  const mention = useProductMention({
+    text,
+    caret,
+    onText: (next, at) => {
+      setText(next);
+      setCaret(at);
+    },
+    input,
+    seriesProductIds,
+    off: Boolean(hash),
+  });
+  const pickerKeys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (scriptPicker.open) scriptPicker.keys(e);
+    else mention.keys(e);
   };
 
   const send = async () => {
@@ -286,15 +284,27 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
         )}
       </div>
       <div className="relative px-3 pb-3">
-        {candidates.length > 0 && hash && (
-          <ScriptPicker
-            scripts={scripts}
-            candidates={candidates}
-            active={active}
-            onHighlight={(index) => setHighlight({ key: pickerKey, index })}
+        {scriptPicker.open && (
+          <PickerList
+            label="Kịch bản"
+            candidates={scriptPicker.candidates}
+            active={scriptPicker.active}
+            onHighlight={scriptPicker.highlight}
             onChoose={choose}
-          />
+            itemKey={(script) => script.id}
+            className="right-3 left-3"
+          >
+            {(script) => (
+              <>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  #{scripts.indexOf(script) + 1}
+                </span>
+                <span className="truncate">{script.title || "…"}</span>
+              </>
+            )}
+          </PickerList>
         )}
+        {mention.popup("right-3 left-3")}
         {error && <p className="px-1 pb-2 text-xs text-destructive-foreground">{error}</p>}
         <Composer
           textareaRef={input}
@@ -364,7 +374,6 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
               onChosen={(choice) => setInfoLocal({ choice })}
             />
           )}
-          <ProductMixChip sessionId={sessionId} />
         </Composer>
       </div>
     </div>
@@ -524,88 +533,6 @@ function ModelPicker({
         )}
       </MenuPopup>
     </Menu>
-  );
-}
-
-// ---------------------------------------------------------------- # picker
-
-/** A `#query` that ends at the caret and starts a word, or null. */
-function findHash(text: string, caret: number): { start: number; query: string } | null {
-  const match = /(?:^|\s)#([^\s#]{0,40})$/.exec(text.slice(0, caret));
-  const query = match?.[1];
-  if (query === undefined) return null;
-  return { start: caret - query.length - 1, query };
-}
-
-const fold = (value: string) =>
-  value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .toLowerCase();
-
-/** Digits match the script number; words match the title. */
-function matchScripts(scripts: Script[], query: string): Script[] {
-  const q = fold(query.trim());
-  if (!q) return scripts;
-  return scripts.filter((script, i) =>
-    /^\d+$/.test(q) ? String(i + 1).startsWith(q) : fold(script.title).includes(q),
-  );
-}
-
-/** Scripts to reference, above the composer. Keys are handled by the composer. */
-function ScriptPicker({
-  scripts,
-  candidates,
-  active,
-  onHighlight,
-  onChoose,
-}: {
-  scripts: Script[];
-  candidates: Script[];
-  active: number;
-  onHighlight: (index: number) => void;
-  onChoose: (script: Script) => void;
-}) {
-  const list = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    list.current
-      ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [active]);
-
-  return (
-    <div
-      ref={list}
-      role="listbox"
-      aria-label="Kịch bản"
-      className="absolute right-3 bottom-full left-3 z-20 mb-1 max-h-60 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg"
-    >
-      {candidates.map((script, i) => (
-        // Picked with the mouse or the composer's keys; focus stays in the composer.
-        // biome-ignore lint/a11y/useKeyWithClickEvents: keys are handled by the composer
-        <div
-          key={script.id}
-          data-index={i}
-          role="option"
-          aria-selected={i === active}
-          tabIndex={-1}
-          className={cn(
-            "flex h-8 cursor-pointer items-center gap-2 rounded-md px-2.5 text-sm",
-            i === active && "bg-accent",
-          )}
-          onMouseDown={(e) => e.preventDefault()}
-          onMouseEnter={() => onHighlight(i)}
-          onClick={() => onChoose(script)}
-        >
-          <span className="text-xs text-muted-foreground tabular-nums">
-            #{scripts.indexOf(script) + 1}
-          </span>
-          <span className="truncate">{script.title || "…"}</span>
-        </div>
-      ))}
-    </div>
   );
 }
 

@@ -209,6 +209,13 @@ function PickerBody({
       </Button>
     </>
   );
+  const allOn = assets.every((a) => draft.includes(a.id));
+  const toggleAll = () =>
+    setDraft((ids) =>
+      allOn
+        ? ids.filter((id) => !assets.some((a) => a.id === id))
+        : [...ids, ...assets.map((a) => a.id).filter((id) => !ids.includes(id))],
+    );
   const toggle = (id: string) =>
     setDraft((ids) => (ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id]));
 
@@ -255,8 +262,13 @@ function PickerBody({
       )}
       <DialogFooter>
         {assets.length > 0 && createButtons}
-        <span className="flex-1 text-right text-xs text-muted-foreground">
-          {draft.length > 0 && `Đã chọn ${draft.length}`}
+        <span className="flex min-w-0 flex-1 items-center justify-end gap-2 text-xs text-muted-foreground">
+          {assets.length > 1 && (
+            <Button variant="ghost-muted" size="xs" onClick={toggleAll}>
+              {allOn ? "Bỏ chọn" : "Chọn tất cả"}
+            </Button>
+          )}
+          {draft.length > 0 && <span className="whitespace-nowrap">Đã chọn {draft.length}</span>}
         </span>
         <Button onClick={() => onConfirm(draft)}>Xong</Button>
       </DialogFooter>

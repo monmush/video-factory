@@ -12,6 +12,7 @@ import {
 } from "@/components/asset-picker";
 import { Composer } from "@/components/composer";
 import { DeleteSeriesDialog } from "@/components/delete-series-dialog";
+import { useProductMention } from "@/components/mention-picker";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { QualityChip } from "@/components/quality-chip";
@@ -77,7 +78,18 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const [caret, setCaret] = useState(0);
   const series = workspace.series.find((s) => s.id === seriesId);
+  const mention = useProductMention({
+    text: request,
+    caret,
+    onText: (next, at) => {
+      setRequest(next);
+      setCaret(at);
+    },
+    input,
+    seriesProductIds: series?.productIds ?? [],
+  });
   if (!series) return <NotFound />;
 
   const sessions = workspace.sessions
@@ -133,24 +145,29 @@ function SeriesView({ seriesId }: { seriesId: string }) {
         {series.guidance.split("\n").find((line) => line.trim()) || "Thêm định hướng"}
       </button>
 
-      <Composer
-        textareaRef={input}
-        value={request}
-        onChange={setRequest}
-        onSubmit={start}
-        busy={busy}
-        rows={2}
-        autoFocus
-        placeholder="Hôm nay làm video gì? Ví dụ: 5 video về sự kiên nhẫn"
-        submitLabel="Tạo video"
-      >
-        <SeriesAssetSummary series={series} onEdit={() => setEditing(true)} />
-        <QualityChip
-          value={level ?? seriesLevel}
-          onChange={(next) => setLevel(next === seriesLevel ? null : next)}
-          seriesDefault={seriesLevel}
-        />
-      </Composer>
+      <div className="relative">
+        <Composer
+          textareaRef={input}
+          onCaret={setCaret}
+          onTextKeyDown={mention.keys}
+          value={request}
+          onChange={setRequest}
+          onSubmit={start}
+          busy={busy}
+          rows={2}
+          autoFocus
+          placeholder="Hôm nay làm video gì? Ví dụ: 5 video về sự kiên nhẫn"
+          submitLabel="Tạo video"
+        >
+          <SeriesAssetSummary series={series} onEdit={() => setEditing(true)} />
+          <QualityChip
+            value={level ?? seriesLevel}
+            onChange={(next) => setLevel(next === seriesLevel ? null : next)}
+            seriesDefault={seriesLevel}
+          />
+        </Composer>
+        {mention.popup("inset-x-0", true)}
+      </div>
       {error && <p className="mt-2 px-1 text-destructive-foreground">{error}</p>}
 
       {sessions.length > 0 && (
