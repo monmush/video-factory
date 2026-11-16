@@ -294,15 +294,11 @@ const TAB_ICONS: Record<Exclude<Section, "settings">, LucideIcon> = {
   assets: LibraryBig,
 };
 
-/**
- * Which side panel the current route offers, if any: sessions get their chat,
- * except on the batch's settings tab, which has nothing to discuss.
- */
+/** Which side panel the current route offers, if any: sessions get their chat. */
 function useSidePanel(): { label: string; sessionId: string } | null {
   const matches = useMatches();
   const workspace = useWorkspace();
   const ids = matches.map((m) => m.routeId as string);
-  if (ids.includes("/sessions/$sessionId/settings")) return null;
   if (ids.some((id) => id.startsWith("/sessions/$sessionId"))) {
     const sessionId = (matches.at(-1)?.params as { sessionId?: string } | undefined)?.sessionId;
     if (sessionId && workspace.sessions.some((s) => s.id === sessionId)) {

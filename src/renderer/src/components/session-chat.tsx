@@ -40,6 +40,7 @@ import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { Composer } from "./composer";
+import { ProductMixChip } from "./product-mix-editor";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -363,6 +364,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
               onChosen={(choice) => setInfoLocal({ choice })}
             />
           )}
+          <ProductMixChip sessionId={sessionId} />
         </Composer>
       </div>
     </div>

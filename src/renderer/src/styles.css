@@ -142,6 +142,16 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* Transparent images (product cut-outs): a quiet checkerboard in either theme. */
+@utility bg-checker {
+  background-color: var(--background);
+  background-image: repeating-conic-gradient(
+    color-mix(in srgb, var(--foreground) 7%, transparent) 0 25%,
+    transparent 0 50%
+  );
+  background-size: 16px 16px;
+}
+
 /* Window chrome: the top bar drags the window; controls inside it opt out. */
 @utility app-drag {
   -webkit-app-region: drag;

@@ -24,8 +24,15 @@ import { fixtureCutout, productShot, readRgba, type Size } from "./ffmpeg";
 // placed on a generated plate of the spot in the scene. The original photo is
 // never modified or replaced. Every paid call goes through falCall.
 
-/** Background removal (Bria RMBG 2.0 on fal; $0.018 per image, no prompt). */
-const CUTOUT_ENDPOINT = "fal-ai/bria/background/remove";
+/**
+ * Background removal steered by a prompt (Bria Guided Remove Background on
+ * fal, $0.03 per image): keeps the product's own pixels and drops the hand
+ * holding it, which plain removal (Bria RMBG 2.0) kept as part of the subject.
+ * Tested live on 16 Nov with "only the tea pouch, without the hand"; this
+ * wording is the brand-neutral form of it.
+ */
+const CUTOUT_ENDPOINT = "bria/guided-remove-background";
+const CUTOUT_PROMPT = "only the product package, without the hand holding it";
 
 const cutoutFile = (imageId: string) => `${imageId}.cutout.png`;
 
@@ -54,6 +61,40 @@ export function productCutout(product: Asset, dir: string): Promise<CutoutResult
   return task;
 }
 
+/**
+ * Removes the photo's background on fal (paid, CUTOUT_USD) and writes the PNG
+ * with alpha to `out`. Also used by the product dialog (src/main/product-cutout.ts).
+ */
+export async function removeBackground(
+  client: Awaited<ReturnType<typeof falClient>>,
+  photo: string,
+  out: string,
+  productId: string,
+): Promise<void> {
+  const [url] = await uploadImages(client, [photo]);
+  const { data } = await falCall<{ image?: { url?: string } }>(
+    client,
+    CUTOUT_ENDPOINT,
+    { image_url: url, prompt: CUTOUT_PROMPT },
+    { purpose: "product-cutout", productId, cost: () => CUTOUT_USD },
+  );
+  const result = data.image?.url;
+  if (!result?.startsWith("https:")) throw new Error("Không nhận được ảnh tách nền");
+  const res = await fetch(result, { signal: AbortSignal.timeout(120_000) });
+  if (!res.ok) throw new Error(`Không tải được ảnh tách nền (${res.status})`);
+  await writeFile(out, Buffer.from(await res.arrayBuffer()));
+}
+
+/** Whether a cut-out shows the product alone (src/shared/product-shot.ts, usableCutout). */
+export async function isUsableCutout(path: string): Promise<boolean> {
+  const pixels = await readRgba(path, 4096);
+  return usableCutout(
+    alphaBox(pixels.data, pixels.width, pixels.height),
+    pixels.width,
+    pixels.height,
+  );
+}
+
 async function makeCutout(product: Asset, dir: string): Promise<CutoutResult | null> {
   const file = `cutout-${product.id}.png`;
   const photos = originals(product);
@@ -70,27 +111,15 @@ async function makeCutout(product: Asset, dir: string): Promise<CutoutResult | n
     const saved = photo.cutout;
     if (saved && !saved.usable) continue;
     if (!saved) {
-      const client = await falClient();
-      const [url] = await uploadImages(client, [join(assetDir(product.id), photo.file)]);
-      const { data } = await falCall<{ image?: { url?: string } }>(
-        client,
-        CUTOUT_ENDPOINT,
-        { image_url: url },
-        { purpose: "product-cutout", productId: product.id, cost: () => CUTOUT_USD },
+      const name = cutoutFile(photo.id);
+      await removeBackground(
+        await falClient(),
+        join(assetDir(product.id), photo.file),
+        join(assetDir(product.id), name),
+        product.id,
       );
       spent += CUTOUT_USD;
-      const result = data.image?.url;
-      if (!result?.startsWith("https:")) throw new Error("Không nhận được ảnh tách nền");
-      const res = await fetch(result, { signal: AbortSignal.timeout(120_000) });
-      if (!res.ok) throw new Error(`Không tải được ảnh tách nền (${res.status})`);
-      const name = cutoutFile(photo.id);
-      await writeFile(join(assetDir(product.id), name), Buffer.from(await res.arrayBuffer()));
-      const pixels = await readRgba(join(assetDir(product.id), name), 4096);
-      const usable = usableCutout(
-        alphaBox(pixels.data, pixels.width, pixels.height),
-        pixels.width,
-        pixels.height,
-      );
+      const usable = await isUsableCutout(join(assetDir(product.id), name));
       // Recorded on the photo, so no later video pays for it again.
       await mutate((ws) => {
         const image = ws.assets

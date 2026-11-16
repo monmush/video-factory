@@ -114,6 +114,11 @@ interface Notice {
   text: string;
   /** Deleted scripts the notice can bring back. */
   restore?: string[];
+  /**
+   * A product change the notice can take back. It stays while the change can
+   * be undone (until the next request clears it), not on a timer.
+   */
+  productOf?: string;
 }
 
 /** Clicks on controls, or while text is selected, are not card clicks. */
@@ -136,7 +141,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const videoJobs = useVideoJobs(sessionId);
 
   useEffect(() => {
-    if (!notice) return;
+    if (!notice || notice.productOf) return;
     const timer = setTimeout(() => setNotice(null), 8000);
     return () => clearTimeout(timer);
   }, [notice]);
@@ -206,13 +211,30 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     },
     retry: (id) => run(() => api.invoke("board:retry", { sessionId, scriptId: id })),
     setProduct: (id, productId) =>
-      run(() => api.invoke("board:set-product", { sessionId, scriptId: id, productId })),
-    undoProduct: (id) => run(() => api.invoke("board:undo-product", { sessionId, scriptId: id })),
+      run(async () => {
+        const changed = await api.invoke("board:set-product", {
+          sessionId,
+          scriptId: id,
+          productId,
+        });
+        if (changed) setNotice({ text: "Đã đổi sản phẩm", productOf: changed.scriptId });
+      }),
+    undoProduct: (id) =>
+      run(async () => {
+        await api.invoke("board:undo-product", { sessionId, scriptId: id });
+        setNotice(null);
+      }),
     toggleRef: (id) => {
       if (toggleRef(sessionId, id)) requestChatFocus(sessionId);
     },
     open: (id) => setView({ layout: "list", activeId: id }),
   };
+
+  // A product change's notice goes once the change can no longer be undone.
+  const productNotice = notice?.productOf
+    ? scripts.findIndex((s) => s.id === notice.productOf && s.productUndo)
+    : -1;
+  const shownNotice = notice?.productOf && productNotice < 0 ? null : notice;
 
   const restore = (ids: string[]) =>
     run(async () => {
@@ -362,23 +384,43 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
         <Gallery scripts={scripts} full={scripts.length <= FULL_CARDS_MAX} {...shared} />
       )}
 
-      {notice && (
+      {shownNotice && (
         <div className="pointer-events-none sticky bottom-4 z-20 mt-4 flex flex-col items-center gap-2">
-          {notice && (
+          {shownNotice && (
             <div
               role="status"
               className="pointer-events-auto flex items-center gap-2 rounded-full border bg-popover py-1 pr-1 pl-4 text-popover-foreground shadow-lg"
             >
-              {notice.text}
-              {notice.restore ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={() => restore(notice.restore ?? [])}
-                >
-                  Hoàn tác
-                </Button>
+              {shownNotice.text}
+              {shownNotice.productOf && (
+                <span className="text-muted-foreground tabular-nums">#{productNotice + 1}</span>
+              )}
+              {shownNotice.restore || shownNotice.productOf ? (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="rounded-full"
+                    onClick={() =>
+                      shownNotice.productOf
+                        ? actions.undoProduct(shownNotice.productOf)
+                        : restore(shownNotice.restore ?? [])
+                    }
+                  >
+                    Hoàn tác
+                  </Button>
+                  {shownNotice.productOf && (
+                    <Button
+                      variant="ghost-muted"
+                      size="icon-sm"
+                      className="rounded-full"
+                      aria-label="Đóng"
+                      onClick={() => setNotice(null)}
+                    >
+                      <X />
+                    </Button>
+                  )}
+                </>
               ) : (
                 <Button
                   variant="ghost-muted"
@@ -542,7 +584,7 @@ function ListView({
                     </span>
                     <VersionTag script={script} />
                     {script.pinned && <Pin className="size-3 shrink-0" />}
-                    <MarkBadge mark={script.mark} />
+                    <ChangeMark mark={script.mark} />
                     {shared.jobOf(script.id) !== undefined && (
                       <Clapperboard
                         className="size-3 shrink-0 text-muted-foreground"
@@ -644,60 +686,33 @@ function ScriptCard({
         }}
         {...shared.dragProps(script, number)}
       >
-        <DragHandle className="top-4.5 left-0.5" />
-        <header className="flex items-start gap-2">
-          <span className="flex items-center gap-1 pt-0.5 text-xs text-muted-foreground tabular-nums">
-            #{number}
-            <VersionTag script={script} />
-            {isRef && <RefMark />}
-          </span>
-          <div className="min-w-0 flex-1">
-            {script.title ? (
-              <h3
-                className="line-clamp-2 font-semibold leading-snug"
-                title={script.title}
-                data-selectable
-              >
-                {script.title}
-              </h3>
-            ) : (
-              <Bars count={1} className="pt-1" />
-            )}
-            {script.hook && (
-              <p
-                className="mt-0.5 line-clamp-2 leading-snug text-muted-foreground"
-                title={script.hook}
-                data-selectable
-              >
-                {script.hook}
-              </p>
-            )}
-          </div>
-          {script.pinned && <Pin className="mt-1 size-3.5 shrink-0" aria-label="Đã ghim" />}
-          <MarkBadge mark={script.mark} />
-          {undo && script.status === "ready" && (
-            <Button
-              variant="ghost-muted"
-              size="xs"
-              className="-my-0.5 shrink-0"
-              onClick={() => actions.undoProduct(script.id)}
-            >
-              Hoàn tác
-            </Button>
+        {/* Centred on the top row: 16px padding + half its 20px height − half the 14px icon. */}
+        <DragHandle className="top-[19px] left-0.5" />
+        {/* Which script and where its video stands; the title below gets the full width.
+            The hook is not repeated: on a full card it is the first line of dialogue. */}
+        <header>
+          <CardMeta script={script} number={number} isRef={isRef}>
+            {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
+            {!inGallery &&
+              shared.testChoice &&
+              script.status === "ready" &&
+              !shared.testChoice.isTest(script.id) && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => shared.testChoice?.pick(script.id)}
+                >
+                  Chọn làm video thử
+                </Button>
+              )}
+          </CardMeta>
+          {script.title ? (
+            <h3 className="mt-1.5 font-semibold leading-snug text-balance" data-selectable>
+              {script.title}
+            </h3>
+          ) : (
+            <Bars count={1} className="mt-2" />
           )}
-          {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
-          {!inGallery &&
-            shared.testChoice &&
-            script.status === "ready" &&
-            !shared.testChoice.isTest(script.id) && (
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => shared.testChoice?.pick(script.id)}
-              >
-                Chọn làm video thử
-              </Button>
-            )}
         </header>
 
         {script.lines.length > 0 ? (
@@ -877,23 +892,18 @@ function CompactCard({
         onKeyDown={(e) => onCardKey(e, script.id)}
         {...shared.dragProps(script, number)}
       >
-        <DragHandle className="top-4.5 left-0.5" />
-        <header className="flex items-start gap-2">
-          <span className="flex items-center gap-1 pt-0.5 text-xs text-muted-foreground tabular-nums">
-            #{number}
-            <VersionTag script={script} />
-            {isRef && <RefMark />}
-          </span>
-          <h3 className="min-w-0 flex-1 font-semibold leading-snug line-clamp-2">
+        <DragHandle className="top-[17px] left-0.5" />
+        <header>
+          <CardMeta script={script} number={number} isRef={isRef}>
+            {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
+          </CardMeta>
+          <h3 className="mt-1 line-clamp-2 font-semibold leading-snug text-balance">
             {script.title || <Bars count={1} className="pt-1" />}
           </h3>
-          {script.pinned && <Pin className="mt-1 size-3.5 shrink-0" aria-label="Đã ghim" />}
-          <MarkBadge mark={script.mark} />
-          {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
         </header>
         <p
           className={cn(
-            "mt-1 line-clamp-2 leading-snug text-muted-foreground",
+            "mt-1 line-clamp-2 leading-snug text-pretty text-muted-foreground",
             writing && "shimmer rounded",
           )}
         >
@@ -1137,16 +1147,19 @@ function VersionTag({ script }: { script: Script }) {
 
 /** On a script sent to video: where its video stands; opens the Video tab. */
 function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null | undefined }) {
-  const label =
-    job?.status === "done"
-      ? "Có video"
-      : job?.status === "review"
-        ? "Chờ xem thử"
-        : job?.status === "stopped"
-          ? "Video đã dừng"
-          : job?.status === "failed"
-            ? "Video lỗi"
-            : "Đang tạo video";
+  const label = job?.planning
+    ? "Lên cảnh quay"
+    : !job || job.status === "idle"
+      ? "Chờ tạo"
+      : job.status === "done"
+        ? "Có video"
+        : job.status === "review"
+          ? "Chờ xem thử"
+          : job.status === "stopped"
+            ? "Video đã dừng"
+            : job.status === "failed"
+              ? "Video lỗi"
+              : "Đang tạo video";
   return (
     <Link
       to="/sessions/$sessionId/videos"
@@ -1162,13 +1175,38 @@ function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null
   );
 }
 
-function MarkBadge({ mark }: { mark: Script["mark"] }) {
-  if (!mark) return null;
+/**
+ * The card's top row: number, version, what the last request did, chat and
+ * pin marks on the left; `children` (the video's status) on the right.
+ */
+function CardMeta({
+  script,
+  number,
+  isRef,
+  children,
+}: {
+  script: Script;
+  number: number;
+  isRef: boolean;
+  children?: ReactNode;
+}) {
   return (
-    <span className="shrink-0 rounded-full border bg-accent px-1.5 py-px text-2xs font-medium text-accent-foreground">
-      {mark === "new" ? "Mới" : "Đã sửa"}
-    </span>
+    <div className="flex min-h-5 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+      <span className="whitespace-nowrap">#{number}</span>
+      <VersionTag script={script} />
+      <ChangeMark mark={script.mark} />
+      {isRef && <RefMark />}
+      {script.pinned && <Pin className="size-3 shrink-0" aria-label="Đã ghim" />}
+      <span className="flex-1" />
+      {children}
+    </div>
   );
+}
+
+/** What the latest request did to this card, in words, until the next request. */
+function ChangeMark({ mark }: { mark: Script["mark"] }) {
+  if (!mark) return null;
+  return <span className="whitespace-nowrap">· {mark === "new" ? "Mới" : "Vừa sửa"}</span>;
 }
 
 function IconAction({

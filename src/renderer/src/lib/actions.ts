@@ -12,8 +12,8 @@ export function useCreateActions() {
 
   // A new production session opens directly in the script workspace; no creation dialog.
   const createSession = useCallback(
-    async (seriesId: string, request?: string) => {
-      const session = await api.invoke("session:create", { seriesId, request });
+    async (seriesId: string, request?: string, mediaLevel?: string) => {
+      const session = await api.invoke("session:create", { seriesId, request, mediaLevel });
       await refreshWorkspace();
       await navigate({ to: "/sessions/$sessionId/scripts", params: { sessionId: session.id } });
     },

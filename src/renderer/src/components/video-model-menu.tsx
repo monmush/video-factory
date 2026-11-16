@@ -232,7 +232,7 @@ export function ResolutionPicker({
 
 /**
  * A series' output settings, the defaults for its batches; laid out like the
- * asset rows. Experiment branch: the Media level only.
+ * asset rows. Experiment branch: the Media level ("Chất lượng") only.
  */
 export function SeriesOutputFields({
   mediaLevel,
@@ -243,7 +243,7 @@ export function SeriesOutputFields({
 }) {
   return (
     <div className="grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
-      <span className="text-xs leading-tight text-muted-foreground">Media</span>
+      <span className="text-xs leading-tight text-muted-foreground">Chất lượng</span>
       <div className="flex min-w-0">
         <MediaLevelPicker value={mediaLevel} onChange={onMediaLevel} />
       </div>

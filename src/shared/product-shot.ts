@@ -8,8 +8,8 @@ import type { Asset, AssetImage } from "./ipc";
 // "plate" (the planned spot in the scene, empty), with a soft contact shadow,
 // moved in two layers. Pure, so placement, tone and estimates are tested.
 
-/** Background removal, per photo, once (fal's Bria RMBG 2.0 rate, 13 Nov 2026). */
-export const CUTOUT_USD = 0.018;
+/** Background removal, per photo, once (fal's Bria Guided Remove Background rate, 16 Nov 2026). */
+export const CUTOUT_USD = 0.03;
 
 /** Switch the uniform tone match to the plate off (false) to place the cut-out untouched. */
 export const TONE_MATCH = true;

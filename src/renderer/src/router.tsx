@@ -11,7 +11,7 @@ import { HomePage } from "./screens/home";
 import { NotFound } from "./screens/not-found";
 import { SeriesPage } from "./screens/series";
 import { SeriesNewPage } from "./screens/series-new";
-import { ScriptsPage, SessionLayout, SessionSettingsPage, VideosPage } from "./screens/session";
+import { ScriptsPage, SessionLayout, VideosPage } from "./screens/session";
 import { SettingsPage } from "./screens/settings";
 
 // Code-based routes: few enough that a generated route tree is not worth the plugin.
@@ -59,10 +59,14 @@ const videosRoute = createRoute({
   component: VideosPage,
 });
 
+// The batch's settings tab is gone (the settings sit on the Video tab and
+// beside the prompt); a location left there, such as a reload, opens the scripts.
 const sessionSettingsRoute = createRoute({
   getParentRoute: () => sessionRoute,
   path: "settings",
-  component: SessionSettingsPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: "/sessions/$sessionId/scripts", params });
+  },
 });
 
 const assetsRoute = createRoute({

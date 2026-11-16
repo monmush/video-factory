@@ -1,34 +1,44 @@
 import type { Asset } from "@shared/ipc";
 import { evenMix, mixTotal, type ProductMix, shortNames } from "@shared/product-mix";
 import { Plus, X } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/errors";
 import { useWorkspace } from "@/lib/workspace";
 import { AssetThumb } from "./asset-picker";
-import { Page } from "./page";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
+import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
+import { SettingChip } from "./ui/setting-chip";
 
-// "Thiết lập": the batch's own settings, one row each
-// (src/shared/batch-settings.ts). Experiment branch: the Media level lives on
-// the Video tab, in view while videos are made; here is the product mix, the
-// target for scripts not yet written (src/shared/product-mix.ts).
+// The batch's product mix, the target for scripts not yet written
+// (src/shared/product-mix.ts). Edited from the "Sản phẩm" chip beside the
+// session's prompt (session-chat.tsx).
 
-export function BatchSettings({ sessionId }: { sessionId: string }) {
+/** "Sản phẩm": the batch's mix as a chip; shown once the library has two products. */
+export function ProductMixChip({ sessionId }: { sessionId: string }) {
   const { sessions, series, assets } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const own = series.find((s) => s.id === session?.seriesId);
   const [error, setError] = useState<string | null>(null);
-  if (!session) return null;
+  const products = assets.filter((a) => a.kind === "product");
+  if (!session || products.length < 2) return null;
+  const mix = session.settings?.productMix ?? [];
+  const names = shortNames(products.map((p) => p.name));
+  const value =
+    mix.length === 0
+      ? "Theo series"
+      : mix.length === 1
+        ? (names[products.findIndex((p) => p.id === mix[0]?.productId)] ?? "?")
+        : `${mix.length} sản phẩm`;
 
-  const save = async (mix: ProductMix) => {
+  const save = async (next: ProductMix) => {
     setError(null);
     try {
       await api.invoke("session:update", {
         id: sessionId,
-        settings: { productMix: mix.length ? mix : null },
+        settings: { productMix: next.length ? next : null },
       });
     } catch (e) {
       setError(errorMessage(e));
@@ -36,19 +46,22 @@ export function BatchSettings({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <Page className="max-w-2xl pt-6">
-      <div className="flex flex-col divide-y rounded-lg border">
-        <SettingRow label="Sản phẩm">
-          <MixEditor
-            saved={session.settings?.productMix ?? []}
-            products={assets.filter((a) => a.kind === "product")}
-            seriesProductIds={own?.productIds ?? []}
-            onSave={save}
-          />
-        </SettingRow>
-      </div>
-      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
-    </Page>
+    <Popover>
+      <PopoverTrigger
+        render={(props) => (
+          <SettingChip {...props} label="Sản phẩm" value={value} className="max-w-48" />
+        )}
+      />
+      <PopoverPopup className="w-max max-w-[min(32rem,var(--available-width))]">
+        <MixEditor
+          saved={mix}
+          products={products}
+          seriesProductIds={own?.productIds ?? []}
+          onSave={save}
+        />
+        {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
+      </PopoverPopup>
+    </Popover>
   );
 }
 
@@ -56,7 +69,7 @@ export function BatchSettings({ sessionId }: { sessionId: string }) {
  * The mix as a row of products with their shares. Adding or removing one
  * splits evenly again; a typed share is saved once the shares add up to 100.
  */
-function MixEditor({
+export function MixEditor({
   saved,
   products,
   seriesProductIds,
@@ -155,15 +168,6 @@ function MixEditor({
           </MenuPopup>
         </Menu>
       )}
-    </div>
-  );
-}
-
-function SettingRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex min-h-12 items-center gap-3 px-4 py-2">
-      <span className="flex-1 font-medium">{label}</span>
-      {children}
     </div>
   );
 }

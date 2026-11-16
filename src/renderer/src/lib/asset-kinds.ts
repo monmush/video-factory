@@ -11,7 +11,8 @@ export interface AssetKindConfig {
   remove: string;
   namePlaceholder: string;
   descriptionPlaceholder: string;
-  descriptionHint: string;
+  /** Optional line under the description field. */
+  descriptionHint?: string;
   emptyImagesHint: string;
   emptyLibrary: string;
   /** View labels offered on each image, in order; empty hides the label picker. */
@@ -45,8 +46,6 @@ export const ASSET_KINDS: Record<AssetKind, AssetKindConfig> = {
     remove: "Xóa sản phẩm",
     namePlaceholder: "Tên sản phẩm",
     descriptionPlaceholder: "Loại bao bì, hình dạng, màu sắc, chữ trên nhãn…",
-    descriptionHint:
-      "Chỉ ghi điều nhìn thấy hoặc chắc chắn đúng. Không thêm công dụng hay lời quảng cáo.",
     emptyImagesHint: "Kéo thả ảnh gốc rõ nét của sản phẩm vào đây hoặc chọn từ máy.",
     emptyLibrary: "Thêm sản phẩm bằng ảnh gốc, rồi gọi bằng @tên trong lời nhắc.",
     // Kept simple: products need no view labels, and AI never generates product images.

@@ -20,6 +20,7 @@ import {
   placePhotoPath,
 } from "./place-check";
 import * as products from "./product-change";
+import { cutOutProductPhoto } from "./product-cutout";
 import { groupProducts } from "./product-grouping";
 import { clearKey, providersInfo, setKey } from "./providers";
 import { readSettings, writeSettings } from "./settings";
@@ -153,8 +154,8 @@ export function registerIpc() {
   handle("board:pin", ({ sessionId, scriptId, pinned }) => board.pin(sessionId, scriptId, pinned));
   handle("board:undo", ({ sessionId, messageId }) => products.undoTurn(sessionId, messageId));
   handle("board:set-product", async ({ sessionId, scriptId, productId }) => {
-    await products.setProduct(sessionId, scriptId, productId);
-    return null;
+    const change = await products.setProduct(sessionId, scriptId, productId);
+    return change ? { scriptId: change.script.id } : null;
   });
   handle("board:undo-product", ({ sessionId, scriptId }) =>
     products.undoProduct(sessionId, scriptId),
@@ -212,6 +213,7 @@ export function registerIpc() {
 
   handle("assets:check-place", ({ images }) => checkPlaceImages(images));
   handle("assets:estimate-clean", estimateClean);
+  handle("assets:cut-out-product-photo", ({ image }) => cutOutProductPhoto(image));
   handle("assets:clean-place-photo", async ({ image, finding }) =>
     cleanPlacePhoto(await placePhotoPath(image), finding),
   );

@@ -1,9 +1,9 @@
 import { boardOrder } from "@shared/board";
 import type { Asset, Series, Session } from "@shared/ipc";
-import { mediaLevel } from "@shared/media-level";
+import { type MediaLevelId, mediaLevel } from "@shared/media-level";
 import { Link, useParams } from "@tanstack/react-router";
 import { Ellipsis, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   AssetThumb,
   SeriesAssetFields,
@@ -14,6 +14,7 @@ import { Composer } from "@/components/composer";
 import { DeleteSeriesDialog } from "@/components/delete-series-dialog";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
+import { QualityChip } from "@/components/quality-chip";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -32,6 +33,7 @@ import { api } from "@/lib/api";
 import { useBoard } from "@/lib/board";
 import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
+import { onSeriesFocusRequest, takeSeriesFocus } from "@/lib/series-focus";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { NotFound } from "./not-found";
@@ -55,6 +57,21 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const workspace = useWorkspace();
   const { createSession } = useCreateActions();
   const [request, setRequest, clearRequest] = useDraft(`series-request:${seriesId}`, "");
+  // The next batch's level; null follows the series.
+  const [level, setLevel, clearLevel] = useDraft<MediaLevelId | null>(
+    `series-level:${seriesId}`,
+    null,
+  );
+  const input = useRef<HTMLTextAreaElement>(null);
+  // The sidebar's "+" focuses the prompt box, also when this page is already open.
+  useEffect(
+    () =>
+      onSeriesFocusRequest(() => {
+        if (!takeSeriesFocus(seriesId)) return;
+        requestAnimationFrame(() => input.current?.focus());
+      }),
+    [seriesId],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -67,14 +84,17 @@ function SeriesView({ seriesId }: { seriesId: string }) {
     .filter((s) => s.seriesId === series.id)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const visible = showAll ? sessions : sessions.slice(0, VISIBLE_SESSIONS);
+  const seriesLevel = mediaLevel(series.mediaLevel).id;
 
   const start = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await createSession(series.id, request);
+      const own = level && level !== seriesLevel ? level : undefined;
+      await createSession(series.id, request, own);
       clearRequest();
+      clearLevel();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -114,6 +134,7 @@ function SeriesView({ seriesId }: { seriesId: string }) {
       </button>
 
       <Composer
+        textareaRef={input}
         value={request}
         onChange={setRequest}
         onSubmit={start}
@@ -124,6 +145,11 @@ function SeriesView({ seriesId }: { seriesId: string }) {
         submitLabel="Tạo video"
       >
         <SeriesAssetSummary series={series} onEdit={() => setEditing(true)} />
+        <QualityChip
+          value={level ?? seriesLevel}
+          onChange={(next) => setLevel(next === seriesLevel ? null : next)}
+          seriesDefault={seriesLevel}
+        />
       </Composer>
       {error && <p className="mt-2 px-1 text-destructive-foreground">{error}</p>}
 

@@ -230,11 +230,23 @@ export function approveSession(sessionId: string, scriptIds: string[]): Promise<
   });
 }
 
-export function createSession(input: { seriesId: string; request?: string }): Promise<Session> {
+export function createSession(input: {
+  seriesId: string;
+  request?: string;
+  mediaLevel?: string;
+}): Promise<Session> {
   return mutate(async (ws) => {
-    if (!ws.series.some((s) => s.id === input.seriesId)) {
+    const series = ws.series.find((s) => s.id === input.seriesId);
+    if (!series) {
       throw new Error(`Series not found: ${input.seriesId}`);
     }
+    // Only a known level other than the series' own is saved; anything else follows the series.
+    const level =
+      input.mediaLevel &&
+      mediaLevel(input.mediaLevel).id === input.mediaLevel &&
+      input.mediaLevel !== mediaLevel(series.mediaLevel).id
+        ? input.mediaLevel
+        : undefined;
     const base = `Video ${new Date().toLocaleDateString("vi-VN")}`;
     const sameDay = ws.sessions.filter(
       (s) => s.seriesId === input.seriesId && s.name.startsWith(base),
@@ -244,6 +256,7 @@ export function createSession(input: { seriesId: string; request?: string }): Pr
       seriesId: input.seriesId,
       name: sameDay ? `${base} · ${sameDay + 1}` : base,
       ...(input.request?.trim() ? { request: input.request.trim() } : {}),
+      ...(level ? { settings: { mediaLevel: level } } : {}),
       approvedAt: null,
       createdAt: now(),
       updatedAt: now(),

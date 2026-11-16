@@ -14,6 +14,7 @@ import {
   type StagedImage,
 } from "@shared/ipc";
 import { findingLabel, isFlagged } from "@shared/place-check";
+import { CUTOUT_USD } from "@shared/product-shot";
 import {
   guessVoiceTraits,
   suggestVoice,
@@ -29,6 +30,7 @@ import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { ANGLE_LABELS, AngleGenerator, PendingAngleTile } from "./angle-generator";
+import { ImageViewer, type ViewerImage } from "./image-viewer";
 import { Button } from "./ui/button";
 import { Dialog, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "./ui/dialog";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
@@ -47,8 +49,14 @@ interface DraftImage {
    * nothing was or it could not run; missing until asked.
    */
   check?: PlaceFinding | null;
-  /** Places: a cleaned photo's original, which "Dùng ảnh gốc" brings back. */
+  /** A cleaned place photo's or a product cut-out's original, which "Dùng ảnh gốc" brings back. */
   original?: DraftImage;
+  /** Products: this photo is a cut-out (background removed). */
+  isCutout?: boolean;
+  /** Products: a cut-out made before (by a video) waits for this photo, free. */
+  cutoutKept?: boolean;
+  /** Products: whether the cut-out shows the product alone; missing until one exists. */
+  cutoutUsable?: boolean;
 }
 
 const fromStaged = (
@@ -64,22 +72,31 @@ const fromStaged = (
 });
 
 const fromAsset = (asset: Asset): DraftImage[] =>
-  asset.images.map((img) => ({
-    key: img.id,
-    ref: { source: "asset", assetId: asset.id, id: img.id },
-    url: mediaUrl.asset(asset.id, img.file),
-    origin: img.origin ?? "upload",
-    angle: img.angle,
-    check: img.placeCheck,
-    original: img.original && {
+  asset.images.map((img) => {
+    const isCutout = Boolean(img.cutout) && img.cutout?.file === img.file;
+    return {
       key: img.id,
-      ref: { source: "asset", assetId: asset.id, id: img.id, restore: true },
-      url: mediaUrl.asset(asset.id, img.original.file),
-      origin: img.original.origin ?? "upload",
+      ref: { source: "asset", assetId: asset.id, id: img.id },
+      url: mediaUrl.asset(asset.id, img.file),
+      origin: img.origin ?? "upload",
       angle: img.angle,
-      check: img.original.placeCheck ?? null,
-    },
-  }));
+      check: img.placeCheck,
+      isCutout,
+      cutoutKept: Boolean(img.cutout) && !isCutout,
+      cutoutUsable: img.cutout?.usable,
+      original: img.original && {
+        key: img.id,
+        ref: { source: "asset", assetId: asset.id, id: img.id, restore: true },
+        url: mediaUrl.asset(asset.id, img.original.file),
+        origin: img.original.origin ?? "upload",
+        angle: img.angle,
+        check: img.original.placeCheck ?? null,
+        // Brought back, the original keeps the cut-out made from it.
+        cutoutKept: isCutout,
+        cutoutUsable: isCutout ? img.cutout?.usable : undefined,
+      },
+    };
+  });
 
 /** The ref sent on save, carrying the image's label and origin. */
 const toRef = (image: DraftImage): ImageRef =>
@@ -148,6 +165,16 @@ export function AssetDialog({
 
 type CloseGuard = "busy" | "unsaved-ai" | null;
 
+/** A cleaned place photo or a product cut-out waiting for "Dùng ảnh này" or "Bỏ". */
+type CleanReview = {
+  key: string;
+  image: StagedImage;
+  check: PlaceFinding | null;
+  note: string | null;
+  /** Products: a cut-out, and whether the product stands alone in it. */
+  cutout?: { usable: boolean };
+};
+
 function CharacterForm({
   kind,
   character,
@@ -191,17 +218,24 @@ function CharacterForm({
   const [angleNote, setAngleNote] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  // Places: photos being checked, the one being cleaned, and a cleaned
-  // version waiting for "Dùng ảnh này" or "Bỏ".
+  // Places: photos being checked, those being cleaned (several at once), and
+  // cleaned versions waiting for "Dùng ảnh này" or "Bỏ". Products: the same
+  // for cut-outs (background removed).
   const isPlace = kind === "environment";
+  const isProduct = kind === "product";
   const asked = useRef(new Set<string>());
   const [checking, setChecking] = useState<Set<string>>(new Set());
-  const [cleaning, setCleaning] = useState<string | null>(null);
-  const [review, setReview] = useState<{
-    key: string;
-    image: StagedImage;
-    check: PlaceFinding | null;
-  } | null>(null);
+  const [cleaning, setCleaning] = useState<Set<string>>(new Set());
+  const [reviews, setReviews] = useState<CleanReview[]>([]);
+  // The full-size viewer: the photos it steps through and the one shown.
+  const [viewer, setViewer] = useState<{ images: ViewerImage[]; index: number } | null>(null);
+  // Thumbnails the viewer grows from and returns to, by "grid:url" or "review:url".
+  const thumbs = useRef(new Map<string, HTMLImageElement>());
+  const thumbRef = (id: string) => (el: HTMLImageElement | null) => {
+    if (el) thumbs.current.set(id, el);
+    else thumbs.current.delete(id);
+  };
+  const fromThumb = (id: string) => () => thumbs.current.get(id) ?? null;
   const [cleanPrice, setCleanPrice] = useState<number | null>(null);
   // Products only: the set this product is (members) and the set it belongs to.
   const [contains, setContains] = useState<string[]>(character?.contains ?? []);
@@ -226,10 +260,14 @@ function CharacterForm({
   // How the dialog's actions interact: only one change to the image list at a
   // time, and nothing that would lose in-flight (possibly paid) work.
   const generating = pendingAngles.length > 0;
-  const inFlight = describing || generating || saving || cleaning !== null;
-  const busy = inFlight || adding || review !== null;
+  const inFlight = describing || generating || saving || cleaning.size > 0;
+  const busy = inFlight || adding || reviews.length > 0;
+  // Cleaning one photo never blocks cleaning another.
+  const cleanBlocked = describing || generating || saving || adding;
+  const reviewFor = (key: string) => reviews.find((r) => r.key === key);
   const unsavedAi =
-    review !== null || images.some((i) => i.origin === "ai" && i.ref.source === "staged");
+    reviews.length > 0 ||
+    images.some((i) => (i.origin === "ai" || i.isCutout) && i.ref.source === "staged");
   const anyFlagged = isPlace && images.some((i) => isFlagged(i.check));
 
   // Places: every photo not checked yet is looked at once (free; nothing waits for it).
@@ -266,60 +304,120 @@ function CharacterForm({
       .catch(() => undefined);
   }, [anyFlagged, cleanPrice]);
 
-  const clean = async (key: string) => {
+  /** Runs one photo's clean or cut-out; several photos can run at once. */
+  const replaceWith = async (
+    key: string,
+    make: (target: DraftImage) => Promise<Omit<CleanReview, "key">> | null,
+    failure: string,
+  ) => {
     const target = images.find((i) => i.key === key);
-    if (!target || !isFlagged(target.check)) return;
-    setCleaning(key);
+    const task = target && !cleaning.has(key) ? make(target) : null;
+    if (!task) return;
+    setCleaning((current) => new Set(current).add(key));
     setError(null);
-    setAngleNote(null);
     try {
-      const result = await api.invoke("assets:clean-place-photo", {
-        image: target.ref,
-        finding: target.check,
-      });
-      setReview({ key, image: result.image, check: result.finding });
-      setAngleNote(
-        result.source === "fixture"
-          ? "Chế độ thử: ảnh mẫu là bản sao ảnh gốc, chưa gọi API."
-          : result.cost !== null
-            ? `Đã dùng khoảng ${formatCost(result.cost)}.`
-            : null,
-      );
+      const review = await task;
+      setReviews((current) => [...current.filter((r) => r.key !== key), { key, ...review }]);
     } catch (e) {
-      setError(`Không làm sạch được ảnh: ${errorMessage(e)}`);
+      setError(`${failure}: ${errorMessage(e)}`);
     } finally {
-      setCleaning(null);
+      setCleaning((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
-  /** The cleaned photo takes the original's place; the original can come back until and after saving. */
-  const acceptCleaned = () => {
-    if (!review) return;
+  const spentNote = (source: string, cost: number | null) =>
+    source === "fixture"
+      ? "Chế độ thử: ảnh mẫu, chưa gọi API."
+      : source === "kept"
+        ? "Đã có từ trước, không tốn thêm."
+        : cost !== null
+          ? `Đã dùng khoảng ${formatCost(cost)}.`
+          : null;
+
+  const clean = (key: string) =>
+    replaceWith(
+      key,
+      (target) =>
+        isFlagged(target.check)
+          ? api
+              .invoke("assets:clean-place-photo", { image: target.ref, finding: target.check })
+              .then((r) => ({
+                image: r.image,
+                check: r.finding,
+                note: spentNote(r.source, r.cost),
+              }))
+          : null,
+      "Không làm sạch được ảnh",
+    );
+
+  const cutOut = (key: string) =>
+    replaceWith(
+      key,
+      (target) =>
+        target.isCutout
+          ? null
+          : api.invoke("assets:cut-out-product-photo", { image: target.ref }).then((r) => ({
+              image: r.image,
+              check: null,
+              note: spentNote(r.source, r.cost),
+              cutout: { usable: r.usable },
+            })),
+      "Không tách được nền",
+    );
+
+  /**
+   * The cleaned photo or cut-out takes the original's place; the original can
+   * come back until and after saving. A cut-out keeps the photo's origin: its
+   * pixels are the photo's own.
+   */
+  const acceptCleaned = (review: CleanReview) => {
     setImages((current) =>
-      current.map((image) =>
-        image.key === review.key
+      current.map((image): DraftImage => {
+        if (image.key !== review.key) return image;
+        const base = { key: review.image.id, url: review.image.url, angle: image.angle };
+        return review.cutout
           ? {
-              key: review.image.id,
+              ...base,
+              ref: {
+                source: "staged",
+                id: review.image.id,
+                cleanOf: toRef(image),
+                cutout: true,
+              },
+              origin: image.origin,
+              isCutout: true,
+              cutoutUsable: review.cutout.usable,
+              original: { ...image, cutoutKept: false },
+            }
+          : {
+              ...base,
               ref: { source: "staged", id: review.image.id, cleanOf: toRef(image) },
-              url: review.image.url,
               origin: "ai",
-              angle: image.angle,
               check: review.check ?? null,
               original: image,
-            }
-          : image,
-      ),
+            };
+      }),
     );
-    setReview(null);
-    setAngleNote(null);
+    setReviews((current) => current.filter((r) => r.key !== review.key));
   };
+
+  const discardCleaned = (key: string) =>
+    setReviews((current) => current.filter((r) => r.key !== key));
 
   const restoreOriginal = (key: string) =>
     setImages((current) =>
       current.map((image) => (image.key === key && image.original ? image.original : image)),
     );
 
-  const reviewed = review && images.find((i) => i.key === review.key);
+  // Each cleaned version beside its original, in the order they finished.
+  const reviewed = reviews.flatMap((review) => {
+    const original = images.find((i) => i.key === review.key);
+    return original ? [{ review, original }] : [];
+  });
 
   useEffect(() => {
     onGuardChange(inFlight ? "busy" : unsavedAi ? "unsaved-ai" : null);
@@ -547,13 +645,36 @@ function CharacterForm({
               <div className="grid grid-cols-3 gap-3 p-3">
                 {images.map((image, index) => (
                   <div key={image.key} className="flex flex-col gap-1.5">
-                    <figure className="group relative aspect-[3/4] overflow-hidden rounded-lg bg-background">
-                      <img
-                        src={image.url}
-                        alt=""
-                        className="size-full object-contain"
-                        draggable={false}
-                      />
+                    <figure
+                      className={cn(
+                        "group relative aspect-[3/4] overflow-hidden rounded-lg",
+                        image.isCutout ? "bg-checker" : "bg-background",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        aria-label="Xem ảnh lớn"
+                        className="size-full cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                        onClick={() =>
+                          setViewer({
+                            images: images.map((i, n) => ({
+                              url: i.url,
+                              label: n === 0 ? "Ảnh chính" : undefined,
+                              origin: fromThumb(`grid:${i.url}`),
+                              transparent: i.isCutout,
+                            })),
+                            index,
+                          })
+                        }
+                      >
+                        <img
+                          ref={thumbRef(`grid:${image.url}`)}
+                          src={image.url}
+                          alt=""
+                          className="size-full object-contain"
+                          draggable={false}
+                        />
+                      </button>
                       {image.origin === "ai" && (
                         <span
                           className="absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-2xs font-medium text-white"
@@ -576,7 +697,7 @@ function CharacterForm({
                           </span>
                         )
                       )}
-                      {cleaning === image.key && (
+                      {cleaning.has(image.key) && (
                         <span className="absolute inset-0 grid place-items-center bg-background/60">
                           <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
                         </span>
@@ -602,8 +723,9 @@ function CharacterForm({
                         aria-label="Bỏ ảnh"
                         title="Bỏ ảnh"
                         className="absolute top-2 right-2 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+                        disabled={cleaning.has(image.key)}
                         onClick={() => {
-                          if (review?.key === image.key) setReview(null);
+                          discardCleaned(image.key);
                           setImages((c) => c.filter((i) => i.key !== image.key));
                         }}
                       >
@@ -635,12 +757,12 @@ function CharacterForm({
                         <p className="text-xs text-warning-foreground">
                           {findingLabel(image.check)}
                         </p>
-                        {review?.key !== image.key && (
+                        {!reviewFor(image.key) && (
                           <HoldButton
                             size="xs"
                             tone="outline"
                             className="self-start"
-                            disabled={busy || cleaning !== null}
+                            disabled={cleanBlocked || cleaning.has(image.key)}
                             onHold={() => clean(image.key)}
                           >
                             Giữ để làm sạch
@@ -651,7 +773,37 @@ function CharacterForm({
                         )}
                       </>
                     )}
-                    {image.original && review?.key !== image.key && (
+                    {isProduct && image.cutoutUsable === false && (
+                      <p className="text-xs text-warning-foreground">
+                        Chạm mép ảnh, video không dùng được
+                      </p>
+                    )}
+                    {isProduct &&
+                      !image.isCutout &&
+                      !reviewFor(image.key) &&
+                      (image.cutoutKept ? (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          className="self-start"
+                          disabled={cleanBlocked || cleaning.has(image.key)}
+                          onClick={() => cutOut(image.key)}
+                        >
+                          Tách nền
+                        </Button>
+                      ) : (
+                        <HoldButton
+                          size="xs"
+                          tone="outline"
+                          className="self-start"
+                          disabled={cleanBlocked || cleaning.has(image.key)}
+                          onHold={() => cutOut(image.key)}
+                        >
+                          Giữ để tách nền
+                          <ButtonPrice>~{formatCost(CUTOUT_USD)}</ButtonPrice>
+                        </HoldButton>
+                      ))}
+                    {image.original && !reviewFor(image.key) && (
                       <Button
                         size="xs"
                         variant="ghost-muted"
@@ -687,40 +839,82 @@ function CharacterForm({
                 )}
               </div>
 
-              {review && reviewed && (
-                <div className="mx-3 mb-3 flex flex-col gap-2 rounded-lg border bg-background p-2">
+              {reviewed.map(({ review, original }) => (
+                <div
+                  key={review.key}
+                  className="mx-3 mb-3 flex flex-col gap-2 rounded-lg border bg-background p-2"
+                >
                   <div className="grid grid-cols-2 gap-2">
-                    <img
-                      src={reviewed.url}
-                      alt=""
-                      className="aspect-[4/3] w-full rounded-md bg-muted object-contain"
-                      draggable={false}
-                    />
-                    <figure className="relative">
-                      <img
-                        src={review.image.url}
-                        alt=""
-                        className="aspect-[4/3] w-full rounded-md bg-muted object-contain"
-                        draggable={false}
-                      />
-                      <span className="absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-2xs font-medium text-white">
-                        AI
-                      </span>
-                    </figure>
+                    {[original.url, review.image.url].map((url, n) => (
+                      <button
+                        key={url}
+                        type="button"
+                        aria-label="Xem ảnh lớn"
+                        className="relative cursor-zoom-in rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() =>
+                          setViewer({
+                            images: [
+                              {
+                                url: original.url,
+                                label: "Ảnh gốc",
+                                origin: fromThumb(`review:${original.url}`),
+                              },
+                              {
+                                url: review.image.url,
+                                label: review.cutout ? "Ảnh đã tách nền" : "Ảnh đã làm sạch",
+                                origin: fromThumb(`review:${review.image.url}`),
+                                transparent: Boolean(review.cutout),
+                              },
+                            ],
+                            index: n,
+                          })
+                        }
+                      >
+                        <img
+                          ref={thumbRef(`review:${url}`)}
+                          src={url}
+                          alt=""
+                          className={cn(
+                            "aspect-[4/3] w-full rounded-md object-contain",
+                            n === 1 && review.cutout ? "bg-checker" : "bg-muted",
+                          )}
+                          draggable={false}
+                        />
+                        {n === 1 && !review.cutout && (
+                          <span className="absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 text-2xs font-medium text-white">
+                            AI
+                          </span>
+                        )}
+                      </button>
+                    ))}
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 text-xs text-warning-foreground">
-                      {findingLabel(review.check)}
+                    <span className="flex min-w-0 flex-1 flex-col text-xs">
+                      {review.cutout && !review.cutout.usable && (
+                        <span className="text-warning-foreground">
+                          Chạm mép ảnh, video không dùng được
+                        </span>
+                      )}
+                      {findingLabel(review.check) && (
+                        <span className="text-warning-foreground">
+                          {findingLabel(review.check)}
+                        </span>
+                      )}
+                      {review.note && <span className="text-muted-foreground">{review.note}</span>}
                     </span>
-                    <Button variant="ghost-muted" size="sm" onClick={() => setReview(null)}>
+                    <Button
+                      variant="ghost-muted"
+                      size="sm"
+                      onClick={() => discardCleaned(review.key)}
+                    >
                       Bỏ
                     </Button>
-                    <Button size="sm" onClick={acceptCleaned}>
+                    <Button size="sm" onClick={() => acceptCleaned(review)}>
                       Dùng ảnh này
                     </Button>
                   </div>
                 </div>
-              )}
+              ))}
 
               <div className="mt-auto flex flex-col items-start gap-2 p-3 pt-0">
                 {copy.generateViews && (
@@ -898,7 +1092,7 @@ function CharacterForm({
           <span className="flex-1" />
           {inFlight && !saving && (
             <span className="text-xs text-muted-foreground">
-              {generating || cleaning !== null ? "Đang tạo ảnh…" : "Đang tạo mô tả…"}
+              {generating || cleaning.size > 0 ? "Đang tạo ảnh…" : "Đang tạo mô tả…"}
             </span>
           )}
           <Button
@@ -914,6 +1108,12 @@ function CharacterForm({
           </Button>
         </DialogFooter>
       )}
+      <ImageViewer
+        images={viewer?.images ?? []}
+        index={viewer?.index ?? null}
+        onIndexChange={(index) => setViewer((v) => v && { ...v, index })}
+        onClose={() => setViewer(null)}
+      />
     </>
   );
 }

@@ -117,11 +117,14 @@ export function useMakeVideos({
   sessionId,
   waiting,
   onStarted,
+  approveOnly,
 }: {
   sessionId: string;
   /** Writing or a chat turn is still running: the scripts may change. */
   waiting?: boolean;
   onStarted?: () => void | Promise<void>;
+  /** The board's use: the dialog only approves scripts and sends them to the Video tab. */
+  approveOnly?: boolean;
 }) {
   const board = useBoard(sessionId);
   const { assets } = useWorkspace();
@@ -184,6 +187,7 @@ export function useMakeVideos({
       sessionId={sessionId}
       scope={scope ?? []}
       waiting={waiting}
+      approveOnly={approveOnly}
       open={scope !== null}
       onOpenChange={(next) => {
         if (!next) setScope(null);
@@ -235,6 +239,7 @@ export function ReadyCheckDialog({
   onOpenChange,
   onApproved,
   waiting,
+  approveOnly,
 }: {
   sessionId: string;
   /** Script ids this click would make. */
@@ -244,6 +249,8 @@ export function ReadyCheckDialog({
   onApproved: () => void | Promise<void>;
   /** Writing or a chat turn is still running: the scripts may change. */
   waiting?: boolean;
+  /** Reads "Duyệt N kịch bản": the click only sends scripts to the Video tab. */
+  approveOnly?: boolean;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -253,6 +260,7 @@ export function ReadyCheckDialog({
             sessionId={sessionId}
             scope={scope}
             waiting={waiting}
+            approveOnly={approveOnly}
             onApproved={async () => {
               onOpenChange(false);
               await onApproved();
@@ -268,11 +276,13 @@ function ReadyCheckBody({
   sessionId,
   scope,
   waiting,
+  approveOnly,
   onApproved,
 }: {
   sessionId: string;
   scope: string[];
   waiting?: boolean;
+  approveOnly?: boolean;
   onApproved: () => Promise<void>;
 }) {
   const board = useBoard(sessionId);
@@ -335,13 +345,20 @@ function ReadyCheckBody({
   const sharedGroups = [...new Set(shared.map((m) => m.voiceId))].map((voiceId) =>
     shared.filter((m) => m.voiceId === voiceId),
   );
+  const title = approveOnly
+    ? make
+      ? `Duyệt ${make} kịch bản`
+      : "Duyệt kịch bản"
+    : make
+      ? `Tạo ${make} video`
+      : "Tạo video";
   const hasProblems =
     check.blocked.length + overTarget.length + sharedGroups.length + check.places.length > 0;
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{make ? `Tạo ${make} video` : "Tạo video"}</DialogTitle>
+        <DialogTitle>{title}</DialogTitle>
       </DialogHeader>
       <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto p-5">
         {hasProblems && (
@@ -443,7 +460,7 @@ function ReadyCheckBody({
       <DialogFooter className="justify-end">
         <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>
         <Button disabled={waiting || make === 0} onClick={approve}>
-          Tiếp tục
+          {approveOnly ? title : "Tiếp tục"}
         </Button>
       </DialogFooter>
 

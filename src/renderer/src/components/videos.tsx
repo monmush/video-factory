@@ -60,8 +60,8 @@ import { cn } from "@/lib/utils";
 import { markHeard, useHeard, useNow, useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { LivePlanTable } from "./live-plan";
-import { MediaLevelPicker } from "./media-level-picker";
 import { Page } from "./page";
+import { QualityChip } from "./quality-chip";
 import { makeLabel, useBatchMediaLevel, useMakeVideos } from "./ready-check";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
@@ -81,58 +81,12 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
   const state = useVideoJobs(sessionId);
   const make = useMakeVideos({ sessionId });
-  // The batch button runs everything once the ready check lets the new ones through.
-  const runAll = async () => {
-    await api.invoke("video:make-all", { sessionId, scriptIds: [] });
-  };
-  const makeAll = useMakeVideos({ sessionId, onStarted: runAll });
-  const [allError, setAllError] = useState<string | null>(null);
   if (!board || !session || !state) return null;
   const order = boardOrder(board.scripts);
   const committed = committedIds(session, board.scripts);
   const finished = finishedScripts(board.scripts);
   const sent = finished.filter((s) => committed.includes(s.id));
   const rest = finished.filter((s) => !committed.includes(s.id));
-  const restIds = rest.map((s) => s.id);
-  const restUsd = rest.reduce(
-    (n, s) =>
-      n +
-      estimateUsd(s.lines, {
-        frames: make.frames,
-        model: make.model,
-        resolution: make.resolution,
-        level: make.level,
-        cutoutUsd: make.cutouts(s),
-      }),
-    0,
-  );
-
-  // Sent videos the one button also takes to the end: not started, waiting at
-  // "Nghe và xem thử", stopped or failed, or a test video that would still stop.
-  const stalled = sent.filter((s) => {
-    const job = state.jobs.get(s.id);
-    if (!job) return true;
-    if (job.status === "running" || job.status === "waiting") return job.pause && !job.reviewed;
-    return job.status !== "done";
-  });
-  const stalledUsd = stalled.reduce((n, s) => {
-    const job = state.jobs.get(s.id);
-    return (
-      n +
-      (job
-        ? costToFinishUsd(job)
-        : estimateUsd(s.lines, {
-            frames: make.frames,
-            model: make.model,
-            resolution: make.resolution,
-            level: make.level,
-            cutoutUsd: make.cutouts(s),
-          }))
-    );
-  }, 0);
-  const count = rest.length + stalled.length;
-  // One unsent script uses the group's own wording; a lone sent one has its card's button.
-  const showAll = count > 1 || rest.length === 1;
 
   const card = (script: Script) => (
     <VideoCard
@@ -148,6 +102,76 @@ export function VideosList({ sessionId }: { sessionId: string }) {
       ownMake={rest.length > 1}
     />
   );
+
+  // Made videos first; scripts still waiting follow as one group. The batch
+  // button sits in the session header (VideosToolbar).
+  return (
+    <Page className="pt-0">
+      <SettingsBar sessionId={sessionId} />
+      <ul className="flex flex-col gap-4">{sent.map(card)}</ul>
+      {rest.length > 0 && (
+        <section className={cn(committed.length > 0 && "mt-8")}>
+          {committed.length > 0 && (
+            <h3 className="mb-3 text-sm text-muted-foreground tabular-nums">
+              Chưa tạo {rest.length} video
+            </h3>
+          )}
+          <ul className="flex flex-col gap-4">{rest.map(card)}</ul>
+        </section>
+      )}
+      {make.dialog}
+    </Page>
+  );
+}
+
+/**
+ * The Video tab's batch action, in the session header: one button makes every
+ * video on the tab that is not finished, end to end
+ * (docs/VIDEO_COMMIT_DECISIONS.md, "Auto mode").
+ */
+export function VideosToolbar({ sessionId }: { sessionId: string }) {
+  const board = useBoard(sessionId);
+  const session = useWorkspace().sessions.find((s) => s.id === sessionId);
+  const state = useVideoJobs(sessionId);
+  // The batch button runs everything once the ready check lets the new ones through.
+  const runAll = async () => {
+    await api.invoke("video:make-all", { sessionId, scriptIds: [] });
+  };
+  const makeAll = useMakeVideos({ sessionId, onStarted: runAll });
+  const [allError, setAllError] = useState<string | null>(null);
+  if (!board || !session || !state) return null;
+  const order = boardOrder(board.scripts);
+  const committed = committedIds(session, board.scripts);
+  const finished = finishedScripts(board.scripts);
+  const sent = finished.filter((s) => committed.includes(s.id));
+  const rest = finished.filter((s) => !committed.includes(s.id));
+  const restIds = rest.map((s) => s.id);
+  const estimate = (s: Script) =>
+    estimateUsd(s.lines, {
+      frames: makeAll.frames,
+      model: makeAll.model,
+      resolution: makeAll.resolution,
+      level: makeAll.level,
+      cutoutUsd: makeAll.cutouts(s),
+    });
+  const restUsd = rest.reduce((n, s) => n + estimate(s), 0);
+
+  // Sent videos the one button also takes to the end: not started, waiting at
+  // "Nghe và xem thử", stopped or failed, or a test video that would still stop.
+  const stalled = sent.filter((s) => {
+    const job = state.jobs.get(s.id);
+    if (!job) return true;
+    if (job.status === "running" || job.status === "waiting") return job.pause && !job.reviewed;
+    return job.status !== "done";
+  });
+  const stalledUsd = stalled.reduce((n, s) => {
+    const job = state.jobs.get(s.id);
+    return n + (job ? costToFinishUsd(job) : estimate(s));
+  }, 0);
+  const count = rest.length + stalled.length;
+  // One unsent script uses the group's own wording; a lone sent one has its card's button.
+  const showAll = count > 1 || rest.length === 1;
+
   const label = (hold: boolean) => {
     const verb = hold ? "Giữ để tạo" : "Tạo";
     if (stalled.length === 0)
@@ -169,17 +193,10 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   };
   const error = allError ?? makeAll.error;
 
-  // One button makes every video on the tab that is not finished, end to end
-  // (docs/VIDEO_COMMIT_DECISIONS.md, "Auto mode"). Made videos first; scripts
-  // still waiting follow as one group.
   return (
-    <Page className="pt-0">
-      <MediaStrip sessionId={sessionId} />
+    <div className="flex items-center gap-2.5">
       {showAll && (
-        <div className="mb-3 flex min-h-9 items-center gap-2.5">
-          <h3 className="flex-1 text-sm text-muted-foreground tabular-nums">
-            {committed.length > 0 ? `Còn ${count} video` : `${count} video`}
-          </h3>
+        <>
           {error && <span className="text-xs text-destructive-foreground">{error}</span>}
           {rest.length > 0 && makeAll.needsCheck(restIds) ? (
             <Button onClick={() => makeAll.open(restIds)}>
@@ -192,34 +209,24 @@ export function VideosList({ sessionId }: { sessionId: string }) {
               <ButtonPrice>~{formatCost(allUsd)}</ButtonPrice>
             </HoldButton>
           )}
-        </div>
+        </>
       )}
-      <ul className="flex flex-col gap-4">{sent.map(card)}</ul>
-      {rest.length > 0 && (
-        <section className={cn(committed.length > 0 && "mt-8")}>
-          {committed.length > 0 && (
-            <h3 className="mb-3 text-sm text-muted-foreground tabular-nums">
-              Chưa tạo {rest.length} video
-            </h3>
-          )}
-          <ul className="flex flex-col gap-4">{rest.map(card)}</ul>
-        </section>
-      )}
-      {make.dialog}
       {makeAll.dialog}
-    </Page>
+    </div>
   );
 }
 
 /**
- * Experiment branch: the batch's Media level, always in view while videos are
- * made. It applies to videos not yet planned; a planned one keeps its level
- * and offers "Lập lại" (the series' own level is its default).
+ * The batch's settings, always in view while videos are made. Experiment
+ * branch: the Media level ("Chất lượng") applies to videos not yet planned; a
+ * planned one keeps its level and offers "Lập lại". Further settings are one
+ * more chip in the row.
  */
-function MediaStrip({ sessionId }: { sessionId: string }) {
+function SettingsBar({ sessionId }: { sessionId: string }) {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const own = series.find((s) => s.id === session?.seriesId);
+  const seriesLevel = mediaLevel(own?.mediaLevel).id;
   const level = useBatchMediaLevel(sessionId);
   const [error, setError] = useState<string | null>(null);
   const set = async (id: string) => {
@@ -228,18 +235,19 @@ function MediaStrip({ sessionId }: { sessionId: string }) {
       // The series' own level means following the series again.
       await api.invoke("session:update", {
         id: sessionId,
-        settings: { mediaLevel: id === mediaLevel(own?.mediaLevel).id ? null : id },
+        settings: { mediaLevel: id === seriesLevel ? null : id },
       });
     } catch (e) {
       setError(errorMessage(e));
     }
   };
   return (
-    <div className="sticky top-0 z-10 mb-1 flex min-h-12 flex-wrap items-center gap-x-2.5 gap-y-1 bg-background py-2">
-      <span className="text-sm font-medium">Media</span>
-      <MediaLevelPicker value={level.id} onChange={set} />
-      {level.inherited && <span className="text-xs text-muted-foreground">Theo series</span>}
-      {error && <span className="text-xs text-destructive-foreground">{error}</span>}
+    <div className="sticky top-0 z-10 mb-1 bg-background py-2">
+      <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
+        <span className="text-xs text-muted-foreground">Thiết lập</span>
+        <QualityChip value={level.id} onChange={set} seriesDefault={seriesLevel} />
+        {error && <span className="text-xs text-destructive-foreground">{error}</span>}
+      </div>
     </div>
   );
 }

@@ -326,10 +326,10 @@ export interface AssetImage {
   origin?: ImageOrigin;
   angle?: AngleId;
   /**
-   * Products only: the photo's background removed once, kept beside it
-   * (`file`, never replacing the original) and reused by every video.
-   * `usable`: the product stands alone in it, so it can be placed in a scene
-   * (src/shared/product-shot.ts).
+   * Products only: the photo's background removed once, kept in the asset's
+   * folder and reused by every video. `usable`: the product stands alone in
+   * it, so it can be placed in a scene (src/shared/product-shot.ts). When the
+   * user puts the cut-out in the photo's place, `file` is the same file.
    */
   cutout?: { file: string; usable: boolean };
   /**
@@ -338,9 +338,9 @@ export interface AssetImage {
    */
   placeCheck?: PlaceFinding;
   /**
-   * Places only: this photo is a cleaned version (people or packaging
-   * removed by the image model); the photo it replaced stays on disk here
-   * and can be restored.
+   * This photo replaced another, which stays on disk here and can be
+   * restored: a cleaned place photo (people or packaging removed by the
+   * image model) or a product photo with its background removed.
    */
   original?: { file: string; origin?: ImageOrigin; placeCheck?: PlaceFinding };
 }
@@ -442,15 +442,20 @@ export type ImageRef =
       id: string;
       origin?: ImageOrigin;
       angle?: AngleId;
-      /** Places: a cleaned version of this photo, which it replaces (the original is kept). */
+      /**
+       * A cleaned place photo or a product cut-out made from this photo, which
+       * it replaces (the original is kept).
+       */
       cleanOf?: ImageRef;
+      /** Products: this is `cleanOf` with its background removed. */
+      cutout?: boolean;
     }
   | {
       source: "asset";
       assetId: string;
       id: string;
       angle?: AngleId;
-      /** Places: a cleaned photo goes back to the original it replaced. */
+      /** A cleaned photo or a cut-out goes back to the original it replaced. */
       restore?: boolean;
     };
 
@@ -630,7 +635,11 @@ export interface IpcContract {
   "notes:update": { args: [input: { id: string; text: string }]; result: null };
   "notes:remove": { args: [id: string]; result: null };
   /** With a request, also starts writing it on the new session's board. */
-  "session:create": { args: [input: { seriesId: string; request?: string }]; result: Session };
+  "session:create": {
+    /** `mediaLevel`: the batch's own level; omitted (or the series' own) follows the series. */
+    args: [input: { seriesId: string; request?: string; mediaLevel?: string }];
+    result: Session;
+  };
   "session:update": {
     /** `settings` fields set to null go back to the series' value. */
     args: [
@@ -724,9 +733,10 @@ export interface IpcContract {
    * One product for a script (null: none): only the lines and staging about
    * the product are rewritten. A script with a video changes on a new version.
    */
+  /** The script that changed (a new version when the original has a video); null when nothing did. */
   "board:set-product": {
     args: [input: { sessionId: string; scriptId: string; productId: string | null }];
-    result: null;
+    result: { scriptId: string } | null;
   };
   /** Takes back the card's last product change. */
   "board:undo-product": { args: [input: { sessionId: string; scriptId: string }]; result: null };
@@ -769,6 +779,21 @@ export interface IpcContract {
       /** The cleaned photo checked again; null when the check cannot run. */
       finding: PlaceFinding | null;
       source: "fixture" | "fal";
+      cost: number | null;
+    };
+  };
+  /**
+   * Products: the photo with its background removed (held: it spends, unless
+   * a video already made this photo's cut-out). The result is staged.
+   */
+  "assets:cut-out-product-photo": {
+    args: [input: { image: ImageRef }];
+    result: {
+      image: StagedImage;
+      /** The product stands free of the photo's edges, so videos can place it. */
+      usable: boolean;
+      /** "kept": a video made it before, nothing was spent. */
+      source: "fixture" | "fal" | "kept";
       cost: number | null;
     };
   };
@@ -885,6 +910,7 @@ export const IPC_CHANNELS = [
   "assets:check-place",
   "assets:estimate-clean",
   "assets:clean-place-photo",
+  "assets:cut-out-product-photo",
   "usage:balances",
   "providers:status",
   "providers:set-key",

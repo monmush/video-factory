@@ -15,6 +15,7 @@ import {
 import { type CSSProperties, Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useCreateActions } from "@/lib/actions";
 import { api } from "@/lib/api";
+import { requestSeriesFocus } from "@/lib/series-focus";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { DeleteSeriesDialog } from "./delete-series-dialog";
@@ -96,7 +97,6 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const { createSession } = useCreateActions();
   const navigate = useNavigate();
   const params = useParams({ strict: false }) as { seriesId?: string; sessionId?: string };
   const current = params.seriesId === series.id || sessions.some((s) => s.id === params.sessionId);
@@ -104,18 +104,10 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
   const FolderIcon = open ? FolderOpen : Folder;
   const pinned = Boolean(series.pinnedAt);
   const menuShown = menuOpen || contextOpen;
-  // A double click on "+" must not create two sessions.
-  const creating = useRef(false);
-  const create = async () => {
-    if (creating.current) return;
-    creating.current = true;
-    try {
-      await createSession(series.id);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      creating.current = false;
-    }
+  // "+" opens the series page with its prompt box focused; nothing is created yet.
+  const create = () => {
+    requestSeriesFocus(series.id);
+    void navigate({ to: "/series/$seriesId", params: { seriesId: series.id } });
   };
 
   const actions: RowAction[] = [

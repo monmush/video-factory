@@ -16,6 +16,7 @@ import { assetDir, imageRefPath } from "./media";
 import { carryOverCheck } from "./place-check";
 import { checkSets } from "./product-sets";
 import { mutate } from "./store";
+import { isUsableCutout } from "./video/product-shot";
 
 function validate(ws: Workspace, input: AssetInput, selfId?: string) {
   if (!["character", "product", "environment"].includes(input.kind)) {
@@ -28,12 +29,16 @@ function validate(ws: Workspace, input: AssetInput, selfId?: string) {
   ) {
     throw new Error("Sản phẩm chỉ dùng ảnh gốc, không dùng ảnh AI");
   }
-  // Cleaned photos are for places only (src/main/place-check.ts).
-  if (
-    input.kind !== "environment" &&
-    input.images.some((i) => (i.source === "staged" ? i.cleanOf : i.restore))
-  ) {
-    throw new Error("Chỉ bối cảnh mới có ảnh làm sạch");
+  // A photo replacing another: a cleaned place photo (src/main/place-check.ts)
+  // or a product cut-out (src/main/product-cutout.ts); nothing else.
+  const replacing = (i: ImageRef) =>
+    i.source === "staged" ? Boolean(i.cleanOf || i.cutout) : Boolean(i.restore);
+  const allowed = (i: ImageRef) =>
+    input.kind === "environment"
+      ? !(i.source === "staged" && i.cutout)
+      : input.kind === "product" && (i.source === "asset" || (i.cutout && i.cleanOf));
+  if (input.images.some((i) => replacing(i) && !allowed(i))) {
+    throw new Error("Ảnh thay thế không hợp lệ cho mục này");
   }
   if (!input.name.trim()) throw new Error("Tên không được để trống");
   if (input.images.length > MAX_CHARACTER_IMAGES) {
@@ -110,6 +115,10 @@ async function applyImages(assetId: string, refs: ImageRef[], previous: AssetIma
       angle: ref.angle,
       placeCheck: copied.placeCheck,
     };
+    // A product cut-out is also the photo's cut-out, so videos use it as is.
+    if (ref.cutout) {
+      image.cutout = { file: copied.file, usable: await isUsableCutout(join(dir, copied.file)) };
+    }
     const source = ref.cleanOf;
     if (source?.source === "asset" && source.assetId === assetId) {
       // Cleaning a cleaned photo keeps the first original.
