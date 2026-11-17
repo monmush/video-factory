@@ -1,11 +1,13 @@
 import type { OutputResolution } from "./batch-settings";
+import { DEFAULT_IMAGE_MODEL, MODELS } from "./image-models";
+import type { Rate } from "./live-plan";
+import { DEFAULT_VIDEO_MODEL, videoModel } from "./video-models";
 
-// The "Media" level (experiment branch, docs/LIVE_DIRECTOR_EXPERIMENT.md):
-// one setting from fastest to most detailed replaces the model and resolution
-// choice. It gives the director a speed/quality preference, a target size and
-// a guide budget. The budgets are the owner's tunable constants, here and
-// nowhere else; they are guidance for the director, never a customer
-// threshold, and going over one is a warning with the number, not a block.
+// "Chất lượng" (the Media level): the operator picks a quality/price level,
+// never a model. Two are offered, "Nhanh" and "Cân bằng"; they differ in one
+// thing only, whether wide and detail scenes really move (src/shared/recipe.ts,
+// builtinRecipe). Three older ids stay readable so saved series, batches and
+// videos still load; each reads as the offered level that makes the same video.
 
 export type MediaLevelId = "fastest" | "fast" | "balanced" | "detailed" | "most-detailed";
 
@@ -18,28 +20,38 @@ export interface MediaLevel {
   output: OutputResolution;
   /** Target keyframe size (9:16), or the model's nearest. */
   keyframe: { width: number; height: number };
-  /** Guide budget in USD for a 45-second video, every paid step included. */
-  budgetPer45Usd: number;
+  /** Wide and detail scenes are made by a motion model; otherwise a still with a slow zoom. */
+  motion: boolean;
+  /** What the level buys, for the operator (Vietnamese, no model or provider names). */
+  points: string[];
+  /** Offered in the menus. A level not offered reads as `sameAs`. */
+  offered?: true;
+  sameAs?: MediaLevelId;
 }
+
+const SPEAKS = "Nhân vật nói khớp môi";
 
 export const MEDIA_LEVELS: readonly MediaLevel[] = [
   {
     id: "fastest",
     label: "Nhanh nhất",
-    preference:
-      "Fastest and cheapest. Fewest paid steps: still-move for every shot that does not speak, the quickest lip-sync model that keeps the face, small keyframes.",
+    preference: "",
     output: "720p",
     keyframe: { width: 720, height: 1280 },
-    budgetPer45Usd: 1.5,
+    motion: false,
+    points: [],
+    sameAs: "fast",
   },
   {
     id: "fast",
     label: "Nhanh",
     preference:
-      "Fast and economical. Motion only where it clearly matters, otherwise still-move; a fast lip-sync model.",
+      "Fast and economical. Still-move for every shot that does not speak; a fast lip-sync model.",
     output: "720p",
     keyframe: { width: 864, height: 1536 },
-    budgetPer45Usd: 2.5,
+    motion: false,
+    points: [SPEAKS, "Cảnh toàn và cận cảnh: ảnh tĩnh, zoom chậm"],
+    offered: true,
   },
   {
     id: "balanced",
@@ -48,35 +60,92 @@ export const MEDIA_LEVELS: readonly MediaLevel[] = [
       "Balanced. Sharp keyframes with varied framing, real motion for wide and detail shots where the words call for it, a lip-sync model with good faces; avoid the most expensive tier unless it is clearly better.",
     output: "1080p",
     keyframe: { width: 1116, height: 2000 },
-    budgetPer45Usd: 4,
+    motion: true,
+    points: [SPEAKS, "Cảnh toàn và cận cảnh chuyển động thật: người, lá cây, ánh sáng"],
+    offered: true,
   },
   {
     id: "detailed",
     label: "Chi tiết",
-    preference:
-      "Detailed. Quality first within reason: the best keyframe model for faces and consistency, motion for every shot that does not speak, a high-quality lip-sync model.",
+    preference: "",
     output: "1080p",
     keyframe: { width: 1116, height: 2000 },
-    budgetPer45Usd: 7,
+    motion: true,
+    points: [],
+    sameAs: "balanced",
   },
   {
     id: "most-detailed",
     label: "Chi tiết nhất",
-    preference:
-      "Most detailed. Best available model for every step regardless of speed; cost matters only to break a tie.",
+    preference: "",
     output: "1080p",
     keyframe: { width: 1440, height: 2560 },
-    budgetPer45Usd: 12,
+    motion: true,
+    points: [],
+    sameAs: "balanced",
   },
 ];
 
+/** The levels the menus offer, cheapest first. */
+export const OFFERED_LEVELS: readonly MediaLevel[] = MEDIA_LEVELS.filter((l) => l.offered);
+
 export const DEFAULT_MEDIA_LEVEL: MediaLevelId = "balanced";
 
-/** The level with this id; missing or unknown ids read as the default. */
-export const mediaLevel = (id?: string | null): MediaLevel =>
-  MEDIA_LEVELS.find((l) => l.id === id) ??
-  (MEDIA_LEVELS.find((l) => l.id === DEFAULT_MEDIA_LEVEL) as MediaLevel);
+const byId = (id: string | null | undefined) => MEDIA_LEVELS.find((l) => l.id === id);
 
-/** The guide budget for a video of this length (seconds). */
-export const guideBudgetUsd = (level: MediaLevel, seconds: number) =>
-  (level.budgetPer45Usd * Math.max(1, seconds)) / 45;
+/**
+ * The offered level for this id: a level no longer offered reads as the one
+ * that makes the same video; missing or unknown ids read as the default.
+ */
+export const mediaLevel = (id?: string | null): MediaLevel => {
+  const level = byId(id);
+  return (byId(level?.sameAs ?? level?.id) ?? byId(DEFAULT_MEDIA_LEVEL)) as MediaLevel;
+};
+
+// ---------------------------------------------------------------------------
+// What a level costs. The same rates as the built-in recipe (recipe.ts uses
+// these), so the menu, the batch button and the plan's cost table agree.
+// ---------------------------------------------------------------------------
+
+/** The motion model's rate for wide and detail shots ($0.045 a second, 2 s at least; read 16 Nov). */
+export const MOTION_RATE: Rate = { usd: 0.045, unit: "seconds", minSeconds: 2 };
+
+/** Rates for each paid role at this level; no motion rate when the level has no motion. */
+export function levelRates(level: MediaLevel): {
+  stills: Rate;
+  speak: Rate;
+  motion: Rate | null;
+} {
+  const speak = videoModel(DEFAULT_VIDEO_MODEL);
+  return {
+    stills: { usd: MODELS[DEFAULT_IMAGE_MODEL].fallbackUsd, unit: "images" },
+    speak: {
+      usd: speak.outputs["720p"].usdPerSec,
+      unit: "seconds",
+      ...(speak.minSec ? { minSeconds: speak.minSec } : {}),
+    },
+    motion: level.motion ? MOTION_RATE : null,
+  };
+}
+
+/**
+ * A typical 45-second video, from the plans made on 16–17 Nov: about seven
+ * generated pictures, ~38 s of speaking scenes and ~7 s of wide and detail
+ * scenes (paid motion on "Cân bằng", a free still with a zoom on "Nhanh").
+ */
+export const TYPICAL_VIDEO = { seconds: 45, pictures: 7, speakSec: 38, motionSec: 7 } as const;
+
+/**
+ * Pictures, speaking scenes and motion for a typical video of `seconds` at
+ * this level (the voice excluded: it depends on the words), scaled from
+ * TYPICAL_VIDEO.
+ */
+export function levelMediaUsd(level: MediaLevel, seconds: number): number {
+  const rates = levelRates(level);
+  const scale = Math.max(1, seconds) / TYPICAL_VIDEO.seconds;
+  return (
+    TYPICAL_VIDEO.pictures * scale * (rates.stills.usd ?? 0) +
+    TYPICAL_VIDEO.speakSec * scale * (rates.speak.usd ?? 0) +
+    (rates.motion ? TYPICAL_VIDEO.motionSec * scale * (rates.motion.usd ?? 0) : 0)
+  );
+}

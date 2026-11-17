@@ -137,6 +137,8 @@ export async function askClaudeCode(input: {
   model?: string;
   effort?: string;
   timeoutMs?: number;
+  /** Called with the answer so far as it is written (streamed). */
+  onText?: (soFar: string) => void;
 }): Promise<ClaudeCodeAnswer> {
   const bin = await findClaude();
   if (!bin) throw new Error("Chưa cài Claude Code trên máy này");
@@ -162,6 +164,7 @@ export async function askClaudeCode(input: {
     "--output-format",
     "stream-json",
     "--verbose",
+    ...(input.onText ? ["--include-partial-messages"] : []),
     "--tools",
     "",
     "--strict-mcp-config",
@@ -184,8 +187,35 @@ export async function askClaudeCode(input: {
       reject(new Error("Claude Code không phản hồi kịp"));
     }, input.timeoutMs ?? 120_000);
 
+    // Streamed text: whole lines only, each a JSON event; text deltas are added up.
+    let pending = "";
+    let soFar = "";
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
+      if (!input.onText) return;
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      let grew = false;
+      for (const line of lines) {
+        if (!line.includes('"text_delta"')) continue;
+        try {
+          const delta = JSON.parse(line)?.event?.delta;
+          if (delta?.type === "text_delta" && typeof delta.text === "string") {
+            soFar += delta.text;
+            grew = true;
+          }
+        } catch {
+          // Not an event line.
+        }
+      }
+      if (grew) {
+        try {
+          input.onText(soFar);
+        } catch {
+          // Progress is never a reason to fail the answer.
+        }
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;

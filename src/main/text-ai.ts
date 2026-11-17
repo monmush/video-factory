@@ -49,6 +49,8 @@ export async function askText(input: {
   /** Claude only: the session's chosen model and effort. */
   model?: string;
   effort?: string;
+  /** Claude only: the answer so far, as it is written. */
+  onText?: (soFar: string) => void;
 }): Promise<string> {
   const mode = textAiMode();
   if (mode === "fixture") throw new Error("Text AI is not available in fixture mode");
@@ -60,6 +62,7 @@ export async function askText(input: {
         prompt: input.prompt,
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.onText ? { onText: input.onText } : {}),
         timeoutMs: 240_000,
       });
       await logUsage({

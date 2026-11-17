@@ -4,9 +4,11 @@ import {
   estimateUsd,
   estimateVoiceUsd,
   FRAME_USD,
+  levelEstimateUsd,
   SPEECH_RATE,
   syllables,
 } from "./board";
+import type { DirectionEntry } from "./direction";
 import type { ScriptLine } from "./ipc";
 import {
   type CostRow,
@@ -21,7 +23,7 @@ import {
   type Route,
   requestCost,
 } from "./live-plan";
-import { guideBudgetUsd, mediaLevel } from "./media-level";
+import { mediaLevel } from "./media-level";
 import { isNetworkError, isNetworkMessage, retryDelayMs } from "./net-error";
 import { CUTOUT_USD } from "./product-shot";
 import type { Framing, ShotKind, ShotPlan } from "./shot-plan";
@@ -106,6 +108,8 @@ export interface JobShot {
    * shots get the silence in their audio, so the person stays alive through it.
    */
   hold?: number;
+  /** What the viewer sees, in plain Vietnamese (from the plan). */
+  brief?: string;
   /**
    * Where the shot sits in the video (seconds), once the voice exists: the
    * dialogue's own timeline with the holds before it added.
@@ -237,6 +241,15 @@ export interface VideoJob {
   level?: string;
   /** Experiment branch: the plan is being made now, before any hold. */
   planning?: boolean;
+  /** While planning: what the director has done so far, one short line each (src/shared/plan-progress.ts). */
+  planningSteps?: string[];
+  /**
+   * The operator's wishes for how it is filmed (src/shared/direction.ts),
+   * given to the director; kept when the plan is made again.
+   */
+  direction?: DirectionEntry[];
+  /** The script's products when the job was made, to tell when its plan no longer fits. */
+  productIds?: string[];
   /** Whole dialogue (file), its length and what it cost. */
   dialogue?: string;
   dialogueSec?: number;
@@ -417,6 +430,7 @@ export function applyPlan(job: VideoJob, plan: ShotPlan): VideoJob {
     visual: p.visual,
     productId: p.productId,
     ...(p.hold ? { hold: p.hold } : {}),
+    ...(p.brief ? { brief: p.brief } : {}),
     state: "planned",
     retried: false,
     failures: 0,
@@ -649,6 +663,7 @@ export function costToFinishUsd(job: VideoJob): number {
       frames: job.useEnvironment,
       model: job.model,
       resolution: job.resolution,
+      level: job.level,
     });
   }
   const voice = job.dialogue ? 0 : estimateVoiceUsd(job.lines);
@@ -660,6 +675,31 @@ export function costToFinishUsd(job: VideoJob): number {
     .filter((s) => s.state !== "done" && s.state !== "rendering")
     .reduce((n, s) => n + shotEstimateUsd(job, s), 0);
   return voice + frames + shots;
+}
+
+/** Whether the next hold stops at "Nghe và xem thử" after the voice and the stills. */
+export const stopsForPreview = (job: VideoJob) =>
+  Boolean(
+    job.plan &&
+      job.pause &&
+      !job.reviewed &&
+      job.status !== "review" &&
+      // The preview is still to make: once voice and stills exist, the next hold makes the video.
+      (!job.dialogue || job.frames.some((f) => !f.file)) &&
+      job.shots.every((s) => s.state === "queued" || s.state === "planned"),
+  );
+
+/** What the hold up to "Nghe và xem thử" spends: the voice and the stills still to make. */
+export function costToPreviewUsd(job: VideoJob): number {
+  if (!job.plan) return costToFinishUsd(job);
+  const voice = job.dialogue ? 0 : estimateVoiceUsd(job.lines);
+  return (
+    voice +
+    framesToMake(job)
+      .filter((f) => !f.requestId)
+      .reduce((n, f) => n + frameUsd(job, f), 0) +
+    cutoutsToMakeUsd(job)
+  );
 }
 
 /**
@@ -676,6 +716,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
       model: null,
       quantity: "",
       usd: job.voiceCostUsd ?? estimateVoiceUsd(job.lines),
+      paid: job.voiceCostUsd !== undefined,
     },
   ];
   for (const f of job.frames) {
@@ -684,10 +725,12 @@ export function liveCostTable(job: VideoJob): CostTable | null {
     const planned = k && !f.fallback;
     const estimate = !isGenerated(job, f) ? 0 : planned ? liveFrameUsd(live, k.id) : FRAME_USD;
     rows.push({
-      step: `Khung hình ${f.keyframe ?? f.id}`,
+      // A product's still is its cut-out on a drawn spot, not a planned keyframe.
+      step: f.kind === "product" && !planned ? "Ảnh sản phẩm" : `Khung hình ${f.keyframe ?? f.id}`,
       model: planned ? modelName(live.schemas, k.endpoint) : null,
       quantity: isGenerated(job, f) ? "1 ảnh" : "",
       usd: made ? (f.costUsd ?? 0) : estimate,
+      paid: made,
     });
   }
   const cutouts = cutoutsToMakeUsd(job);
@@ -715,6 +758,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
         model: modelName(live.schemas, r.endpoint),
         quantity: cost.quantity,
         usd: made ? (shot.costUsd ?? 0) : cost.usd,
+        paid: made,
       });
     } else {
       rows.push({
@@ -722,6 +766,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
         model: shotModel(job, shot).name,
         quantity: `${Math.round(billedSeconds(shot) * 10) / 10} giây`,
         usd: made ? (shot.costUsd ?? 0) : shotEstimateUsd(job, shot),
+        paid: made,
       });
     }
   }
@@ -729,7 +774,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
     rows,
     knownUsd: rows.reduce((n, r) => n + (r.usd ?? 0), 0),
     unknownSteps: rows.filter((r) => r.usd === null).length,
-    budgetUsd: guideBudgetUsd(mediaLevel(job.level), estimateSeconds(job.lines)),
+    budgetUsd: levelEstimateUsd(mediaLevel(job.level), estimateSeconds(job.lines)),
     seconds: job.shots.reduce((n, sh) => n + liveSeconds(sh), 0),
   };
 }

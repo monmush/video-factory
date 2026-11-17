@@ -103,7 +103,7 @@ function SeriesView({ seriesId }: { seriesId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const own = level && level !== seriesLevel ? level : undefined;
+      const own = level && mediaLevel(level).id !== seriesLevel ? mediaLevel(level).id : undefined;
       await createSession(series.id, request, own);
       clearRequest();
       clearLevel();

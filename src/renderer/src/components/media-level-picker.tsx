@@ -1,10 +1,10 @@
-import { MEDIA_LEVELS, type MediaLevelId } from "@shared/media-level";
+import { type MediaLevelId, mediaLevel, OFFERED_LEVELS } from "@shared/media-level";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 
-// Experiment branch (docs/LIVE_DIRECTOR_EXPERIMENT.md): "Chất lượng" (the Media
-// level), one setting from fastest to most detailed, in place of the model and
-// the resolution. The chosen segment is neutral, like the board's view toggle.
+// "Chất lượng" (the Media level) in place of the model and the resolution: the
+// offered levels only; a saved level no longer offered shows as the one it
+// reads as. The chosen segment is neutral, like the board's view toggle.
 
 export function MediaLevelPicker({
   value,
@@ -13,16 +13,17 @@ export function MediaLevelPicker({
   value: MediaLevelId;
   onChange: (value: MediaLevelId) => void;
 }) {
+  const chosen = mediaLevel(value).id;
   return (
     <fieldset className="flex flex-wrap rounded-[var(--control-radius)] border p-0.5">
       <legend className="sr-only">Chất lượng</legend>
-      {MEDIA_LEVELS.map((level) => (
+      {OFFERED_LEVELS.map((level) => (
         <Button
           key={level.id}
           size="xs"
           variant="ghost-muted"
-          className={cn(value === level.id && "bg-accent text-foreground")}
-          aria-pressed={value === level.id}
+          className={cn(chosen === level.id && "bg-accent text-foreground")}
+          aria-pressed={chosen === level.id}
           onClick={() => onChange(level.id)}
         >
           {level.label}

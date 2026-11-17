@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { MODELS } from "../shared/image-models";
 import type { AngleModel, CoreAngle, GenerateAnglesResult, GeneratedAngle } from "../shared/ipc";
 import { mediaUrl } from "../shared/ipc";
 import { falCall } from "./fal";
@@ -12,47 +13,9 @@ import { falClient, getKey, providerMode } from "./providers";
 // three-quarter, full body) from the character's reference images with a fal
 // image-edit model. Results are staged; the user keeps or discards each one.
 
+export { DEFAULT_IMAGE_MODEL, type ImageShape, MODELS } from "../shared/image-models";
+
 const MAX_REFERENCES = 4;
-
-/** Portrait shapes: 2:3 for the character sheet, 9:16 for video start frames. */
-export type ImageShape = "2:3" | "9:16";
-
-export const MODELS: Record<
-  AngleModel,
-  {
-    endpoint: string;
-    fallbackUsd: number;
-    input: (prompt: string, urls: string[], shape?: ImageShape) => Record<string, unknown>;
-  }
-> = {
-  // The model used for the approved courtyard pack.
-  "gpt-image": {
-    endpoint: "openai/gpt-image-2.6/sunburst/edit",
-    fallbackUsd: 0.12,
-    input: (prompt, image_urls, shape = "2:3") => ({
-      prompt,
-      image_urls,
-      image_size: shape === "9:16" ? "portrait_16_9" : { width: 1024, height: 1536 },
-      background: "opaque",
-      quality: "high",
-      reasoning_effort: "medium",
-      num_images: 1,
-      output_format: "png",
-    }),
-  },
-  "nano-banana-pro": {
-    endpoint: "fal-ai/nano-banana-pro/edit",
-    fallbackUsd: 0.15,
-    input: (prompt, image_urls, shape = "2:3") => ({
-      prompt,
-      image_urls,
-      aspect_ratio: shape,
-      resolution: "1K",
-      num_images: 1,
-      output_format: "png",
-    }),
-  },
-};
 
 const VIEWS: Record<CoreAngle, string> = {
   closeup:
@@ -97,9 +60,6 @@ export async function estimateAngles(model: AngleModel, count: number): Promise<
     return { cost: fallbackUsd * count };
   }
 }
-
-/** The angle dialog's default model; video start frames use it too. */
-export const DEFAULT_IMAGE_MODEL: AngleModel = "gpt-image";
 
 /** Downloads a generated image into the staging folder; returns its file name. */
 export async function stageFromUrl(url: string): Promise<string> {

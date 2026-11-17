@@ -1,6 +1,6 @@
-import { estimateSeconds, estimateVoiceUsd } from "./board";
+import { estimateSeconds, estimateVoiceUsd, levelEstimateUsd } from "./board";
 import type { ScriptLine } from "./ipc";
-import { guideBudgetUsd, type MediaLevel, type MediaLevelId } from "./media-level";
+import type { MediaLevel, MediaLevelId } from "./media-level";
 import {
   type DirectorAnswer,
   estimatePartSec,
@@ -400,7 +400,8 @@ function textsIn(value: unknown): string[] {
   return [];
 }
 
-const DURATION_FIELDS = ["duration", "duration_seconds", "seconds", "num_seconds"];
+/** Fields a model takes its clip length in. */
+export const DURATION_FIELDS = ["duration", "duration_seconds", "seconds", "num_seconds"];
 
 /** The input's requested length in seconds, else the schema's default; undefined when it has none. */
 export function requestedSeconds(schema: ModelSchema, input: Input): number | undefined {
@@ -414,7 +415,7 @@ export function requestedSeconds(schema: ModelSchema, input: Input): number | un
 }
 
 /** Problems with an input against the schema read in this session. */
-function inputErrors(
+export function inputErrors(
   where: string,
   endpoint: string,
   input: Input,
@@ -475,6 +476,18 @@ const norm = (s: unknown) =>
   String(s ?? "")
     .replace(/\s+/g, " ")
     .trim();
+
+/**
+ * The product or packaging a request text asks for: a product's name
+ * anywhere, packaging only where it is wanted ("no labels or packaging" is
+ * what every request should say).
+ */
+export const namedInRequest = (text: string, productNames: readonly string[]): string | null =>
+  namedProduct(text, productNames) ??
+  affirmed(text)
+    .map(namedPackaging)
+    .find((w): w is string => Boolean(w)) ??
+  null;
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -545,14 +558,7 @@ export function readLivePlan(
   const { plan: shots, errors } = readDirectorAnswer(answer, ctx);
   const byName = new Map(ctx.cast.map((c) => [c.name.trim().toLowerCase(), c.id]));
   const productNames = ctx.products.map((p) => p.name);
-  // Request text: a product's name anywhere, packaging only where it is wanted
-  // ("no labels or packaging" is what every request should say).
-  const productText = (text: string) =>
-    namedProduct(text, productNames) ??
-    affirmed(text)
-      .map(namedPackaging)
-      .find((w): w is string => Boolean(w)) ??
-    null;
+  const productText = (text: string) => namedInRequest(text, productNames);
 
   // Keyframes, in the order they are made: each may use earlier ones.
   const keyframes: PlannedKeyframe[] = [];
@@ -891,6 +897,8 @@ export interface CostRow {
   quantity: string;
   /** null: no recorded price fits this step. */
   usd: number | null;
+  /** Already made and charged: `usd` is what it cost, not an estimate. */
+  paid?: boolean;
 }
 
 export interface CostTable {
@@ -1029,7 +1037,7 @@ export function priceLivePlan(
     rates,
     schemas,
     // The same length the app shows everywhere else for this script (holds included).
-    guideBudgetUsd(level, estimateSeconds(lines)),
+    levelEstimateUsd(level, estimateSeconds(lines)),
     steps.reduce((n, s) => n + s.seconds, 0),
   );
 }
@@ -1094,10 +1102,17 @@ export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[
   return warnings;
 }
 
+/**
+ * The guide is the typical price of a video of this length, so a plan near it
+ * is normal: only one clearly above it (a quarter more) is called out.
+ */
+export const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
+  table.knownUsd > table.budgetUsd * 1.25;
+
 /** Warnings shown with the plan: over the guide budget, unknown prices. */
 export function costWarnings(table: CostTable): string[] {
   const warnings: string[] = [];
-  if (table.knownUsd > table.budgetUsd + 1e-9) {
+  if (overBudget(table)) {
     warnings.push(
       `Over the guide budget: ~$${table.knownUsd.toFixed(2)} of $${table.budgetUsd.toFixed(2)}.`,
     );
@@ -1115,7 +1130,10 @@ export interface LiveDirection {
   /** Rates and schemas of the endpoints used: what the job prices and sends by. */
   rates: Record<string, Rate>;
   schemas: Record<string, ModelSchema>;
-  connection: "signed-in" | "key";
+  /** "recipe": built in code from a shot list and a recipe (no tools, src/shared/build-direction.ts). */
+  connection: "signed-in" | "key" | "recipe";
+  /** The recipe a built direction was made from. */
+  recipe?: { id: string; source: "builtin" | "plan" | "session" };
   /** Tools called, in order, without their server prefix. */
   tools: string[];
   guidance: Retrieval;

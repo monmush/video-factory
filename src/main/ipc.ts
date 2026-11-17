@@ -65,7 +65,17 @@ export function registerIpc() {
 
   handle("workspace:get", getWorkspace);
   handle("series:create", createSeries);
-  handle("series:update", updateSeries);
+  handle("series:update", async (input) => {
+    const series = await updateSeries(input);
+    // Batches that follow the series' level stage their unpaid videos again.
+    if (input.mediaLevel !== undefined) {
+      const ws = await getWorkspace();
+      for (const s of ws.sessions.filter((x) => x.seriesId === series.id)) {
+        void video.followLevel(s.id).catch((e) => console.warn("[video] level:", e.message));
+      }
+    }
+    return series;
+  });
   handle("notes:update", ({ id, text }) => updateNote(id, text));
   handle("notes:remove", removeNote);
   handle("series:delete", async (id) => {
@@ -88,7 +98,14 @@ export function registerIpc() {
     if (session.request) await chat.startFromRequest(session.id);
     return session;
   });
-  handle("session:update", updateSession);
+  handle("session:update", async (input) => {
+    const session = await updateSession(input);
+    // Unpaid videos are staged again at the new level; paid ones keep theirs.
+    if (input.settings?.mediaLevel !== undefined) {
+      void video.followLevel(session.id).catch((e) => console.warn("[video] level:", e.message));
+    }
+    return session;
+  });
   handle("session:delete", async (id) => {
     // The session's Claude transcript goes with it.
     const agentId = (await board.getBoard(id).catch(() => null))?.agent?.sessionId;
@@ -98,9 +115,11 @@ export function registerIpc() {
   });
   handle("session:approve", async (sessionId, scriptIds) => {
     const ids = await board.scriptsToCommit(sessionId, scriptIds);
-    // Experiment branch: committing only sends the scripts to the Video tab.
-    // Each video is planned there at the batch's Media level and made by its own hold.
-    return approveSession(sessionId, ids);
+    // Committing sends the scripts to the Video tab; each is planned there in the
+    // background (free) and made by its own hold.
+    const session = await approveSession(sessionId, ids);
+    video.planCommitted(sessionId, ids);
+    return session;
   });
 
   handle("board:get", board.getBoard);
@@ -234,6 +253,13 @@ export function registerIpc() {
   handle("video:start", ({ sessionId, scriptId }) => video.start(sessionId, scriptId));
   handle("video:plan", ({ sessionId, scriptId }) => video.planOnly(sessionId, scriptId));
   handle("video:replan", ({ sessionId, scriptId }) => video.replan(sessionId, scriptId));
+  handle("video:direct", ({ sessionId, scriptId, words, want, at }) =>
+    video.direct(sessionId, scriptId, {
+      ...(words ? { words } : {}),
+      want,
+      ...(at ? { at } : {}),
+    }),
+  );
   handle("video:make-all", async ({ sessionId, scriptIds }) => {
     if (scriptIds.length) {
       const ids = await board.scriptsToCommit(sessionId, scriptIds);

@@ -1,6 +1,6 @@
 import { withoutCues } from "./cues";
 import type { Script, ScriptLine } from "./ipc";
-import { guideBudgetUsd, mediaLevel } from "./media-level";
+import { levelMediaUsd, type MediaLevel, mediaLevel } from "./media-level";
 import { videoModel, videoUsd } from "./video-models";
 
 /**
@@ -92,8 +92,8 @@ export interface EstimateOpts {
    */
   cutoutUsd?: number;
   /**
-   * Experiment branch: the Media level. With a place the live director plans
-   * the video, so before its plan it is priced at the level's guide budget.
+   * The Media level. With a place the video is staged, so before its plan it
+   * is priced at the level's rates for a typical video (levelMediaUsd).
    */
   level?: string | null;
 }
@@ -126,7 +126,7 @@ export const estimateUsd = (
 ) =>
   opts.level && opts.frames
     ? estimateVoiceUsd(lines) +
-      guideBudgetUsd(mediaLevel(opts.level), estimateSeconds(lines)) +
+      levelMediaUsd(mediaLevel(opts.level), estimateSeconds(lines)) +
       (opts.cutoutUsd ?? 0)
     : estimateVideoUsd(lines, opts.model, opts.resolution) +
       estimateVoiceUsd(lines) +
@@ -141,6 +141,17 @@ export const TYPICAL_LINES: (Pick<ScriptLine, "text"> & Pick<ScriptLine, "charac
     characterId: i % 2 ? "b" : "a",
     text: Array(14).fill("trà").join(" "),
   }));
+
+/**
+ * All-in price of a typical video of `seconds` at this level: pictures,
+ * speaking scenes and motion at the recipe's rates (levelMediaUsd), plus the
+ * voice of a typical script of that length. The "Chất lượng" menu's price,
+ * and the guide budget a plan's cost table is held against.
+ */
+export function levelEstimateUsd(level: MediaLevel, seconds = DEFAULT_TARGET_SEC): number {
+  const voicePerSec = estimateVoiceUsd(TYPICAL_LINES) / estimateSeconds(TYPICAL_LINES);
+  return levelMediaUsd(level, seconds) + voicePerSec * Math.max(1, seconds);
+}
 
 /**
  * All-in price of one video for a model choice, the same estimate as the

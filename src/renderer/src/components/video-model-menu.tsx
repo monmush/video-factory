@@ -11,8 +11,9 @@ import {
   videoModel,
 } from "@shared/video-models";
 import { ChevronDown } from "lucide-react";
-import { type ReactElement, type ReactNode, useState } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { MediaLevelPicker } from "./media-level-picker";
+import { MenuSideCard, SampleLoop, useShownRow } from "./menu-side-card";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -28,14 +29,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 // "Mô hình AI": the speaking-shot model, by name, grouped by level, each with
 // its all-in price per video and a hover card (sample, maker, what to expect,
 // facts). Registry: src/shared/video-models.ts.
-
-const files = import.meta.glob<string>("../assets/model-samples/*.{mp4,jpg}", {
-  eager: true,
-  query: "?url",
-  import: "default",
-});
-const asset = (file?: string) =>
-  file ? Object.entries(files).find(([path]) => path.endsWith(`/${file}`))?.[1] : undefined;
 
 /** One video's all-in price and the length it is for. */
 export type PerVideo = { usd: number; seconds: number };
@@ -70,9 +63,9 @@ export function VideoModelMenu({
 }) {
   const current = videoModel(value);
   // The row under the pointer or keyboard; its card sits beside the menu.
-  const [shown, setShown] = useState<VideoModel | null>(null);
+  const { shown, clear, row } = useShownRow<VideoModel>();
   return (
-    <Menu onOpenChange={(open) => !open && setShown(null)}>
+    <Menu onOpenChange={(open) => !open && clear()}>
       {trigger ? (
         <MenuTrigger aria-label={label} render={trigger}>
           {triggerContent}
@@ -122,8 +115,7 @@ export function VideoModelMenu({
                   disabled={disabled?.(model)}
                   className="data-disabled:cursor-default data-disabled:opacity-50"
                   closeOnClick
-                  onPointerEnter={() => setShown(model)}
-                  onFocus={() => setShown(model)}
+                  {...row(model)}
                 >
                   <span className="flex items-baseline gap-3">
                     <span className="flex-1 whitespace-nowrap">
@@ -142,10 +134,9 @@ export function VideoModelMenu({
           ))}
         </MenuRadioGroup>
         {shown && (
-          // Beside the menu, the same surface as a hover card.
-          <div className="absolute top-0 left-full ml-2 w-64 rounded-lg border bg-popover text-popover-foreground shadow-lg">
+          <MenuSideCard>
             <ModelCard model={shown} resolution={resolution} />
-          </div>
+          </MenuSideCard>
         )}
       </MenuPopup>
     </Menu>
@@ -154,8 +145,6 @@ export function VideoModelMenu({
 
 /** Sample, name and maker, what to expect, and the facts. */
 function ModelCard({ model, resolution }: { model: VideoModel; resolution: OutputResolution }) {
-  const sample = asset(model.sample);
-  const poster = asset(model.poster);
   const out = modelOutput(model, resolution);
   const minutes = minutesFor45(model);
   const facts: [string, string][] = [
@@ -166,18 +155,7 @@ function ModelCard({ model, resolution }: { model: VideoModel; resolution: Outpu
   ];
   return (
     <div className="flex flex-col gap-2 p-2.5 text-xs">
-      {sample && (
-        <video
-          key={sample}
-          src={sample}
-          poster={poster}
-          autoPlay
-          muted
-          loop
-          playsInline
-          className="aspect-video w-full rounded-md bg-muted object-cover"
-        />
-      )}
+      <SampleLoop file={model.sample} poster={model.poster} className="aspect-video" />
       <div>
         <div className="text-sm font-medium">{model.name}</div>
         <div className="text-muted-foreground">{model.maker}</div>

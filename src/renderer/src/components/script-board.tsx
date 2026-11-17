@@ -4,7 +4,6 @@ import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check
 import type { VideoJob } from "@shared/video-job";
 import { Link } from "@tanstack/react-router";
 import {
-  ChevronRight,
   Clapperboard,
   CopyPlus,
   GripVertical,
@@ -53,6 +52,7 @@ import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { ProductPicker } from "./product-picker";
+import { ShotBrief } from "./shot-brief";
 import { Button } from "./ui/button";
 import {
   ContextMenu,
@@ -124,7 +124,8 @@ interface Notice {
 /** Clicks on controls, or while text is selected, are not card clicks. */
 function isCardClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  if (target.closest("button, a, input, textarea, form")) return false;
+  // The Dàn dựng list is content to act on, not the card.
+  if (target.closest("button, a, input, textarea, form, [data-shot-brief]")) return false;
   return !window.getSelection()?.toString();
 }
 
@@ -269,7 +270,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     onPointerDown: (e: PointerEvent<HTMLElement>) => {
       // Dialogue and staging stay selectable as text; controls stay clickable.
       e.currentTarget.draggable = !(e.target as HTMLElement).closest(
-        "dl, [data-staging], button, input, textarea, form",
+        "dl, [data-staging], [data-shot-brief], button, input, textarea, form",
       );
     },
     onDragStart: (e: DragEvent<HTMLElement>) => {
@@ -629,7 +630,10 @@ function ScriptCard({
   const isSent = job !== undefined;
   const assets = useWorkspace().assets;
   const [prompting, setPrompting] = useState(false);
-  const [showStaging, setShowStaging] = useState(false);
+  /** "Lời thoại" or "Dàn dựng", per card. */
+  const [tab, setTab] = useState<CardTab>("lines");
+  // Staging makes itself, also for a script not sent yet: its tab shows it at work.
+  const planning = Boolean(useVideoJobs(shared.sessionId)?.jobs.get(script.id)?.planning);
   // "Tùy chỉnh" chosen from the right-click menu opens this card's prompt.
   useEffect(() => {
     if (customiseId !== script.id) return;
@@ -692,6 +696,9 @@ function ScriptCard({
             The hook is not repeated: on a full card it is the first line of dialogue. */}
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
+            {script.status === "ready" && script.lines.length > 0 && (
+              <CardTabs value={tab} onChange={setTab} planning={planning} />
+            )}
             {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
             {!inGallery &&
               shared.testChoice &&
@@ -715,7 +722,9 @@ function ScriptCard({
           )}
         </header>
 
-        {script.lines.length > 0 ? (
+        {tab === "staging" && script.status === "ready" && script.lines.length > 0 ? (
+          <ShotBrief sessionId={shared.sessionId} script={script} className="mt-3" />
+        ) : script.lines.length > 0 ? (
           <div className="relative mt-3">
             <dl
               key={script.updatedAt}
@@ -749,30 +758,6 @@ function ScriptCard({
               })}
             </dl>
             {writing && <div className="shimmer pointer-events-none absolute inset-0 rounded-md" />}
-            {script.staging && (
-              <div className="mt-3">
-                <button
-                  type="button"
-                  className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                  aria-expanded={showStaging}
-                  onClick={() => setShowStaging(!showStaging)}
-                >
-                  <ChevronRight
-                    className={cn("size-3.5 transition-transform", showStaging && "rotate-90")}
-                  />
-                  Dàn dựng
-                </button>
-                {showStaging && (
-                  <p
-                    className="mt-1 cursor-text pl-4.5 text-xs leading-relaxed text-muted-foreground"
-                    data-selectable
-                    data-staging
-                  >
-                    {script.staging}
-                  </p>
-                )}
-              </div>
-            )}
           </div>
         ) : writing ? (
           <Bars count={5} className="mt-4" />
@@ -1148,7 +1133,7 @@ function VersionTag({ script }: { script: Script }) {
 /** On a script sent to video: where its video stands; opens the Video tab. */
 function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null | undefined }) {
   const label = job?.planning
-    ? "Lên cảnh quay"
+    ? "Lên dàn dựng"
     : !job || job.status === "idle"
       ? "Chờ tạo"
       : job.status === "done"
@@ -1172,6 +1157,48 @@ function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null
       <Clapperboard className="size-3" />
       {label}
     </Link>
+  );
+}
+
+type CardTab = "lines" | "staging";
+const CARD_TABS: { id: CardTab; label: string }[] = [
+  { id: "lines", label: "Lời thoại" },
+  { id: "staging", label: "Dàn dựng" },
+];
+
+/** The full card's two views: its dialogue, or how it will be filmed. */
+function CardTabs({
+  value,
+  onChange,
+  planning,
+}: {
+  value: CardTab;
+  onChange: (tab: CardTab) => void;
+  /** The staging is being made: its tab shimmers. */
+  planning?: boolean;
+}) {
+  return (
+    <fieldset className="flex shrink-0 rounded-[var(--control-radius)] border p-px">
+      <legend className="sr-only">Xem</legend>
+      {CARD_TABS.map((t) => (
+        <Button
+          key={t.id}
+          size="xs"
+          variant="ghost-muted"
+          className={cn("h-5 px-1.5 text-2xs", value === t.id && "bg-accent text-foreground")}
+          aria-pressed={value === t.id}
+          onClick={() => onChange(t.id)}
+        >
+          {planning && t.id === "staging" ? (
+            <span className="shimmer-text" title="Đang lên dàn dựng">
+              {t.label}
+            </span>
+          ) : (
+            t.label
+          )}
+        </Button>
+      ))}
+    </fieldset>
   );
 }
 

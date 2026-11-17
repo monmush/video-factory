@@ -7,6 +7,7 @@ import { syllables, VOICE_USD_PER_CHAR } from "../../shared/board";
 import { voiceText } from "../../shared/cues";
 import type { Asset } from "../../shared/ipc";
 import { fitDuration, placeholderOf, placeholdersIn, readMediaUrl } from "../../shared/live-plan";
+import { speakPrompt, withNoCaptions } from "../../shared/prompt-text";
 import {
   type Alignment,
   type Gaze,
@@ -421,20 +422,6 @@ export async function pollFrame(job: VideoJob, frame: JobFrame): Promise<StepPol
 // Speaking shots: image + that line's audio.
 // ---------------------------------------------------------------------------
 
-// Only models whose endpoint takes a prompt receive these (`takesPrompt` in
-// src/shared/video-models.ts). The background asks for gentle life instead of
-// a frozen photograph: an experiment, unproven until seen live
-// (docs/DIRECTING_RULES.md, "Life in the background").
-const SHOT_PROMPT =
-  "The person speaks naturally with subtle head movement and natural expression. Keep the face, hair and outfit faithful to the reference image; stationary camera.";
-const LISTEN_PROMPT =
-  "The person listens silently with the mouth closed, reacting only with the eyes, brows and a slight head movement. Keep the face, hair and outfit faithful to the reference image; stationary camera.";
-/** The place behind the person: the same, but not frozen. */
-const background = (ambient?: string) =>
-  ambient
-    ? `The place behind them stays exactly the same, with gentle natural motion: ${ambient.replace(/[.\s]+$/, "")}. Nothing new appears.`
-    : "Keep the place behind them faithful to the reference image.";
-
 /** Sends a speaking shot to `model` (the caller records it on the shot); returns the request id. */
 export async function submitShot(
   job: VideoJob,
@@ -457,13 +444,11 @@ export async function submitShot(
       imageUrl: imageUrl as string,
       audioUrl,
       resolution: outputResolution(job.resolution),
-      prompt: [
-        shot.kind === "listener" ? LISTEN_PROMPT : SHOT_PROMPT,
-        background(job.plan?.seats.find((s) => s.characterId === shot.characterId)?.ambient),
+      prompt: speakPrompt(
+        shot.kind === "listener",
+        job.plan?.seats.find((s) => s.characterId === shot.characterId)?.ambient,
         shot.visual,
-      ]
-        .filter(Boolean)
-        .join(" "),
+      ),
     }),
     {
       purpose: "video-shot",
@@ -711,7 +696,8 @@ export async function submitLiveShot(
   if (!live || !route?.endpoint || !route.input)
     throw new Error("Cảnh này không có trong kế hoạch");
   const endpoint = route.endpoint;
-  let input = route.input;
+  // Every paid clip is told never to put text on screen, whoever wrote its prompt.
+  let input = withNoCaptions(route.input);
   const paths = new Map<string, { path: string; audio?: boolean }>();
   for (const name of placeholdersIn(input)) {
     if (name === "keyframe") paths.set(name, { path: framePath });

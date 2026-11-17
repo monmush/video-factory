@@ -246,6 +246,7 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
       visual: p.visual,
       productId: p.productId,
       ...(p.hold ? { hold: p.hold } : {}),
+      ...plannedStart(job, p),
       state: "planned",
       retried: false,
       failures: 0,
@@ -301,7 +302,63 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
       c.fromShot > lastOld ? { ...c, fromShot: c.fromShot + delta } : c,
     ),
   };
-  return { ...job, plan: nextPlan, shots: placed, frames };
+  return { ...job, plan: nextPlan, shots: placed, frames, ...liveAfterFix(job, placed, origin) };
+}
+
+/**
+ * A new shot on a planned video starts from a picture the plan already has,
+ * so a fix never pays for a still the plan made: a wide shot from the master,
+ * a person from their own picture (the closest framing). Nothing fits (a new
+ * detail): the fixed still request, as before.
+ */
+function plannedStart(job: VideoJob, p: PlannedShot): Pick<JobShot, "keyframe" | "route"> {
+  const live = job.live;
+  if (!live) return {};
+  const pictures = live.plan.keyframes;
+  if (p.kind === "wide") {
+    const master = pictures.find((k) => k.kind === "master");
+    return master ? { keyframe: master.id, route: "still-move" } : {};
+  }
+  if ((p.kind === "speaker" || p.kind === "listener") && p.characterId) {
+    const own = pictures.filter((k) => k.kind === "character" && k.characterId === p.characterId);
+    // The shot's framing is "close" or "medium_close"; pictures describe theirs in words.
+    const medium = (framing: string) => /medium/i.test(framing);
+    const pick = own.find((k) => medium(k.framing) === (p.framing === "medium_close")) ?? own[0];
+    if (!pick) return {};
+    return { keyframe: pick.id, route: p.kind === "speaker" ? "lip-sync" : "still-move" };
+  }
+  return {};
+}
+
+/**
+ * The plan's routes follow the shots after a fix: they are looked up by shot
+ * index, so a fix that adds or removes shots would otherwise send a later shot
+ * with another shot's request. Kept shots keep their route; a new speaking
+ * shot takes the request of another speaking shot of the same person (same
+ * model and settings; the shot's own picture and audio fill it).
+ */
+function liveAfterFix(
+  job: VideoJob,
+  shots: JobShot[],
+  origin: Map<number, number>,
+): Pick<VideoJob, "live"> {
+  const live = job.live;
+  if (!live) return {};
+  const routes = shots.map((s) => {
+    const from = origin.get(s.index);
+    const kept = from === undefined ? undefined : live.plan.routes[from];
+    if (kept) return kept;
+    const keyframe = s.keyframe ?? null;
+    if (s.route === "lip-sync") {
+      const same = live.plan.routes.find(
+        (r, i) => r.route === "lip-sync" && job.shots[i]?.characterId === s.characterId,
+      );
+      const any = same ?? live.plan.routes.find((r) => r.route === "lip-sync");
+      if (any) return { ...any, keyframe };
+    }
+    return { route: s.route ?? ("still-move" as const), keyframe, endpoint: null, input: null };
+  });
+  return { live: { ...live, plan: { ...live.plan, routes } } };
 }
 
 /** What a fix costs: what must be made again, beyond what the job already owed. */

@@ -807,12 +807,24 @@ export interface IpcContract {
   /** Starts a committed script with no job yet, or continues a stopped or failed one. */
   "video:start": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   /**
-   * Experiment branch: plans a committed script now, before any hold (free:
-   * the user's own AI). The video then waits for its hold with the plan shown.
+   * Plans a script now, before any hold (free: the user's own AI); also a
+   * written script not committed yet. The video then waits for its hold.
    */
   "video:plan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   /** Experiment branch: throws away a plan nothing was made from and plans again at the batch's level. */
   "video:replan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  /**
+   * The operator's wish for how a moment (`words`: the exact words of a shot)
+   * or the whole video is filmed; an empty `want` removes it, `at` names the
+   * whole-video wish it replaces or removes. While nothing is spent, the video
+   * is planned again with it (free). Refused while planning or once started.
+   */
+  "video:direct": {
+    args: [
+      input: { sessionId: string; scriptId: string; words?: string; want: string; at?: string },
+    ];
+    result: null;
+  };
   /**
    * "Make everything" on the Video tab: commits `scriptIds` (not yet sent) and
    * runs every unfinished video of the session to the end, with no stop.
@@ -921,6 +933,7 @@ export const IPC_CHANNELS = [
   "video:start",
   "video:plan",
   "video:replan",
+  "video:direct",
   "video:make-all",
   "video:stop",
   "video:retry-shot",
@@ -940,6 +953,8 @@ export interface IpcEvents {
   "chat:live": { sessionId: string; live: ChatLive | null };
   /** A video job changed (progress, a finished step, stop). */
   "video:job": { job: VideoJob; averages: StepAverages };
+  /** A job nothing was spent on went with its script. */
+  "video:job-removed": { sessionId: string; scriptId: string };
 }
 
 export type IpcEvent = keyof IpcEvents;
@@ -949,6 +964,7 @@ export const IPC_EVENTS = [
   "board:changed",
   "chat:live",
   "video:job",
+  "video:job-removed",
 ] as const satisfies readonly IpcEvent[];
 
 // Compile-time completeness: a channel or event added to the contract but not

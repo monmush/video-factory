@@ -169,22 +169,34 @@
     background-position: -50% 0;
   }
 }
-/* Text that is still working: a highlight sweeps through the letters (as in T3 Code). */
+/* Text that is still working: a narrow bright band sweeps across the words, over
+   muted text (T3 Code's live-tool-shine, references/t3code/upstream/apps/web/src/index.css). */
+@keyframes live-shine {
+  from {
+    background-position:
+      -4.5rem 0,
+      0 0;
+  }
+  to {
+    background-position:
+      calc(100% + 4.5rem) 0,
+      0 0;
+  }
+}
 @utility shimmer-text {
-  color: transparent;
-  background-image: linear-gradient(
-    90deg,
-    var(--muted-foreground) 35%,
-    var(--foreground) 50%,
-    var(--muted-foreground) 65%
-  );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: shimmer 1.8s linear infinite;
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-    color: var(--muted-foreground);
+  color: var(--muted-foreground);
+  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+    color: transparent;
+    background-image:
+      linear-gradient(to right, transparent, var(--foreground), transparent),
+      linear-gradient(var(--muted-foreground), var(--muted-foreground));
+    background-size:
+      4.5rem 100%,
+      100% 100%;
+    background-repeat: no-repeat;
+    background-clip: text;
+    -webkit-background-clip: text;
+    animation: live-shine 2.2s steps(30) infinite;
   }
 }
 
@@ -208,6 +220,21 @@
 }
 @utility line-in {
   animation: line-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* A still with a slow push-in, as "Nhanh" makes wide and detail scenes (quality-chip.tsx). */
+@keyframes slow-zoom {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.08);
+  }
+}
+@utility slow-zoom {
+  @media (prefers-reduced-motion: no-preference) {
+    animation: slow-zoom 6s ease-in-out infinite alternate;
+  }
 }
 
 /* Hold buttons (components/ui/hold-button.tsx): a quick tap nudges as a hint. */

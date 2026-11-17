@@ -784,7 +784,10 @@ function Part({
             key={option}
             variant="outline"
             size="sm"
-            className={cn(part.chosen === option && "border-ring bg-accent")}
+            className={cn(
+              "h-auto min-h-7 max-w-full shrink justify-start whitespace-normal py-1 text-left",
+              part.chosen === option && "border-ring bg-accent",
+            )}
             disabled={Boolean(part.chosen)}
             onClick={() =>
               ctx.act(() =>

@@ -2,11 +2,17 @@ import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:
 import { join } from "node:path";
 import { BrowserWindow, dialog } from "electron";
 import { batchMediaLevel, outputSize } from "../../shared/batch-settings";
-import type { Asset } from "../../shared/ipc";
+import {
+  anchoredDirection,
+  type DirectionEntry,
+  jobStale,
+  setDirection,
+} from "../../shared/direction";
+import type { Asset, Script } from "../../shared/ipc";
 import { mediaLevel } from "../../shared/media-level";
 import { isNetworkError } from "../../shared/net-error";
 import { cutoutsToMake } from "../../shared/product-shot";
-import { committedIds } from "../../shared/ready-check";
+import { assertCommitted, committedIds, NOT_COMMITTED } from "../../shared/ready-check";
 import {
   castOf,
   heldSpans,
@@ -56,6 +62,7 @@ import {
   settle,
   shotModel,
   spentUsd,
+  spokenLines,
   stepReportedFailure,
   stepThrew,
   stopJob,
@@ -66,7 +73,7 @@ import {
 } from "../../shared/video-job";
 import { DEFAULT_VIDEO_MODEL, fitResolution, videoModel } from "../../shared/video-models";
 import { chooseTake, chosenView, deleteTake, focusTake, startTake } from "../../shared/video-takes";
-import { getBoard } from "../board";
+import { getBoard, onBoardChanged } from "../board";
 import { assetDir } from "../media";
 import { dataFile, mediaDir, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
@@ -205,6 +212,7 @@ async function loadAll(): Promise<void> {
         );
         // A plan interrupted by a restart is made again when asked.
         delete job.planning;
+        delete job.planningSteps;
         jobs.set(jobKey(job), job);
       } catch {
         // Not a job folder.
@@ -231,12 +239,19 @@ export async function startRunner(): Promise<void> {
   const resumed = [...jobs.values()].filter(resumesOnStart);
   if (resumed.length) console.log(`[video] resuming ${resumed.length} job(s)`);
   timer ??= setInterval(pump, TICK_MS);
+  unwatchBoard ??= onBoardChanged((sessionId, board) => {
+    void syncScripts(sessionId, board.scripts);
+  });
   schedule();
 }
+
+let unwatchBoard: (() => void) | null = null;
 
 export function stopRunner() {
   if (timer) clearInterval(timer);
   timer = null;
+  unwatchBoard?.();
+  unwatchBoard = null;
 }
 
 let scheduled = false;
@@ -255,24 +270,77 @@ function schedule() {
 
 export async function jobsFor(sessionId: string): Promise<VideoJob[]> {
   await ensureLoaded();
+  // Scripts written before staging was automatic get theirs when the session opens.
+  if (!autoTimers.has(sessionId)) scheduleAutoPlan(sessionId);
   return [...jobs.values()].filter((j) => j.sessionId === sessionId);
+}
+
+/** What each script said when it was last planned by itself: a plan that failed is not tried in a loop. */
+const autoTried = new Map<string, string>();
+const autoTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** A burst of edits is planned once, after it. */
+const AUTO_PLAN_DELAY_MS = 3000;
+
+function scheduleAutoPlan(sessionId: string) {
+  clearTimeout(autoTimers.get(sessionId));
+  autoTimers.set(
+    sessionId,
+    setTimeout(() => {
+      autoTimers.delete(sessionId);
+      void autoPlan(sessionId).catch((error) =>
+        console.warn("[video] automatic staging:", (error as Error).message),
+      );
+    }, AUTO_PLAN_DELAY_MS),
+  );
+}
+
+/**
+ * Every written script gets its staging without being asked, approved or not
+ * (free: the user's own AI, whose own limit caps how many at once). "Lên dàn
+ * dựng" stays as the way to try again after a failure.
+ */
+async function autoPlan(sessionId: string) {
+  await ensureLoaded();
+  const board = await getBoard(sessionId);
+  for (const script of board.scripts) {
+    if (script.deletedAt || script.status !== "ready") continue;
+    const spoken = spokenLines(script.lines);
+    if (!spoken.length) continue;
+    const key = keyOf(sessionId, script.id);
+    const job = jobs.get(key);
+    if (job && (job.plan || !unstarted(job))) continue;
+    const said = JSON.stringify([spoken.map((l) => [l.characterId, l.text]), script.productIds]);
+    if (autoTried.get(key) === said) continue;
+    autoTried.set(key, said);
+    void planOnly(sessionId, script.id).catch((error) =>
+      console.warn("[video] automatic staging:", (error as Error).message),
+    );
+  }
 }
 
 async function createJob(
   sessionId: string,
   scriptId: string,
   test = false,
-  /** "idle": made only to be planned; it waits for its hold. */
+  /**
+   * "idle": made only to be planned; it waits for its hold. Only such a job
+   * may exist for a script not committed yet (planning is free), once written.
+   */
   status?: "idle",
+  /** The operator's direction, kept when the job is made again. */
+  direction?: DirectionEntry[],
 ): Promise<VideoJob> {
   const ws = await getWorkspace();
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
   const board = await getBoard(sessionId);
+  const script = board.scripts.find((s) => s.id === scriptId && !s.deletedAt);
   if (!committedIds(session, board.scripts).includes(scriptId)) {
-    throw new Error("Kịch bản này chưa chốt để làm video");
+    if (status !== "idle") throw new Error(NOT_COMMITTED);
+    if (script && script.status !== "ready") {
+      throw new Error("Kịch bản đang được viết, thử lại sau");
+    }
   }
-  const script = board.scripts.find((s) => s.id === scriptId);
   if (!script) throw new Error("Không tìm thấy kịch bản");
   const series = ws.series.find((s) => s.id === session.seriesId);
   const useEnvironment = Boolean(
@@ -298,6 +366,8 @@ async function createJob(
   // Follows the batch until it is planned (src/main/video/runner.ts, runPlan).
   job.level = batchMediaLevel(session, series).id;
   if (status) job.status = status;
+  job.productIds = [...script.productIds];
+  if (direction?.length) job.direction = direction;
   // A video made on its own while its series has none yet is the test video:
   // it stops once after the cheap steps (docs/VIDEO_REVIEW_DECISIONS.md).
   // The pause ends for good once a video of the series has been kept (downloaded).
@@ -320,9 +390,10 @@ export async function enqueue(sessionId: string, scriptIds: string[]): Promise<v
 /** Starts a committed script without a job, or continues a stopped or failed one. */
 export async function start(sessionId: string, scriptId: string): Promise<null> {
   await ensureLoaded();
+  await committedOrThrow(sessionId, scriptId);
   const key = keyOf(sessionId, scriptId);
   const current = jobs.get(key);
-  if (current?.planning) throw new Error("Đang lên kế hoạch");
+  if (current?.planning) throw new Error("Đang lên dàn dựng");
   // Waiting for the connection: try again now instead.
   if (current?.offline && (current.status === "running" || current.status === "waiting")) {
     await update(key, (job) => retryNetworkNow(job, Date.now()));
@@ -351,10 +422,47 @@ export async function planOnly(sessionId: string, scriptId: string): Promise<nul
     await runPlan(key, planning);
   } finally {
     await update(key, (j) => {
-      const { planning: _, ...rest } = j;
+      const { planning: _, planningSteps: __, ...rest } = j;
       return rest;
     });
   }
+  // The script may have changed while it was planned: that plan does not fit.
+  await syncScripts(sessionId, (await getBoard(sessionId)).scripts);
+  return null;
+}
+
+/**
+ * Plans newly committed scripts that have none yet, in the background (free:
+ * the user's own AI; the text AI's own limit caps how many at once).
+ */
+export function planCommitted(sessionId: string, scriptIds: string[]): void {
+  for (const scriptId of scriptIds) {
+    void planOnly(sessionId, scriptId).catch((error) =>
+      console.warn("[video] planning after approval:", (error as Error).message),
+    );
+  }
+}
+
+/**
+ * The operator's wish for how a moment (`words`, a shot's exact words) or the
+ * whole video is filmed. Saved on the job; while nothing is spent, the plan is
+ * made again with it in the background (free, about a minute).
+ */
+export async function direct(
+  sessionId: string,
+  scriptId: string,
+  change: { words?: string; want: string; at?: string },
+): Promise<null> {
+  await ensureLoaded();
+  const key = keyOf(sessionId, scriptId);
+  const current = jobs.get(key);
+  if (current?.planning) throw new Error("Đang lên dàn dựng");
+  if (current && !unstarted(current)) throw new Error("Video đã bắt đầu tạo");
+  const direction = setDirection(current?.direction, change, nowIso());
+  await createJob(sessionId, scriptId, true, "idle", direction);
+  void planOnly(sessionId, scriptId).catch((error) =>
+    console.warn("[video] planning after a direction:", (error as Error).message),
+  );
   return null;
 }
 
@@ -372,8 +480,88 @@ export async function dropPlan(sessionId: string, scriptId: string): Promise<nul
   const job = jobs.get(keyOf(sessionId, scriptId));
   if (!job) return null;
   if (!unstarted(job)) throw new Error("Video đã bắt đầu tạo");
-  await createJob(sessionId, scriptId, true, "idle");
+  const script = (await getBoard(sessionId)).scripts.find((s) => s.id === scriptId);
+  await createJob(
+    sessionId,
+    scriptId,
+    true,
+    "idle",
+    anchoredDirection(job.direction, script?.lines ?? []),
+  );
+  autoTried.delete(keyOf(sessionId, scriptId));
+  scheduleAutoPlan(sessionId);
   return null;
+}
+
+/** Spending needs a committed script (src/shared/ready-check.ts). */
+async function committedOrThrow(sessionId: string, scriptId: string) {
+  const ws = await getWorkspace();
+  const session = ws.sessions.find((s) => s.id === sessionId);
+  if (!session) throw new Error("Không tìm thấy phiên này");
+  assertCommitted(session, (await getBoard(sessionId)).scripts, scriptId);
+}
+
+/** A job nothing was spent on goes, with its folder. */
+async function removeJob(key: string) {
+  const job = jobs.get(key);
+  if (!job) return;
+  jobs.delete(key);
+  await writes.get(key)?.catch(() => undefined);
+  writes.delete(key);
+  await rm(jobDir(job), { recursive: true, force: true });
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("video:job-removed", {
+      sessionId: job.sessionId,
+      scriptId: job.scriptId,
+    });
+  }
+}
+
+/**
+ * After every board change: a video nothing was spent on follows its script.
+ * Its script deleted, the job goes; its lines or products changed, the plan is
+ * dropped and made again by itself, and only the wishes whose words are
+ * still said are kept. It follows the batch's Media level the same way: a plan
+ * made at another level is staged again at the level as it is now.
+ */
+async function syncScripts(sessionId: string, scripts: Script[]) {
+  await ensureLoaded();
+  const ws = await getWorkspace();
+  const session = ws.sessions.find((s) => s.id === sessionId);
+  const level = batchMediaLevel(
+    session,
+    ws.series.find((s) => s.id === session?.seriesId),
+  ).id;
+  for (const job of [...jobs.values()]) {
+    if (job.sessionId !== sessionId || !unstarted(job)) continue;
+    const key = jobKey(job);
+    const script = scripts.find((s) => s.id === job.scriptId);
+    try {
+      if (!script || script.deletedAt) await removeJob(key);
+      else if (
+        script.status === "ready" &&
+        (jobStale(job, script) || (job.plan && mediaLevel(job.level).id !== level))
+      ) {
+        const direction = anchoredDirection(job.direction, script.lines);
+        // A script that can no longer be planned (no spoken line left) has no video.
+        await createJob(sessionId, job.scriptId, true, "idle", direction).catch(() =>
+          removeJob(key),
+        );
+      }
+    } catch (error) {
+      console.warn("[video] could not follow the script:", (error as Error).message);
+    }
+  }
+  // Staging follows the script: a dropped plan, or a new script, is planned again.
+  scheduleAutoPlan(sessionId);
+}
+
+/**
+ * The batch's (or its series') Media level changed: videos nothing was paid
+ * for are staged again at the new level; the others keep theirs.
+ */
+export async function followLevel(sessionId: string): Promise<void> {
+  await syncScripts(sessionId, (await getBoard(sessionId)).scripts);
 }
 
 /** Whether a script's video has started (anything made or spent, or a plan being made); false with no job. */
@@ -439,6 +627,7 @@ export async function fix(
   take?: string,
 ): Promise<null> {
   const job = await jobOf(sessionId, scriptId);
+  await committedOrThrow(sessionId, scriptId);
   if (rev !== undefined && rev !== (job.rev ?? 0)) {
     throw new Error("Video đã thay đổi sau đề xuất này");
   }
@@ -480,6 +669,7 @@ export async function take(
 ): Promise<null> {
   const job = await jobOf(sessionId, scriptId);
   const key = keyOf(sessionId, scriptId);
+  if (action === "start") await committedOrThrow(sessionId, scriptId);
   if (action === "delete") {
     const { files } = deleteTake(job, model, nowIso());
     await update(key, (j) => deleteTake(j, model, nowIso()).job);
@@ -512,6 +702,7 @@ export async function stop(sessionId: string, scriptId: string): Promise<null> {
 
 export async function retryShot(sessionId: string, scriptId: string, shot: number): Promise<null> {
   await ensureLoaded();
+  await committedOrThrow(sessionId, scriptId);
   await update(keyOf(sessionId, scriptId), (job) => retryShotState(job, shot, nowIso()));
   return null;
 }
@@ -651,7 +842,15 @@ async function runPlan(key: string, job: VideoJob) {
     await mkdir(jobDir(job), { recursive: true });
     // The Media level is fixed here: the plan is made for it.
     const { level } = await batchNow(job);
-    const { plan, live } = await directJob({ ...job, level }, jobDir(job));
+    // What the director is doing, on the card; only when a line is added.
+    let shown = "";
+    const onSteps = (steps: string[]) => {
+      const now = steps.join("\n");
+      if (now === shown) return;
+      shown = now;
+      void update(key, (j) => (j.plan ? j : { ...j, planningSteps: steps }));
+    };
+    const { plan, live } = await directJob({ ...job, level }, jobDir(job), onSteps);
     await writeJsonAtomic(join(jobDir(job), "plan.json"), plan);
     if (live) await writeJsonAtomic(join(jobDir(job), "live-plan.json"), live);
     measured("plan", (Date.now() - startedAt) / 1000);
@@ -666,7 +865,8 @@ async function runPlan(key: string, job: VideoJob) {
     });
     await update(key, (j) => {
       if (j.plan) return j;
-      const planned = live ? applyLivePlan(j, live) : applyPlan(j, plan);
+      const { planningSteps: _, ...rest } = j;
+      const planned = live ? applyLivePlan(rest, live) : applyPlan(rest, plan);
       return {
         ...withCutouts(planned),
         level,

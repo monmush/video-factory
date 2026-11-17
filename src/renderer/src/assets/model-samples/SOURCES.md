@@ -12,3 +12,11 @@ These are third-party demo files. Fine while Minh is the only user; replace them
 | VEED Fabric 1.0             | `fabric-1.mp4`, `.jpg`       | https://v3b.fal.media/files/b/0a976d10/3_SHLxBIby-GiYZa0SIT8_tmpejbyyngr.mp4 (playground output on the `veed/fabric-1.0` page, 720p)                                       | 1280×704, 4.0 s   | 0.2–3.7 s |
 
 Kling AI Avatar v2 Pro has no sample: its fal page and schema show the same example file as Standard, so it would not show Pro's own output.
+
+## Quality level card
+
+`motion-wan.mp4` and `motion-wan.jpg` are shown in the "Chất lượng" hover card: the loop on "Cân bằng" (wide and detail scenes really move), the first frame as a still with a slow CSS zoom on "Nhanh". Same picture in both, so the only difference is still against moving. Fetched 17 November 2026.
+
+| Model                                  | Files                    | Source                                                                                                                                           | Original         | Cut                                                                                |
+| -------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------- | ---------------------------------------------------------------------------------- |
+| Wan 3.0 Prime (motion, image-to-video) | `motion-wan.mp4`, `.jpg` | https://v3b.fal.media/files/b/0aa79653/XaqEMddf1kogVKJbl3XYu_b9x4QwjI.mp4 (playground output on the `alibaba/wan-3.0-prime/image-to-video` page) | 1284×716, 15.0 s | 0–2.4 s (the first shot; it cuts at 2.5 s), cropped 4:5 around the person, 288×360 |

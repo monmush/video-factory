@@ -2,6 +2,8 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { app } from "electron";
 import { estimateSeconds, MAX_HOLDS_SEC, SPEECH_RATE } from "../../shared/board";
+import { buildDirection } from "../../shared/build-direction";
+import { directionSlot } from "../../shared/direction";
 import type { Asset } from "../../shared/ipc";
 import {
   type LiveContext,
@@ -10,8 +12,17 @@ import {
   liveDirection,
   type ToolRecord,
 } from "../../shared/live-plan";
-import { mediaLevel } from "../../shared/media-level";
+import { type MediaLevel, mediaLevel } from "../../shared/media-level";
 import { DIRECTOR_AREAS, notesBlock } from "../../shared/notes";
+import { directorSteps } from "../../shared/plan-progress";
+import { builtinRecipe, type Recipe, readRecipe } from "../../shared/recipe";
+import {
+  readShotList,
+  rulesShotList,
+  type ShotList,
+  type ShotListAnswer,
+  type ShotListCaps,
+} from "../../shared/shot-list";
 import {
   castOf,
   type DirectorAnswer,
@@ -33,13 +44,15 @@ import PROMPT from "./director-prompt.md?raw";
 import { falConnections } from "./fal-tools";
 import { ConnectionError, runLiveSession } from "./live-director";
 import { checkAnswer, LIVE_SYSTEM, type LiveFile, livePrompt } from "./live-prompt";
+import { shotListPrompt } from "./shot-list-prompt";
 
-// The directing pass (docs/DIRECTING_RULES.md, layer A): the user's own AI
-// turns the committed script into a shot plan from built-in rules. The
-// answer is checked mechanically; one retry with the problems listed, then
-// the rules-only plan, so a video is never blocked by the director. Free:
-// it runs on the user's own AI. Prompt and answers are saved beside the job
-// for whoever maintains the rules.
+// The directing pass (docs/DIRECTING_RULES.md, layer A; docs/PLAN_PHASE_PROPOSAL.md):
+// the user's own AI turns the committed script into a shot list (shots,
+// pictures, a route per shot; no models), and code builds the requests and
+// the price from it and the recipe. The answer is checked mechanically; one
+// retry with the problems listed, then the rules-only list, so a video is
+// never blocked by the director. Free: it runs on the user's own AI. Prompt
+// and answers are saved beside the job for whoever maintains the rules.
 
 const SYSTEM =
   "You are a film director for short vertical videos. Answer with one JSON object and nothing else.";
@@ -55,25 +68,57 @@ function fill(slots: Record<string, string>): string {
 }
 
 /**
- * Fixture mode: the rules-only plan, or HYAN_FIXTURE_PLAN, a saved director
- * answer (JSON) put through the same checks, so plans with cutaways, holds
- * and product shots can be driven for free.
+ * Fixture text AI: HYAN_FIXTURE_SHOT_LIST, a saved shot-list answer (JSON) put
+ * through the same checks; else HYAN_FIXTURE_PLAN, a saved director answer of
+ * the old format (no pictures), given the rules' pictures; else the rules-only
+ * list. A saved answer that breaks a rule falls to the rules, as a real one does.
  */
-async function fixturePlan(ctx: PlanContext): Promise<ShotPlan> {
-  const file = process.env.HYAN_FIXTURE_PLAN;
-  if (!file) return rulesPlan(ctx);
+async function fixtureShotList(ctx: PlanContext, caps: ShotListCaps): Promise<ShotList> {
+  const listFile = process.env.HYAN_FIXTURE_SHOT_LIST;
+  const planFile = process.env.HYAN_FIXTURE_PLAN;
   try {
-    const answer = parseJsonObject<DirectorAnswer>(await readFile(file, "utf8"));
-    const { plan, errors } = readDirectorAnswer(answer, ctx);
-    if (!errors.length) return plan;
-    console.warn("[video] fixture plan broke rules:", errors.join(" | "));
-    return rulesPlan(ctx, errors);
+    if (listFile) {
+      const answer = parseJsonObject<ShotListAnswer>(await readFile(listFile, "utf8"));
+      const { list, errors } = readShotList(answer, ctx, caps);
+      if (!errors.length) return list;
+      console.warn("[video] fixture shot list broke rules:", errors.join(" | "));
+      return rulesShotList(ctx, rulesPlan(ctx, errors));
+    }
+    if (planFile) {
+      const answer = parseJsonObject<DirectorAnswer>(await readFile(planFile, "utf8"));
+      const { plan, errors } = readDirectorAnswer(answer, ctx);
+      if (!errors.length) return rulesShotList(ctx, plan);
+      console.warn("[video] fixture plan broke rules:", errors.join(" | "));
+      return rulesShotList(ctx, rulesPlan(ctx, errors));
+    }
   } catch (error) {
-    return rulesPlan(ctx, [(error as Error).message]);
+    return rulesShotList(ctx, rulesPlan(ctx, [(error as Error).message]));
   }
+  return rulesShotList(ctx);
 }
 
-/** A job's plan; with `live` when the live director made it (experiment branch). */
+/**
+ * The recipe a video is built with: HYAN_RECIPE (a saved recipe or live plan,
+ * JSON; a developer override) when readable, else the built-in one.
+ */
+async function loadRecipe(level: MediaLevel): Promise<Recipe> {
+  const file = process.env.HYAN_RECIPE;
+  if (file) {
+    try {
+      const recipe = readRecipe(JSON.parse(await readFile(file, "utf8")));
+      if (recipe) return recipe;
+      console.warn("[video] HYAN_RECIPE is not a recipe or a live plan; using the built-in one.");
+    } catch (error) {
+      console.warn(
+        "[video] HYAN_RECIPE unreadable; using the built-in one:",
+        (error as Error).message,
+      );
+    }
+  }
+  return builtinRecipe(level);
+}
+
+/** A job's plan; with `live` when it was built from a shot list (or a live director made it). */
 export interface Direction {
   plan: ShotPlan;
   live?: LiveDirection;
@@ -207,7 +252,12 @@ async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
 }
 
 /** The plan for a job, and how it was made. */
-export async function directJob(job: VideoJob, dir: string): Promise<Direction> {
+export async function directJob(
+  job: VideoJob,
+  dir: string,
+  /** What the director is doing, as it plans (src/shared/plan-progress.ts). */
+  onSteps?: (steps: string[]) => void,
+): Promise<Direction> {
   const ws = await getWorkspace();
   const series = ws.series.find((s) => s.id === job.seriesId);
   const script = (await getBoard(job.sessionId)).scripts.find((s) => s.id === job.scriptId);
@@ -230,21 +280,42 @@ export async function directJob(job: VideoJob, dir: string): Promise<Direction> 
   // Without a place there is nothing to stage, and without text AI nobody to ask.
   if (!ctx.hasPlace || !place) return { plan: rulesPlan(ctx) };
   const files = liveFiles(place, cast);
-  const liveCtx: LiveContext = {
-    ...ctx,
-    refs: files.map((f) => f.id),
-    level: mediaLevel(job.level),
-  };
-  // Fixture mode never runs the live director (a saved one can be replayed),
-  // unless HYAN_LIVE_DIRECTOR=1 asks for it: it is free, only planning tools.
-  const liveAllowed =
+  const level = mediaLevel(job.level);
+  const liveCtx: LiveContext = { ...ctx, refs: files.map((f) => f.id), level };
+  // The old per-video live director, kept only behind HYAN_LEGACY_LIVE_DIRECTOR=1
+  // (with its previous conditions). It goes away once a video has been made
+  // live on the shot-list path; live-director.ts and fal-tools.ts stay for the
+  // recipe session.
+  const legacyLive =
+    process.env.HYAN_LEGACY_LIVE_DIRECTOR === "1" &&
     textAiMode() === "claude-code" &&
     (providerMode() === "live" || process.env.HYAN_LIVE_DIRECTOR === "1");
-  if (providerMode() === "fixture" && !liveAllowed) {
+  // Fixture mode can replay a saved live director session.
+  if (providerMode() === "fixture" && !legacyLive) {
     const replay = await fixtureLive(liveCtx);
     if (replay) return replay;
   }
-  if (textAiMode() === "fixture") return { plan: await fixturePlan(ctx) };
+
+  const recipe = await loadRecipe(level);
+  const caps: ShotListCaps = { motion: Boolean(recipe.motion) };
+  const save = (name: string, text: string) =>
+    writeFile(join(dir, name), text, "utf8").catch(() => undefined);
+  const build = async (list: ShotList, run?: { model: string | null; ms: number }) => {
+    await save("shot-list.json", JSON.stringify(list, null, 2));
+    return {
+      plan: list.shots,
+      live: buildDirection({
+        list,
+        recipe,
+        lines: job.lines,
+        level,
+        cast: cast.map((c) => ({ id: c.id, name: c.name, photos: c.images.length })),
+        placePhotos: place.images.length,
+        ...(run ? { run } : {}),
+      }),
+    };
+  };
+  if (textAiMode() === "fixture") return build(await fixtureShotList(ctx, caps));
 
   const names = new Map(cast.map((c) => [c.id, c.name]));
   const seats = seatsFor(castIds)
@@ -253,7 +324,7 @@ export async function directJob(job: VideoJob, dir: string): Promise<Direction> 
         `- ${names.get(s.characterId)}: sits ${s.side}, looks toward ${s.looks.replace("_", " ")}`,
     )
     .join("\n");
-  const prompt = fill({
+  const base = fill({
     speech_rate: String(SPEECH_RATE),
     max_holds: String(MAX_HOLDS_SEC),
     place: describe(place),
@@ -268,22 +339,32 @@ export async function directJob(job: VideoJob, dir: string): Promise<Direction> 
       .join("\n"),
   });
 
-  const log: string[] = [];
-  const save = (name: string, text: string) =>
-    writeFile(join(dir, name), text, "utf8").catch(() => undefined);
-  await save("director-prompt.md", prompt);
-
-  if (liveAllowed) {
-    const live = await directLive(job, dir, prompt, liveCtx, files).catch((error) => {
+  if (legacyLive) {
+    await save("director-prompt.md", base);
+    const live = await directLive(job, dir, base, liveCtx, files).catch((error) => {
       console.warn("[video] live director failed:", (error as Error).message);
       return null;
     });
     if (live) return live;
   }
 
+  const prompt = shotListPrompt(base, {
+    level,
+    motion: caps.motion,
+    direction: directionSlot(job.direction),
+  });
+  await save("shot-list-prompt.md", prompt);
+  const log: string[] = [];
   let request = prompt;
   let problems: string[] = [];
+  const startedAt = Date.now();
   for (let attempt = 1; attempt <= 2; attempt++) {
+    // A second attempt says why before it rewrites the plan.
+    const opening =
+      attempt === 1 ? [] : [`Sửa ${problems.length} chỗ chưa đúng quy tắc, viết lại kế hoạch`];
+    const report = (text: string, tail: string[] = []) =>
+      onSteps?.([...opening, ...directorSteps(text), ...tail]);
+    report("");
     try {
       const answer = await askText({
         system: SYSTEM,
@@ -291,10 +372,15 @@ export async function directJob(job: VideoJob, dir: string): Promise<Direction> 
         purpose: "video-plan",
         sessionId: job.sessionId,
         temperature: 0.4,
+        onText: (soFar) => report(soFar),
       });
-      await save(`director-answer-${attempt}.json`, answer);
-      const { plan, errors } = readDirectorAnswer(parseJsonObject<DirectorAnswer>(answer), ctx);
-      if (!errors.length) return { plan };
+      report(answer, ["Kiểm tra quy tắc"]);
+      await save(`shot-list-answer-${attempt}.json`, answer);
+      const { list, errors } = readShotList(parseJsonObject<ShotListAnswer>(answer), ctx, caps);
+      if (!errors.length) {
+        report(answer, ["Kiểm tra quy tắc", "Tính giá"]);
+        return build(list, { model: null, ms: Date.now() - startedAt });
+      }
       problems = errors;
       log.push(`attempt ${attempt}: ${errors.join(" | ")}`);
       request = `${prompt}\n\n## Your previous plan\n\n${answer}\n\n## It broke these rules\n\n${errors.map((e) => `- ${e}`).join("\n")}\n\nAnswer again with a corrected plan, as one JSON object.`;
@@ -304,5 +390,5 @@ export async function directJob(job: VideoJob, dir: string): Promise<Direction> 
     }
   }
   console.warn("[video] director fell back to rules:", log.join("\n"));
-  return { plan: rulesPlan(ctx, problems) };
+  return build(rulesShotList(ctx, rulesPlan(ctx, problems)));
 }

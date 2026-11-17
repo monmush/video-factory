@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { estimateSeconds, estimateUsd, estimateVoiceUsd } from "./board";
 import type { Asset, Script, Session } from "./ipc";
-import { committedIds, isFirstBatch, needsAttention, readyCheck } from "./ready-check";
+import {
+  assertCommitted,
+  committedIds,
+  isFirstBatch,
+  NOT_COMMITTED,
+  needsAttention,
+  readyCheck,
+} from "./ready-check";
 import { modelOutput, videoModel } from "./video-models";
 
 const character = (id: string, fields: Partial<Asset> = {}): Asset => ({
@@ -156,6 +163,14 @@ describe("commits and the first batch", () => {
   it("does not count scripts added after an older approval as committed", () => {
     const scripts = [script("1", [], { createdAt: "a" }), script("2", [], { createdAt: "z" })];
     expect(committedIds(session("s", "x", "t"), scripts)).toEqual(["1"]);
+  });
+
+  it("refuses to spend on a script not committed", () => {
+    const scripts = [script("1", []), script("2", [])];
+    const approved = { ...session("s", "x", "t"), committedScriptIds: ["1"] };
+    expect(() => assertCommitted(approved, scripts, "1")).not.toThrow();
+    expect(() => assertCommitted(approved, scripts, "2")).toThrow(NOT_COMMITTED);
+    expect(() => assertCommitted(session("s", "x"), scripts, "1")).toThrow(NOT_COMMITTED);
   });
 
   it("is the first batch until another session of the series is approved", () => {

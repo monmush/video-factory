@@ -40,6 +40,16 @@ api.on("video:job", ({ job, averages }) => {
   emit();
 });
 
+api.on("video:job-removed", ({ sessionId, scriptId }) => {
+  pending.get(sessionId)?.delete(scriptId);
+  const current = sessions.get(sessionId);
+  if (!current?.jobs.has(scriptId)) return;
+  const jobs = new Map(current.jobs);
+  jobs.delete(scriptId);
+  sessions.set(sessionId, { ...current, jobs });
+  emit();
+});
+
 function load(sessionId: string) {
   if (sessions.has(sessionId) || loading.has(sessionId)) return;
   loading.add(sessionId);

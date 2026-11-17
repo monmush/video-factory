@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeconds } from "./board";
+import { estimateSeconds, levelEstimateUsd } from "./board";
 import {
   bareToolName,
   costWarnings,
@@ -13,7 +13,7 @@ import {
   type ToolRecord,
   unitsFor,
 } from "./live-plan";
-import { guideBudgetUsd, mediaLevel } from "./media-level";
+import { mediaLevel } from "./media-level";
 
 const level = mediaLevel("balanced");
 const ctx: LiveContext = {
@@ -329,7 +329,7 @@ describe("pricing a live plan", () => {
     record.prices[LIPS] = { usd: 5, unit: "seconds" };
     const { plan } = readLivePlan(goodAnswer(), ctx, record);
     const table = priceLivePlan(plan, record, ctx.lines, level);
-    expect(table.budgetUsd).toBeCloseTo(guideBudgetUsd(level, estimateSeconds(ctx.lines)));
+    expect(table.budgetUsd).toBeCloseTo(levelEstimateUsd(level, estimateSeconds(ctx.lines)));
     expect(costWarnings(table)[0]).toMatch(/Over the guide budget/);
   });
 

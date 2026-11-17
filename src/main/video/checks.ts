@@ -15,7 +15,7 @@ interface Seen {
   people?: number;
   /** For a single person: where their face points. */
   looks?: "frame_left" | "frame_right" | "camera";
-  /** Visible lettering other than a logo on clothing. */
+  /** Visible lettering other than on clothing (a close-up makes a robe's logo large: still costume). */
   text?: string | null;
   /** Product packaging, or any lettered box, bag or label. */
   packaging?: string | null;
@@ -26,7 +26,7 @@ const SYSTEM = "You inspect images for a video production. Answer with one JSON 
 const QUESTION = `Look at the image and answer:
 {"people": number of people visible (count faces or bodies),
  "looks": for the main person, where their face and eyes point: "frame_left" (toward the viewer's left edge), "frame_right" (toward the viewer's right edge) or "camera",
- "text": any visible lettering, signs or labels other than a small logo on clothing, quoted; null if none,
+ "text": any visible lettering, signs or labels, quoted; null if none. Lettering or a logo printed or embroidered on someone's clothing, at any size, is part of their costume: never report it,
  "packaging": any product packaging (box, bag, pouch, tin, carton, bottle or jar with a label) or any box, bag or label with lettering on it, in a few words; null if none}`;
 
 export const checksEnabled = () => providerMode() === "live" && textAiMode() === "claude-code";

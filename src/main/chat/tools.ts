@@ -2,6 +2,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import { z } from "zod";
 import { DEFAULT_TARGET_SEC, estimateSeconds } from "../../shared/board";
 import { formatCost } from "../../shared/credits";
+import { directionAt } from "../../shared/direction";
 import type { Asset, ChatPart, Script } from "../../shared/ipc";
 import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
 import { mixProblem } from "../../shared/product-mix";
@@ -131,12 +132,18 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
       s.start !== undefined && s.end !== undefined ? ` ${(s.end - s.start).toFixed(1)}s` : "";
     const hold = s.hold ? ` [lặng ${s.hold}s sau lời]` : "";
     return `${s.index + 1}. ${s.kind}${who}${framing}${product}${seconds}${hold} — câu ${s.lineIndex + 1}: "${s.text}"${
-      s.visual ? ` | hình: ${s.visual}` : ""
+      s.brief ? ` | người xem thấy: ${s.brief}` : ""
+    }${s.visual ? ` | hình: ${s.visual}` : ""}${
+      directionAt(job.direction, s.text)
+        ? ` | ý người dùng: ${directionAt(job.direction, s.text)?.want}`
+        : ""
     }`;
   });
+  const whole = (job.direction ?? []).filter((d) => !d.words);
   return [
     `Video #${number}: ${STATUS[job.status]}; ${job.shots.length} cảnh; đã dùng ${formatCost(spentUsd(job))}.`,
-    job.plan ? "" : "Chưa lên cảnh quay.",
+    job.planning ? "Đang lên dàn dựng." : job.plan ? "" : "Chưa lên dàn dựng.",
+    whole.length ? `Ý người dùng cho cả video:\n${whole.map((d) => `- ${d.want}`).join("\n")}` : "",
     job.previous?.final
       ? 'Có bản trước lần sửa gần nhất (người dùng tự bấm "Bản trước" để quay lại).'
       : "",
@@ -146,6 +153,23 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/** A script's plan as read_scripts shows it: numbered briefs with their words, and the wishes. */
+function describePlan(job: VideoJob | null): string {
+  if (!job) return "";
+  if (job.planning) return "Dàn dựng: đang lên.";
+  if (!job.plan) return "";
+  const rows = job.shots.map((s) => {
+    const want = directionAt(job.direction, s.text)?.want;
+    return `${s.index + 1}. ${s.brief ?? s.kind} — "${s.text}"${want ? ` [ý người dùng: ${want}]` : ""}`;
+  });
+  const whole = (job.direction ?? []).filter((d) => !d.words).map((d) => `- ${d.want}`);
+  return [
+    `Dàn dựng (${job.shots.length} cảnh; ${job.status === "idle" && spentUsd(job) === 0 ? "chưa tốn gì, sửa được bằng direct_video" : "video đã bắt đầu tạo"}):`,
+    ...rows,
+    ...(whole.length ? ["Ý người dùng cho cả video:", ...whole] : []),
+  ].join("\n");
 }
 
 const shotShape = z.object({
@@ -316,17 +340,23 @@ export const TOOLS = [
 
   define({
     name: "read_scripts",
-    description: "Đọc đầy đủ các kịch bản theo số: tiêu đề, hook, lời thoại, sản phẩm, dàn dựng.",
+    description:
+      "Đọc đầy đủ các kịch bản theo số: tiêu đề, hook, lời thoại, sản phẩm, ghi chú dàn dựng, và khi đã có: dàn dựng của video (cảnh đánh số, người xem thấy gì, lời nghe trong cảnh, ý người dùng đã lưu).",
     shape: { numbers: z.array(z.number().int().min(1)).min(1).max(30) },
     pending: "Đọc kịch bản",
     async run({ numbers }, host) {
       const { scripts } = await pick(host.sessionId, numbers);
       host.label(`Đọc ${list(numbers)}`);
       const ctx = await board.writerContext(host.sessionId);
+      const plans = await Promise.all(
+        scripts.map(async (s) => describePlan(await video.jobFor(host.sessionId, s.id))),
+      );
       return scripts
         .map(
           (s, i) =>
-            `#${numbers[i]} (~${seconds(s)} giây, mục tiêu ${target(s)} giây):\n${writer.asJson(ctx, s)}`,
+            `#${numbers[i]} (~${seconds(s)} giây, mục tiêu ${target(s)} giây):\n${writer.asJson(ctx, s)}${
+              plans[i] ? `\n${plans[i]}` : ""
+            }`,
         )
         .join("\n\n");
     },
@@ -638,7 +668,7 @@ export const TOOLS = [
   define({
     name: "read_video",
     description:
-      "Đọc video của một kịch bản [đã có video]: trạng thái, lời thoại đánh số câu, khung hình, và từng cảnh (loại cảnh, ai trên hình, phần lời thoại, mô tả hình). Luôn gọi trước khi đề xuất sửa video.",
+      "Đọc video (hoặc dàn dựng) của một kịch bản: trạng thái, lời thoại đánh số câu, khung hình, và từng cảnh (loại cảnh, ai trên hình, phần lời thoại, người xem thấy gì, mô tả hình, ý người dùng đã lưu). Luôn gọi trước khi đề xuất sửa video.",
     shape: { number: z.number().int().min(1) },
     pending: "Xem video",
     async run({ number }, host) {
@@ -647,6 +677,40 @@ export const TOOLS = [
       const job = await video.jobFor(host.sessionId, (scripts[0] as Script).id);
       if (!job) return `#${number} chưa có video.`;
       return describeVideo(number, job, (await getWorkspace()).assets);
+    },
+  }),
+
+  define({
+    name: "direct_video",
+    description:
+      "Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại miễn phí (khoảng một phút), giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có bản xem thử. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Sau bản xem thử thì dùng propose_video_fix.",
+    shape: {
+      number: z.number().int().min(1),
+      shot: z.number().int().min(1).optional().describe("Số cảnh; bỏ trống là cho cả video"),
+      want: z.string().min(1).max(300).describe("Ý người dùng cho lúc đó, bằng lời của họ"),
+    },
+    pending: "Lưu ý dàn dựng",
+    async run({ number, shot, want }, host) {
+      const { scripts } = await pick(host.sessionId, [number]);
+      const script = scripts[0] as Script;
+      host.label(shot ? `Dàn dựng #${number}, cảnh ${shot}` : `Dàn dựng #${number}`);
+      const job = await video.jobFor(host.sessionId, script.id);
+      let words: string | undefined;
+      if (shot) {
+        if (!job?.plan) return `#${number} chưa có dàn dựng; bỏ shot để lưu ý cho cả video.`;
+        words = job.shots[shot - 1]?.text;
+        if (!words) return `Dàn dựng của #${number} có ${job.shots.length} cảnh.`;
+      }
+      try {
+        await video.direct(host.sessionId, script.id, { ...(words ? { words } : {}), want });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === "Video đã bắt đầu tạo") {
+          return `Video #${number} đã bắt đầu tạo nên không dàn dựng lại được. Sau bản xem thử, dùng propose_video_fix.`;
+        }
+        throw error;
+      }
+      return `Đã lưu. #${number} đang được dàn dựng lại theo ý này (miễn phí, khoảng một phút). Trả lời một câu ngắn và chỉ chỗ xem, ví dụ: "Đã cập nhật dàn dựng #${number}, xem ở tab Kịch bản › Dàn dựng."`;
     },
   }),
 

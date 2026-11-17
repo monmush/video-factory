@@ -153,6 +153,15 @@ function broadcast(sessionId: string, board: Board) {
   }
 }
 
+type BoardListener = (sessionId: string, board: Board) => void;
+const boardListeners = new Set<BoardListener>();
+
+/** Called after every saved board change (the video runner follows its scripts). */
+export function onBoardChanged(listener: BoardListener): () => void {
+  boardListeners.add(listener);
+  return () => boardListeners.delete(listener);
+}
+
 /** Serialised per session, like the workspace store. */
 export function mutateBoard<T>(sessionId: string, change: (board: Board) => T): Promise<T> {
   const run = (queues.get(sessionId) ?? Promise.resolve()).then(async () => {
@@ -163,6 +172,13 @@ export function mutateBoard<T>(sessionId: string, change: (board: Board) => T): 
     await writeJsonAtomic(join(mediaDir(session.seriesId, session.id), FILE), board);
     cache.set(sessionId, board);
     broadcast(sessionId, board);
+    for (const listener of boardListeners) {
+      try {
+        listener(sessionId, structuredClone(board));
+      } catch (error) {
+        console.warn("[board] listener failed:", error);
+      }
+    }
     return result;
   });
   queues.set(

@@ -31,6 +31,16 @@ export function committedIds(session: Session, scripts: Script[]): string[] {
   );
 }
 
+export const NOT_COMMITTED = "Kịch bản này chưa chốt để làm video";
+
+/**
+ * Nothing is spent on a script that is not committed: planning (free) may run
+ * before, every step that pays refuses.
+ */
+export function assertCommitted(session: Session, scripts: Script[], scriptId: string): void {
+  if (!committedIds(session, scripts).includes(scriptId)) throw new Error(NOT_COMMITTED);
+}
+
 /**
  * The "one video first" nudge shows for a series' first batch: no other
  * session of the series is approved yet. MVP proxy for "has a kept video".

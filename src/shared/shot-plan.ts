@@ -46,6 +46,11 @@ export interface PlannedShot {
    * end), so a line can land (C15). Only on a shot that ends its line.
    */
   hold?: number;
+  /**
+   * What the viewer sees, in plain Vietnamese for the operator, one or two
+   * sentences with no shot size (the app shows that). From the director only.
+   */
+  brief?: string;
 }
 
 export interface ShotPlan {
@@ -125,6 +130,24 @@ export function rulesPlan(ctx: PlanContext, problems?: string[]): ShotPlan {
 }
 
 // ---------------------------------------------------------------------------
+// Briefs: what the viewer sees, in the operator's words.
+// ---------------------------------------------------------------------------
+
+/** Longest brief kept (the director is asked for 10 to 30 words). */
+export const BRIEF_MAX = 300;
+
+/** The director's brief, one line and capped; "" when none. */
+export function cleanBrief(raw: unknown): string {
+  const text = String(raw ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= BRIEF_MAX) return text;
+  const cut = text.slice(0, BRIEF_MAX);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > BRIEF_MAX / 2 ? cut.slice(0, space) : cut).trim()}…`;
+}
+
+// ---------------------------------------------------------------------------
 // The director's answer → a plan, with mechanical checks.
 // ---------------------------------------------------------------------------
 
@@ -139,6 +162,7 @@ interface RawShot {
   product?: string | null;
   why?: string;
   hold?: number | null;
+  brief?: string | null;
 }
 export interface DirectorAnswer {
   seats?: { character?: string; behind?: string; ambient?: string | null }[];
@@ -344,16 +368,16 @@ export function readDirectorAnswer(
       );
     }
     const hold = s.hold === null || s.hold === undefined ? undefined : Number(s.hold);
+    const shot = { kind: kind ?? "speaker", characterId, framing, productId };
     return {
-      kind: kind ?? "speaker",
-      characterId,
-      framing,
+      ...shot,
       line: line ? lineIndex : 0,
       text: norm(String(s.text ?? "")),
       visual: norm(String(s.visual ?? "")),
-      productId,
       why: norm(String(s.why ?? "")),
       ...(hold ? { hold } : {}),
+      // Never a rule error: a shot without one shows "Chưa có mô tả".
+      ...(cleanBrief(s.brief) ? { brief: cleanBrief(s.brief) } : {}),
     };
   });
 

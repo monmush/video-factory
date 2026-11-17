@@ -7,7 +7,7 @@ import {
   readLivePlan,
   type ToolRecord,
 } from "../../shared/live-plan";
-import { guideBudgetUsd, type MediaLevel } from "../../shared/media-level";
+import { levelMediaUsd, type MediaLevel } from "../../shared/media-level";
 import ADDENDUM from "./live-director-prompt.md?raw";
 
 // The live director's prompt: the fixed director's rules (filled, without
@@ -33,7 +33,8 @@ export function livePrompt(
     level_preference: v.level.preference,
     output_size: v.level.output,
     keyframe_size: `${v.level.keyframe.width}×${v.level.keyframe.height}`,
-    budget: guideBudgetUsd(v.level, v.seconds).toFixed(2),
+    // The steps the director chooses, the voice excluded (it is given apart).
+    budget: levelMediaUsd(v.level, v.seconds).toFixed(2),
     seconds: String(Math.round(v.seconds)),
     voice_usd: estimateVoiceUsd(v.lines).toFixed(2),
     files: v.files.map((f) => `- \`{{${f.id}}}\`: ${f.what}`).join("\n") || "- none",

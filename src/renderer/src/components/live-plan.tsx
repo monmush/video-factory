@@ -1,11 +1,12 @@
 import { formatCost } from "@shared/credits";
-import type { CostRow } from "@shared/live-plan";
-import { liveCostTable, type VideoJob } from "@shared/video-job";
+import { type CostRow, overBudget } from "@shared/live-plan";
+import { costToPreviewUsd, liveCostTable, stopsForPreview, type VideoJob } from "@shared/video-job";
+import { Check } from "lucide-react";
 
-// Experiment branch (docs/LIVE_DIRECTOR_EXPERIMENT.md): the live director's
-// plan on the video card before its hold and at "Nghe và xem thử". One row
-// per kind of step and model, every step on request, and the total from
-// recorded prices only: the same total the hold shows.
+// The plan on the video card before its hold and at "Nghe và xem thử". One row
+// per kind of step and model, every step on request. Prices follow one rule:
+// charged amounts plain (with a check), estimates with "~". Once something is
+// paid the total reads "Đã chi · Còn · Tổng", and "Còn" is what the hold shows.
 
 /** "Khung hình master" → "Khung hình"; "Cảnh 3 · Khẩu hình" → "Khẩu hình". */
 function kindOf(row: CostRow): string {
@@ -18,6 +19,8 @@ interface Group {
   model: string | null;
   count: number;
   usd: number | null;
+  /** Every step of the group is made and charged. */
+  paid: boolean;
 }
 
 function groups(rows: CostRow[]): Group[] {
@@ -28,23 +31,56 @@ function groups(rows: CostRow[]): Group[] {
     if (found) {
       found.count++;
       found.usd = found.usd === null || row.usd === null ? null : found.usd + row.usd;
+      found.paid &&= Boolean(row.paid);
     } else {
-      out.push({ kind, model: row.model, count: 1, usd: row.usd });
+      out.push({ kind, model: row.model, count: 1, usd: row.usd, paid: Boolean(row.paid) });
     }
   }
   return out;
 }
 
-const price = (usd: number | null) =>
-  usd === null ? "?" : usd === 0 ? "—" : `~${formatCost(usd)}`;
+/**
+ * One rule for every price on the card: an amount already charged has no "~";
+ * an estimate always has one.
+ */
+function Price({ usd, paid }: { usd: number | null; paid?: boolean }) {
+  if (usd === null) return <>?</>;
+  if (usd === 0) return <>—</>;
+  if (!paid) return <span className="text-muted-foreground">~{formatCost(usd)}</span>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Check className="size-3 text-muted-foreground" aria-label="Đã chi" />
+      {formatCost(usd)}
+    </span>
+  );
+}
 
-/** The plan's table as the video stands: made steps at their cost, the rest as planned. */
-export function LivePlanTable({ job }: { job: VideoJob }) {
+/**
+ * The plan's table folded under its total, closed until asked for: the hold
+ * button already carries the price staff need.
+ */
+export function LivePlanFold({ job }: { job: VideoJob }) {
   const costs = liveCostTable(job);
   if (!costs) return null;
-  const over = costs.knownUsd > costs.budgetUsd + 1e-9;
   return (
-    <div className="mt-3 ml-7.5 max-w-xl text-xs">
+    <details className="mt-3 ml-7.5 max-w-xl text-xs">
+      <summary className="w-fit cursor-pointer text-muted-foreground tabular-nums hover:text-foreground">
+        Chi phí ~{formatCost(costs.knownUsd)}
+        {costs.unknownSteps > 0 ? " +?" : ""}
+      </summary>
+      <LivePlanTable job={job} className="mt-1.5" />
+    </details>
+  );
+}
+
+/** The plan's table as the video stands: made steps at their cost, the rest as planned. */
+export function LivePlanTable({ job, className }: { job: VideoJob; className?: string }) {
+  const costs = liveCostTable(job);
+  if (!costs) return null;
+  const over = overBudget(costs);
+  const paidUsd = costs.rows.reduce((n, r) => n + (r.paid ? (r.usd ?? 0) : 0), 0);
+  return (
+    <div className={className ?? "mt-3 ml-7.5 max-w-xl text-xs"}>
       <table className="w-full tabular-nums">
         <tbody>
           {groups(costs.rows).map((g) => (
@@ -54,13 +90,34 @@ export function LivePlanTable({ job }: { job: VideoJob }) {
               <td className="py-1 pr-3 text-right text-muted-foreground">
                 {g.count > 1 ? `×${g.count}` : ""}
               </td>
-              <td className="py-1 text-right">{price(g.usd)}</td>
+              <td className="py-1 text-right">
+                <Price usd={g.usd} paid={g.paid} />
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
       <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 tabular-nums">
-        <span className="font-medium">Tổng ~{formatCost(costs.knownUsd)}</span>
+        {/* Nothing paid yet and the hold stops at the preview: its price, as on the button. */}
+        {paidUsd === 0 && stopsForPreview(job) && (
+          <>
+            <span className="font-medium">Bản xem thử ~{formatCost(costToPreviewUsd(job))}</span>
+            <span className="text-muted-foreground">·</span>
+          </>
+        )}
+        {paidUsd > 0 && (
+          <>
+            <span className="font-medium">Đã chi {formatCost(paidUsd)}</span>
+            <span className="text-muted-foreground">·</span>
+            <span>Còn ~{formatCost(costs.knownUsd - paidUsd)}</span>
+            <span className="text-muted-foreground">·</span>
+          </>
+        )}
+        <span
+          className={paidUsd > 0 || stopsForPreview(job) ? "text-muted-foreground" : "font-medium"}
+        >
+          Tổng ~{formatCost(costs.knownUsd)}
+        </span>
         {costs.unknownSteps > 0 && (
           <span className="text-muted-foreground">{costs.unknownSteps} bước chưa rõ giá</span>
         )}
@@ -81,7 +138,9 @@ export function LivePlanTable({ job }: { job: VideoJob }) {
                 <td className="py-0.5 pr-3">{row.step}</td>
                 <td className="py-0.5 pr-3 text-muted-foreground">{row.model ?? ""}</td>
                 <td className="py-0.5 pr-3 text-right text-muted-foreground">{row.quantity}</td>
-                <td className="py-0.5 text-right">{price(row.usd)}</td>
+                <td className="py-0.5 text-right">
+                  <Price usd={row.usd} paid={row.paid} />
+                </td>
               </tr>
             ))}
           </tbody>
