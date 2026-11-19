@@ -1,12 +1,15 @@
 # Local secrets written by `elevenlabs onboard`
 /.env.local
+/.env.bundle
 
 # Local dependencies
 /node_modules/
 
 # Build output
 /out/
+/out-package/
 /dist/
+/resources/bin/
 *.tmp
 .DS_Store
 
@@ -14,14 +17,12 @@
 # Kept on this machine, never published.
 /PROJECT_CONTEXT.md
 /project/
-/docs/
+/docs/private/
+/docs/archive/
 /assets/
 /experiments/
 /prototypes/
 /references/hyan/
 /references/ui-patterns/
-/templates/video-script/examples/
-/templates/video-script/video-types/
-/templates/directing/examples/
 /.agents/skills/sources.json
 /.agents/skills/make-interfaces-feel-better/

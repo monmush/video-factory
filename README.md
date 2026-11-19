@@ -2,7 +2,7 @@
 
 A macOS desktop app (Electron) for producing short AI-generated storytelling videos in batches: series setup, a script board with an AI chat agent, a character/product/environment library, and generation through fal.ai and ElevenLabs. Work in progress.
 
-Start with [docs/README.md](docs/README.md) for product decisions and evidence, and [project/TODO.md](project/TODO.md) for current work.
+Start with [docs/README.md](docs/README.md) for the product reference and decisions. Business context, research and the task list are kept in private local files and are not published.
 
 ## Develop
 
@@ -23,5 +23,4 @@ pnpm package:mac    # unsigned arm64 .dmg in dist/
 - `src/preload`: preload bridge
 - `src/shared`: types and the IPC contract shared by main and renderer
 - `src/renderer`: React UI
-- `templates/video-script`: script-writer prompt and shot-plan validation
 - `references/t3code`: MIT-licensed design references from [T3 Code](https://github.com/pingdotgg/t3code)
