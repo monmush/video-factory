@@ -119,11 +119,11 @@ describe("video model registry", () => {
     expect(modelForClip(undefined, 3).id).toBe(DEFAULT_VIDEO_MODEL);
   });
 
-  it("estimates minutes for a 45-second video, three shots at once; unknown stays unknown", () => {
-    expect(minutesFor45(videoModel())).toBe(7);
-    expect(minutesFor45(model("kling-avatar-v2-pro"))).toBe(8);
-    expect(minutesFor45(model("omnihuman-v2"))).toBe(4);
-    expect(minutesFor45(model("minimax-h3-lipsync"))).toBe(2);
+  it("estimates minutes for a 45-second video, every shot at once; unknown stays unknown", () => {
+    expect(minutesFor45(videoModel())).toBe(5);
+    expect(minutesFor45(model("kling-avatar-v2-pro"))).toBe(5);
+    expect(minutesFor45(model("omnihuman-v2"))).toBe(3);
+    expect(minutesFor45(model("minimax-h3-lipsync"))).toBe(1);
     expect(minutesFor45(model("fabric-1-720p"))).toBeUndefined();
   });
 });

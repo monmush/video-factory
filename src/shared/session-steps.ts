@@ -8,13 +8,35 @@ import type { VideoJob } from "./video-job";
 // one answer.
 
 /**
- * A sent video waiting on the operator: not started, at "Nghe và xem thử",
+ * A sent video waiting on the operator: not started, at "Nghe và xem cảnh chính",
  * stopped or failed. A job being planned is not waiting.
  */
 export function jobNeedsYou(job: VideoJob | null | undefined): boolean {
   if (!job) return true;
   if (job.status === "idle") return !job.planning;
   return job.status === "review" || job.status === "stopped" || job.status === "failed";
+}
+
+/**
+ * A written script's Dàn dựng (docs/SCRIPT_BOARD_DECISIONS.md): a new script
+ * is done once its words and its staging both exist, and the staging follows
+ * by itself. "staging": being made or about to be; "failed": it stopped and
+ * waits for "Lên dàn dựng"; "ready": it exists; "none": nothing to stage
+ * (still written, no voiced line) or the video is being made, which its own
+ * status says.
+ */
+export type StagingState = "none" | "staging" | "failed" | "ready";
+
+export function stagingState(
+  script: Pick<Script, "status" | "lines">,
+  job: Pick<VideoJob, "status" | "plan" | "planning"> | null | undefined,
+): StagingState {
+  if (script.status !== "ready") return "none";
+  if (!script.lines.some((l) => l.characterId && l.text.trim())) return "none";
+  if (job?.planning) return "staging";
+  if (job?.plan) return "ready";
+  if (!job || job.status === "idle") return "staging";
+  return job.status === "failed" ? "failed" : "none";
 }
 
 export interface SessionSteps {

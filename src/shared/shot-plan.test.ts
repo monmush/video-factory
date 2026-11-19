@@ -134,12 +134,45 @@ describe("reading the director's answer", () => {
       'Shot 5: product "Trà khác" is not in this script.',
       'Line 2: split "Ừ, con cứ nói. Ông pha ấm" only right after a punctuation mark, never inside a phrase.',
       'Line 4: the shots\' text must reproduce the line exactly: "Chén đầy rồi thì rót thêm làm sao được.".',
-      "The first shot must be a speaker shot.",
-      "The last shot must be a speaker shot.",
     ]);
   });
 
-  it("asks for a wide shot early, variety, and long enough parts", () => {
+  it("accepts any opening and closing shot, and no wide shot at all", () => {
+    const answer: DirectorAnswer = {
+      shots: [
+        shot("wide", 1, "Con đúng một trăm phần trăm, sao ai cũng cãi con?"),
+        shot("speaker", 2, "Ừ, con cứ nói. Ông pha ấm Bạch Trà Shan Tuyết, con uống thử đi.", {
+          character: "Ông lão",
+        }),
+        shot("speaker", 3, "Ơ… ông ơi, trà tràn ra bàn rồi kìa! Ông rót gì mà rót mãi vậy?", {
+          character: "Cô gái",
+        }),
+        shot("detail", 4, "Chén đầy rồi thì rót thêm làm sao được.", {}),
+      ],
+    };
+    const { plan, errors } = readDirectorAnswer(answer, CTX);
+    expect(errors).toEqual([]);
+    // The ending still lands, on a shot that does not speak.
+    expect(plan.shots.at(-1)?.hold).toBe(1);
+    const listenerLast = structuredClone(answer);
+    (listenerLast.shots as unknown[]).splice(
+      3,
+      1,
+      shot("listener", 4, "Chén đầy rồi thì rót thêm làm sao được.", { character: "Cô gái" }),
+    );
+    expect(readDirectorAnswer(listenerLast, CTX).errors).toEqual([]);
+    const noWide = structuredClone(answer);
+    (noWide.shots as unknown[]).splice(
+      0,
+      1,
+      shot("speaker", 1, "Con đúng một trăm phần trăm, sao ai cũng cãi con?", {
+        character: "Cô gái",
+      }),
+    );
+    expect(readDirectorAnswer(noWide, CTX).errors).toEqual([]);
+  });
+
+  it("asks for variety and long enough parts", () => {
     const lines = [line("g", "Một hai ba bốn năm."), line("o", "Sáu bảy tám chín mười, một.")];
     const ctx = { ...CTX, lines };
     const answer: DirectorAnswer = {
@@ -153,7 +186,6 @@ describe("reading the director's answer", () => {
     expect(readDirectorAnswer(answer, ctx).errors).toEqual([
       'Line 2: "một." is too short to be its own shot; keep it with its neighbour.',
       'Line 2: "" is too short to be its own shot; keep it with its neighbour.',
-      "Use a wide shot within the first three shots.",
       "Shots 2–4: three alike in a row; vary the type or framing.",
     ]);
   });
@@ -174,6 +206,23 @@ describe("rules plan", () => {
       ["speaker", "o", "close"],
     ]);
     expect(plan.problems).toEqual(["no answer"]);
+  });
+
+  it("passes the checks a director's answer must pass", () => {
+    const name = (id: string | null) => CTX.cast.find((c) => c.id === id)?.name ?? null;
+    const answer: DirectorAnswer = {
+      shots: rulesPlan(CTX).shots.map((s) => ({
+        type: s.kind,
+        character: name(s.characterId),
+        framing: s.framing,
+        line: s.line + 1,
+        text: s.text,
+        visual: s.visual,
+        why: s.why,
+        hold: s.hold ?? null,
+      })),
+    };
+    expect(readDirectorAnswer(answer, CTX).errors).toEqual([]);
   });
 });
 

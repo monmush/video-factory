@@ -1,6 +1,7 @@
 import { directionAt } from "@shared/direction";
 import type { Script } from "@shared/ipc";
 import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "@shared/scene";
+import { stagingState } from "@shared/session-steps";
 import { type JobShot, spentUsd, type VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, X } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
@@ -84,17 +85,17 @@ export function ShotBrief({
   const staging = script.staging?.trim();
   const errorLine = error && <p className="text-xs text-destructive-foreground">{error}</p>;
 
-  if (job?.planning) {
+  // Being made, or about to be (it starts by itself a moment after the script is written).
+  if (job?.planning || (jobs && stagingState(script, job) === "staging")) {
     return (
       <div data-shot-brief className={className}>
-        <PlanningSteps steps={job.planningSteps?.length ? job.planningSteps : ["Đọc kịch bản"]} />
+        <PlanningSteps steps={job?.planningSteps?.length ? job.planningSteps : ["Đọc kịch bản"]} />
       </div>
     );
   }
 
   if (!job?.plan) {
-    // Staging starts by itself a moment after the script is written; the
-    // button is the way to try again when that failed.
+    // The way to try again when staging failed.
     return (
       <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>
         {staging && <StagingNote text={staging} />}

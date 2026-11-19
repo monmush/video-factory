@@ -9,6 +9,7 @@ import {
   STILL_IDENTITY,
   STILL_NO_TEXT,
   speakPrompt,
+  stillBeforeSpeakingWith,
   withNoCaptions,
 } from "./prompt-text";
 import { builtinRecipe, type Recipe } from "./recipe";
@@ -103,8 +104,11 @@ describe("buildDirection", () => {
     expect(prompt).toMatch(
       /^Image 1 is the master scene\. Images 2-3 are Ba\. Images 4-5 are An\./,
     );
-    // A speak shot starts from it.
-    expect(prompt).toContain(STILL_BEFORE_SPEAKING);
+    // A speak shot starts from it, and two people share it: only Ba speaks.
+    expect(prompt).toContain(stillBeforeSpeakingWith("Ba"));
+    expect(prompt).not.toContain(STILL_BEFORE_SPEAKING);
+    // The still check expects the two people it lists.
+    expect(ots?.people).toBe(2);
   });
 
   it("makes a plate with nobody in it from the master alone", () => {
@@ -209,6 +213,8 @@ describe("buildDirection", () => {
     for (const f of planned.frames.slice(1)) expect(frameDeps(planned, f)).toEqual(["kf:master"]);
     expect(frameDeps(planned, planned.frames[0] as never)).toEqual([]);
     expect(planned.frames[3]?.productId).toBe("p");
+    // Each still knows how many people its picture lists, for the still check.
+    expect(planned.frames.map((f) => f.people)).toEqual([2, 1, 2, undefined]);
     // Voice done: the master first, then every other picture.
     const voiced = {
       ...planned,
@@ -257,7 +263,7 @@ describe("a fix on a planned video", () => {
       useEnvironment: true,
       now: "2026-11-16T10:00:00.000Z",
     });
-    // At "Nghe và xem thử", where #3 was fixed from the chat.
+    // At "Nghe và xem cảnh chính", where #3 was fixed from the chat.
     return { ...applyLivePlan(job, build(list())), status: "review" as const };
   };
 

@@ -55,6 +55,7 @@ export const clearShot = (s: JobShot): JobShot => ({
   clipSec: undefined,
   requestId: undefined,
   submittedAt: undefined,
+  sending: undefined,
   resultUrl: undefined,
   costUsd: undefined,
   // Made again with the video's model (one model per video); recorded again when sent.
@@ -72,6 +73,7 @@ const clearFrame = (f: JobFrame, note?: string): JobFrame => ({
   source: undefined,
   requestId: undefined,
   submittedAt: undefined,
+  sending: undefined,
   resultUrl: undefined,
   costUsd: undefined,
   retried: false,

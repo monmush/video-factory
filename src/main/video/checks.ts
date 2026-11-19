@@ -4,6 +4,7 @@ import { askClaudeCode } from "../claude-code";
 import { providerMode } from "../providers";
 import { parseJsonObject, textAiMode } from "../text-ai";
 import { logUsage } from "../usage";
+import { characterPeopleProblem } from "./still-people";
 
 // Layer C of docs/DIRECTING_RULES.md: the user's own AI looks at each
 // generated still before the expensive step and compares it with the plan.
@@ -65,11 +66,8 @@ export async function checkStill(
       problems.push(`packaging ${seen.packaging}`);
     }
     if (frame.kind === "character") {
-      // A planned over-the-shoulder keyframe shows part of the other person.
-      const overShoulder = /shoulder/i.test(frame.framing ?? "");
-      if (!overShoulder && seen.people !== undefined && seen.people !== 1) {
-        problems.push(`${seen.people} people`);
-      }
+      const people = characterPeopleProblem(frame, seen.people);
+      if (people) problems.push(people);
       const seat = plan.seats.find((s) => s.characterId === frame.characterId);
       const expected = plan.seats.length < 2 ? "camera" : seat?.looks;
       if (expected && expected !== "camera" && seen.looks && seen.looks !== expected) {

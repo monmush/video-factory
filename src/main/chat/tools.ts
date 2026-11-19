@@ -100,7 +100,8 @@ const STATUS: Record<VideoJob["status"], string> = {
   running: "đang tạo (chưa sửa được)",
   stopped: "đã dừng giữa chừng (người dùng bấm tạo tiếp trước khi sửa)",
   failed: "bị lỗi giữa chừng (người dùng bấm tạo tiếp trước khi sửa)",
-  review: "đang chờ người dùng nghe và xem thử trước khi quay (sửa khung hình lúc này rất rẻ)",
+  review:
+    "đang chờ người dùng nghe và xem các cảnh chính trước khi quay (sửa khung hình lúc này rất rẻ)",
   done: "xong",
 };
 
@@ -683,7 +684,7 @@ export const TOOLS = [
   define({
     name: "direct_video",
     description:
-      "Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại miễn phí (khoảng một phút), giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có bản xem thử. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Sau bản xem thử thì dùng propose_video_fix.",
+      "Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại miễn phí (khoảng một phút), giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có các cảnh chính. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Sau khi có các cảnh chính thì dùng propose_video_fix.",
     shape: {
       number: z.number().int().min(1),
       shot: z.number().int().min(1).optional().describe("Số cảnh; bỏ trống là cho cả video"),
@@ -706,7 +707,7 @@ export const TOOLS = [
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message === "Video đã bắt đầu tạo") {
-          return `Video #${number} đã bắt đầu tạo nên không dàn dựng lại được. Sau bản xem thử, dùng propose_video_fix.`;
+          return `Video #${number} đã bắt đầu tạo nên không dàn dựng lại được. Sau khi có các cảnh chính, dùng propose_video_fix.`;
         }
         throw error;
       }

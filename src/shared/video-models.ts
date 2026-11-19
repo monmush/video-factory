@@ -223,14 +223,13 @@ export const modelGroups = (): { level: VideoLevel; label: string; models: Video
   }));
 
 /**
- * Approximate minutes to make the speaking shots of a 45-second video, three
- * at a time: 45 seconds of clips is 4.5 ten-second renders, a third of them
- * at once. Undefined when the render time is unknown.
+ * Approximate minutes to make the speaking shots of a 45-second video: every
+ * shot is sent at once, so about one render of a clip of up to ten seconds.
+ * fal's queue can add to it when the account's limit is lower than the shot
+ * count. Undefined when the render time is unknown.
  */
 export const minutesFor45 = (model: VideoModel) =>
-  model.renderMinPer10s === undefined
-    ? undefined
-    : Math.max(1, Math.round((4.5 * model.renderMinPer10s) / 3));
+  model.renderMinPer10s === undefined ? undefined : Math.max(1, Math.round(model.renderMinPer10s));
 
 /**
  * Picture of a video before it is planned: every second of it at the

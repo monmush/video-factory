@@ -1,5 +1,6 @@
 import { appendFile, readFile } from "node:fs/promises";
 import type { ClaudeLimits, UsageEntry } from "../shared/ipc";
+import { openRequests, parseLines, type RequestRecord } from "../shared/request-reconcile";
 import { dataFile, writeJsonAtomic } from "./paths";
 
 // Every AI request the app makes is appended to usage.jsonl (one JSON object
@@ -25,6 +26,23 @@ export async function recordSubmitted(
     dataFile(REQUESTS),
     `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`,
   );
+}
+
+/** The provider reported that a recorded request failed: nothing to collect from it on start. */
+export async function recordFailed(entry: { provider: string; requestId: string }) {
+  await recordSubmitted({ ...entry, failed: true });
+}
+
+/**
+ * fal requests accepted but never read: recorded in requests.jsonl, with no
+ * result in usage.jsonl and no failure recorded (src/shared/request-reconcile.ts).
+ */
+export async function openFalRequests(): Promise<RequestRecord[]> {
+  const read = (name: string) => readFile(dataFile(name), "utf8").catch(() => "");
+  const requests = parseLines<RequestRecord>(await read(REQUESTS)).filter(
+    (r) => r.provider === "fal",
+  );
+  return openRequests(requests, parseLines<{ requestId?: string }>(await read(LOG)));
 }
 
 export async function saveClaudeLimits(limits: ClaudeLimits) {

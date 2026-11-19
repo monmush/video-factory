@@ -12,17 +12,19 @@ import {
   toneGains,
   usableCutout,
 } from "../../shared/product-shot";
-import { falCall } from "../fal";
+import { openCutout } from "../../shared/request-reconcile";
+import { falCall, falPoll, falSubmit } from "../fal";
 import { uploadImages } from "../fal-upload";
 import { assetDir } from "../media";
 import { falClient, providerMode } from "../providers";
 import { mutate } from "../store";
+import { openFalRequests } from "../usage";
 import { fixtureCutout, productShot, readRgba, type Size } from "./ffmpeg";
 
 // Product shots (docs/DIRECTING_RULES.md, "Product shots"): the product's
 // cut-out, made once per photo and kept beside it in the asset's folder, is
 // placed on a generated plate of the spot in the scene. The original photo is
-// never modified or replaced. Every paid call goes through falCall.
+// never modified or replaced. Every paid call goes through src/main/fal.ts.
 
 /**
  * Background removal steered by a prompt (Bria Guided Remove Background on
@@ -63,7 +65,8 @@ export function productCutout(product: Asset, dir: string): Promise<CutoutResult
 
 /**
  * Removes the photo's background on fal (paid, CUTOUT_USD) and writes the PNG
- * with alpha to `out`. Also used by the product dialog (src/main/product-cutout.ts).
+ * with alpha to `out`, waiting for the answer: the product dialog
+ * (src/main/product-cutout.ts). Videos use `queuedCutout`, which survives a restart.
  */
 export async function removeBackground(
   client: Awaited<ReturnType<typeof falClient>>,
@@ -83,6 +86,53 @@ export async function removeBackground(
   const res = await fetch(result, { signal: AbortSignal.timeout(120_000) });
   if (!res.ok) throw new Error(`Không tải được ảnh tách nền (${res.status})`);
   await writeFile(out, Buffer.from(await res.arrayBuffer()));
+}
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const CUTOUT_POLL_MS = 2000;
+
+/**
+ * A video's cut-out of one photo, through fal's queue so it survives a
+ * restart: the request is recorded in requests.jsonl (with the photo and its
+ * file) the moment fal accepts it, and a later run finds a request that was
+ * never read and polls it instead of paying again (src/shared/request-reconcile.ts).
+ * Network trouble throws; the next try picks the same request up.
+ */
+async function queuedCutout(
+  productId: string,
+  photo: { id: string; file: string },
+  source: string,
+  out: string,
+): Promise<void> {
+  const client = await falClient();
+  let requestId = openCutout(await openFalRequests(), productId, photo.id, photo.file)?.requestId;
+  if (!requestId) {
+    const [url] = await uploadImages(client, [source]);
+    requestId = await falSubmit(
+      client,
+      CUTOUT_ENDPOINT,
+      { image_url: url, prompt: CUTOUT_PROMPT },
+      { purpose: "product-cutout", productId, photoId: photo.id, photoFile: photo.file },
+    );
+  }
+  for (;;) {
+    const result = await falPoll<{ image?: { url?: string } }>(client, CUTOUT_ENDPOINT, requestId, {
+      purpose: "product-cutout",
+      productId,
+      cost: () => CUTOUT_USD,
+    });
+    if (result.state === "pending") {
+      await wait(CUTOUT_POLL_MS);
+      continue;
+    }
+    if (result.state === "failed") throw new Error(result.message);
+    const url = result.data.image?.url;
+    if (!url?.startsWith("https:")) throw new Error("Không nhận được ảnh tách nền");
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) throw new Error(`Không tải được ảnh tách nền (${res.status})`);
+    await writeFile(out, Buffer.from(await res.arrayBuffer()));
+    return;
+  }
 }
 
 /** Whether a cut-out shows the product alone (src/shared/product-shot.ts, usableCutout). */
@@ -112,11 +162,11 @@ async function makeCutout(product: Asset, dir: string): Promise<CutoutResult | n
     if (saved && !saved.usable) continue;
     if (!saved) {
       const name = cutoutFile(photo.id);
-      await removeBackground(
-        await falClient(),
+      await queuedCutout(
+        product.id,
+        photo,
         join(assetDir(product.id), photo.file),
         join(assetDir(product.id), name),
-        product.id,
       );
       spent += CUTOUT_USD;
       const usable = await isUsableCutout(join(assetDir(product.id), name));

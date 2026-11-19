@@ -45,8 +45,7 @@ export const MEDIA_LEVELS: readonly MediaLevel[] = [
   {
     id: "fast",
     label: "Nhanh",
-    preference:
-      "Fast and economical. Still-move for every shot that does not speak; a fast lip-sync model.",
+    preference: "Shots that do not speak are still pictures with a slow push-in.",
     output: "720p",
     keyframe: { width: 864, height: 1536 },
     motion: false,
@@ -56,8 +55,7 @@ export const MEDIA_LEVELS: readonly MediaLevel[] = [
   {
     id: "balanced",
     label: "Cân bằng",
-    preference:
-      "Balanced. Sharp keyframes with varied framing, real motion for wide and detail shots where the words call for it, a lip-sync model with good faces; avoid the most expensive tier unless it is clearly better.",
+    preference: "Shots that do not speak really move: people, light and camera.",
     output: "1080p",
     keyframe: { width: 1116, height: 2000 },
     motion: true,

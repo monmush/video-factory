@@ -161,7 +161,7 @@ export function shotListErrors(list: ShotList, ctx: PlanContext, caps: ShotListC
     const named = namedInRequest(r.motion, productNames);
     if (named) errors.push(`${where}: never name "${named}" in the motion text.`);
   });
-  // Every picture is paid for: none may be listed that no shot starts from.
+  // A picture no shot starts from is a mistake in the list: none may be listed unused.
   const started = new Set(list.routes.map((r) => r.picture));
   for (const p of list.pictures) {
     if (p.kind !== "master" && !started.has(p.id)) {
@@ -339,7 +339,7 @@ export function rulesShotList(ctx: PlanContext, plan: ShotPlan = rulesPlan(ctx))
     });
     return { route: shot.productId ? "product" : "still-move", picture: id, motion: "" };
   });
-  // Only pictures a shot starts from are made (and paid for); the master always is.
+  // Only pictures a shot starts from are made; the master always is.
   const started = new Set(routes.map((r) => r.picture));
   return {
     shots: plan,

@@ -20,8 +20,8 @@ export function withNoCaptions(input: Record<string, unknown>): Record<string, u
   if (!key || typeof text !== "string" || text.includes(NO_CAPTIONS)) return input;
   return { ...input, [key]: `${text.trim()} ${NO_CAPTIONS}`.trim() };
 }
-export const SHOT_PROMPT = `The person speaks naturally with subtle head movement and natural expression. Keep the face, hair and outfit faithful to the reference image; stationary camera. ${NO_CAPTIONS}`;
-export const LISTEN_PROMPT = `The person listens silently with the mouth closed, reacting only with the eyes, brows and a slight head movement. Keep the face, hair and outfit faithful to the reference image; stationary camera. ${NO_CAPTIONS}`;
+export const SHOT_PROMPT = `The person speaks naturally with subtle head movement and natural expression. Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described. ${NO_CAPTIONS}`;
+export const LISTEN_PROMPT = `The person listens silently with the mouth closed, reacting only with the eyes, brows and a slight head movement. Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described. ${NO_CAPTIONS}`;
 
 /** The place behind the person: the same, but not frozen. */
 export const background = (ambient?: string) =>
@@ -41,4 +41,7 @@ export const STILL_FORMAT = "Make a vertical 9:16 photograph.";
 export const STILL_IDENTITY =
   "Keep every person identical to their reference photos: same face, age, hair, outfit and accessories, with any logo or lettering on their clothing kept exactly as in the photos or left plain.";
 export const STILL_BEFORE_SPEAKING = "Mouth closed, hands away from the face.";
+/** The same for a picture several people share: only the main person speaks from it. */
+export const stillBeforeSpeakingWith = (main: string) =>
+  `${main} has the mouth closed and the hands away from the face; nobody else's mouth is clearly visible.`;
 export const STILL_NO_TEXT = "No added text, signs, labels or packaging anywhere.";

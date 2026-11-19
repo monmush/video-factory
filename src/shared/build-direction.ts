@@ -2,7 +2,6 @@ import { estimateSeconds, levelEstimateUsd } from "./board";
 import type { ScriptLine } from "./ipc";
 import {
   costTable,
-  costWarnings,
   emptyRecord,
   fitDuration,
   inputErrors,
@@ -14,6 +13,7 @@ import {
   plannedShotSec,
   planSteps,
   type Rate,
+  unknownPriceWarnings,
 } from "./live-plan";
 import type { MediaLevel } from "./media-level";
 import {
@@ -22,6 +22,7 @@ import {
   STILL_IDENTITY,
   STILL_NO_TEXT,
   speakPrompt,
+  stillBeforeSpeakingWith,
 } from "./prompt-text";
 import {
   DEFAULT_MAX_REFERENCES,
@@ -175,7 +176,11 @@ export function buildDirection(input: BuildInput): LiveDirection {
       // the framing field repeats it, so it is not sent twice.
       sentence(p.description),
       p.people.length ? STILL_IDENTITY : "",
-      speaking.has(p.id) ? STILL_BEFORE_SPEAKING : "",
+      speaking.has(p.id)
+        ? p.people.length > 1
+          ? stillBeforeSpeakingWith(names.get(p.people[0] as string) ?? "The main person")
+          : STILL_BEFORE_SPEAKING
+        : "",
       STILL_NO_TEXT,
     ]
       .filter(Boolean)
@@ -190,6 +195,7 @@ export function buildDirection(input: BuildInput): LiveDirection {
       kind: p.kind,
       characterId: p.characterId,
       framing: p.framing,
+      ...(p.people.length ? { people: p.people.length } : {}),
       references: refs.map((r) => r.placeholder),
       endpoint: recipe.stills.endpoint,
       input: body,
@@ -268,7 +274,8 @@ export function buildDirection(input: BuildInput): LiveDirection {
   return {
     plan,
     costs,
-    warnings: costWarnings(costs),
+    // Budget is not a limit for now (19 Nov 2026): only steps without a price are noted.
+    warnings: unknownPriceWarnings(costs),
     rates,
     schemas,
     connection: "recipe",

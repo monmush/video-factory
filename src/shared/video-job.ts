@@ -46,8 +46,6 @@ import {
 // what exists (plan, voice, stills, clips, final) rather than stored, so a
 // restart continues from whatever was saved last.
 
-/** At most this many speaking shots are with the provider at once. */
-export const SHOTS_IN_FLIGHT = 3;
 /** Shortest audio a speaking or listening shot is given; shorter ones are padded with silence. */
 export const MIN_SHOT_SEC = 2;
 /** Silence kept before and after each line when cutting the dialogue. */
@@ -130,6 +128,13 @@ export interface JobShot {
   /** Provider request; saved the moment the provider accepts it. */
   requestId?: string;
   submittedAt?: string;
+  /**
+   * Being sent: this attempt's mark, saved before anything is paid and carried
+   * by the request's record, so a restart attaches the request instead of
+   * paying again (src/shared/request-reconcile.ts). Dropped once the request
+   * id is saved or the attempt fails.
+   */
+  sending?: string;
   /** Finished clip (file in the job folder) and its length. */
   clip?: string;
   clipSec?: number;
@@ -165,6 +170,8 @@ export interface JobFrame {
   keyframe?: string;
   /** Experiment branch: the keyframe's framing, for the still check. */
   framing?: string;
+  /** The keyframe's number of people, when its plan says (the still check). */
+  people?: number;
   /** Experiment branch: the endpoint it was sent to, recorded with the request. */
   endpoint?: string;
   /** Experiment branch: failed twice on its planned model, so it is made the fixed way. */
@@ -190,6 +197,8 @@ export interface JobFrame {
   cutouts?: number;
   requestId?: string;
   submittedAt?: string;
+  /** Being sent: this attempt's mark, as on a shot (`JobShot.sending`). */
+  sending?: string;
   /** Result read from the provider (cost logged); download pending if no file. */
   resultUrl?: string;
   costUsd?: number;
@@ -487,6 +496,7 @@ export function applyLivePlan(job: VideoJob, live: LiveDirection): VideoJob {
       kind,
       keyframe: k.id,
       framing: k.framing,
+      ...(k.people ? { people: k.people } : {}),
       retried: false,
       ...(k.characterId ? { characterId: k.characterId } : {}),
       ...(first ? { shot: first.index } : {}),
@@ -677,7 +687,7 @@ export function costToFinishUsd(job: VideoJob): number {
   return voice + frames + shots;
 }
 
-/** Whether the next hold stops at "Nghe và xem thử" after the voice and the stills. */
+/** Whether the next hold stops at "Nghe và xem cảnh chính" after the voice and the stills. */
 export const stopsForPreview = (job: VideoJob) =>
   Boolean(
     job.plan &&
@@ -689,7 +699,7 @@ export const stopsForPreview = (job: VideoJob) =>
       job.shots.every((s) => s.state === "queued" || s.state === "planned"),
   );
 
-/** What the hold up to "Nghe và xem thử" spends: the voice and the stills still to make. */
+/** What the hold up to "Nghe và xem cảnh chính" spends: the voice and the stills still to make. */
 export function costToPreviewUsd(job: VideoJob): number {
   if (!job.plan) return costToFinishUsd(job);
   const voice = job.dialogue ? 0 : estimateVoiceUsd(job.lines);
@@ -770,6 +780,9 @@ export function liveCostTable(job: VideoJob): CostTable | null {
       });
     }
   }
+  // Parts a fix replaced (and other takes): charged, no longer in this cut.
+  if (job.pastCostUsd)
+    rows.push({ step: "Làm lại", model: null, quantity: "", usd: job.pastCostUsd, paid: true });
   return {
     rows,
     knownUsd: rows.reduce((n, r) => n + (r.usd ?? 0), 0),
@@ -910,7 +923,7 @@ export function resumeJob(job: VideoJob, now: string): VideoJob {
 
 /**
  * "Make everything" on the Video tab: the job runs to the end with no stop at
- * "Nghe và xem thử", whatever state it is in. A finished video is left alone.
+ * "Nghe và xem cảnh chính", whatever state it is in. A finished video is left alone.
  */
 export function runThrough(job: VideoJob, now: string): VideoJob {
   if (job.status === "done") return job;
@@ -943,6 +956,7 @@ export function shotFailed(shot: JobShot, message: string): JobShot {
     ...shot,
     requestId: undefined,
     submittedAt: undefined,
+    sending: undefined,
     failures: shot.failures + 1,
   };
   return shot.retried
@@ -1055,17 +1069,17 @@ export function nextActions(job: VideoJob, busy: ReadonlySet<string>): JobAction
     }
   } else if (phase === "shots") {
     const sending = (s: JobShot) => busy.has(actionKey({ kind: "submit-shot", index: s.index }));
-    // Provider shots: at most three with the provider. Local shots: one at a time.
-    let free =
-      SHOTS_IN_FLIGHT -
-      job.shots.filter((s) => madeByProvider(s) && (s.state === "rendering" || sending(s))).length;
+    // Provider shots: every one that is ready is sent at once. fal never refuses
+    // a request over the account's limit; it waits in fal's queue. Local shots
+    // are made on this machine: one at a time.
     let localFree = job.shots.some((s) => !madeByProvider(s) && sending(s)) ? 0 : 1;
     for (const s of job.shots) {
       if (s.state !== "queued" || sending(s)) continue;
-      if (madeByProvider(s) ? free <= 0 : localFree <= 0) continue;
+      if (!madeByProvider(s)) {
+        if (localFree <= 0) continue;
+        localFree--;
+      }
       actions.push({ kind: "submit-shot", index: s.index });
-      if (madeByProvider(s)) free--;
-      else localFree--;
     }
   } else if (phase === "assemble") {
     add({ kind: "assemble" });
@@ -1148,7 +1162,13 @@ export function frameAttemptFailed(
   frame: JobFrame,
   message: string,
 ): JobFrame {
-  const reset = { ...frame, requestId: undefined, submittedAt: undefined, resultUrl: undefined };
+  const reset = {
+    ...frame,
+    requestId: undefined,
+    submittedAt: undefined,
+    resultUrl: undefined,
+    sending: undefined,
+  };
   if (!frame.retried) return { ...reset, retried: true, error: undefined };
   if (plannedFrame(job, frame)) {
     return { ...reset, fallback: true, endpoint: undefined, retried: false, error: undefined };
@@ -1260,8 +1280,8 @@ export function repairNetworkFailure(
 export function pickNext(jobs: VideoJob[]): VideoJob | null {
   const running = jobs.find((j) => j.status === "running");
   if (running) return running;
-  // A stopped job's shots still with the provider count against the limit: wait for them.
-  if (jobs.some((j) => j.shots.some((s) => s.state === "rendering"))) return null;
+  // A stopped job's shots still with the provider are collected alongside
+  // (nextActions polls them whatever the status); there is no limit to wait for.
   const waiting = jobs
     .filter((j) => j.status === "waiting")
     .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt));
@@ -1279,7 +1299,11 @@ export interface StepAverages {
   voice: number;
   /** Seconds per start frame (frames run in parallel). */
   frame: number;
-  /** Seconds per speaking shot, submit to downloaded. */
+  /**
+   * Seconds per speaking shot, submit to downloaded. Shots are all sent at
+   * once, so this includes any wait in fal's queue: it reads as the time for
+   * the whole round.
+   */
   shot: number;
   /** Seconds per assembly. */
   assemble: number;
@@ -1289,27 +1313,29 @@ export function remainingSec(job: VideoJob, avg: StepAverages, nowMs: number): n
   const phase = jobPhase(job);
   const since = (iso?: string) => (iso ? Math.max(0, (nowMs - Date.parse(iso)) / 1000) : 0);
   const notDone = job.shots.filter((s) => s.state !== "done");
-  const waves = (n: number) => Math.ceil(n / SHOTS_IN_FLIGHT) * avg.shot;
+  // Every ready provider shot is sent at once: the shots left take one round.
+  const round = (n: number) => (n > 0 ? avg.shot : 0);
   let left = avg.assemble;
   if (phase === "plan") {
     left += Math.max(0, avg.plan - since(job.phaseStartedAt));
     left += avg.voice + (framesToMake(job).length || job.useEnvironment ? 2 * avg.frame : 0);
-    left += waves(Math.max(notDone.length, job.lines.length));
+    left += round(Math.max(notDone.length, job.lines.length));
   } else if (phase === "voice") {
     left += Math.max(0, avg.voice - since(job.phaseStartedAt));
     // The wide still first, then the rest in parallel.
     left += framesToMake(job).length ? 2 * avg.frame : 0;
-    left += waves(notDone.length);
+    left += round(notDone.length);
   } else if (phase === "frames") {
     left += Math.max(0, avg.frame - since(job.phaseStartedAt));
-    left += waves(notDone.length);
+    left += round(notDone.length);
   } else if (phase === "shots") {
     const rendering = job.shots.filter((s) => s.state === "rendering");
     const longest = rendering.length
       ? Math.max(...rendering.map((s) => Math.max(10, avg.shot - since(s.submittedAt))))
       : 0;
     const queued = notDone.filter((s) => s.state === "queued").length;
-    left += longest + waves(queued);
+    // Queued shots are sent now and run alongside the ones already sent.
+    left += Math.max(longest, round(queued));
   } else if (phase === "assemble") {
     left = avg.assemble * (1 - (job.assembleProgress ?? 0));
   } else {

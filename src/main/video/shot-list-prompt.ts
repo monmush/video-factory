@@ -5,9 +5,9 @@ import ADDENDUM from "./shot-list-prompt.md?raw";
 // section) followed by the pictures-and-routes part. Electron-free.
 
 const MOTION_ON =
-  "The `motion` route is available. Every `wide` shot uses it: the people stay seated and alive (breathing, a small turn of the head, a hand on the cup), leaves and light move, the camera drifts slowly; nobody speaks. Use it for a `detail` shot that shows an action (pouring, steam rising). Use `still-move` only for a detail of a still object.";
+  "The `motion` route is available: use it for every `wide` shot, every `listener` shot and every `detail` that shows an action; use `still-move` only for a detail of a still object. In a `motion` shot people are alive and may act: one clear action per shot (a gesture, leaning in, pouring, handing something over, sitting down or standing up), with the background stirring and the camera moving as the moment needs (a slow push-in, a drift, a pan from one person to the other). Nobody is seen speaking in it.";
 const MOTION_OFF =
-  "The `motion` route is not available for this video: use `still-move` for every wide, detail and listener shot.";
+  "The `motion` route is not available for this video: use `still-move` for every wide, detail and listener shot. Nothing moves inside such a shot, so describe a single moment, the most telling instant of the action (the cup brimming over, not the whole pour).";
 
 export function shotListPrompt(
   base: string,

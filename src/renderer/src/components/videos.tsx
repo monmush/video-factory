@@ -4,6 +4,7 @@ import { mediaUrl, type Script } from "@shared/ipc";
 import { mediaLevel } from "@shared/media-level";
 import { isNetworkMessage, OFFLINE_MESSAGE } from "@shared/net-error";
 import { committedIds, finishedScripts } from "@shared/ready-check";
+import { stagingState } from "@shared/session-steps";
 import {
   canFix,
   canRestore,
@@ -84,7 +85,7 @@ const STOP_HOLD_MS = 1200;
 
 /**
  * Sent videos the batch button also takes to the end: not started, waiting at
- * "Nghe và xem thử", stopped or failed, or a test video that would still stop.
+ * "Nghe và xem cảnh chính", stopped or failed, or a test video that would still stop.
  */
 function stalledScripts(sent: Script[], jobs: ReadonlyMap<string, VideoJob>): Script[] {
   return sent.filter((s) => {
@@ -285,7 +286,7 @@ function LevelLabel({ job, batchLevel }: { job: VideoJob | null; batchLevel?: st
 }
 
 /**
- * What this hold spends: up to "Nghe và xem thử" when it stops there, else the
+ * What this hold spends: up to "Nghe và xem cảnh chính" when it stops there, else the
  * rest of the video; "+?" when a planned step has no known price.
  */
 function holdPrice(job: VideoJob): string {
@@ -297,7 +298,8 @@ function holdPrice(job: VideoJob): string {
 const minutes = (seconds: number) => `còn ~${Math.max(1, Math.round(seconds / 60))} phút`;
 
 function statusLine(job: VideoJob | null, script: Script, averages: StepAverages, now: number) {
-  if (job?.planning) return "Đang lên dàn dựng";
+  // Staging follows by itself: being made, or about to be.
+  if (stagingState(script, job) === "staging") return "Đang lên dàn dựng";
   if (!job || job.status === "idle") return formatSeconds(estimateSeconds(script.lines));
   if (job.offline && (job.status === "running" || job.status === "waiting")) return OFFLINE_MESSAGE;
   const done = doneShots(job);
@@ -308,7 +310,7 @@ function statusLine(job: VideoJob | null, script: Script, averages: StepAverages
     case "done":
       return "Xong";
     case "review":
-      return "Nghe và xem thử";
+      return "Nghe và xem cảnh chính";
     case "stopped":
       return `Đã dừng · ${done}/${total} cảnh`;
     case "failed": {
@@ -522,7 +524,7 @@ function VideoCard({
     action = job?.plan ? (
       <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
         {/* Says what this hold makes: the preview (voice and stills, then a stop) or the video. */}
-        {stopsForPreview(job) ? "Giữ để tạo bản xem thử" : "Giữ để tạo video"}
+        {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo video"}
         <ButtonPrice>{holdPrice(job)}</ButtonPrice>
       </HoldButton>
     ) : null;
@@ -811,9 +813,8 @@ function VideoCard({
       {view &&
         (view.status === "running" || view.status === "waiting") &&
         jobPhase(view) !== "plan" && <MakingSteps job={view} />}
-      {(view?.status === "idle" || view?.status === "review") && view.live && (
-        <LivePlanFold job={view} />
-      )}
+      {/* What it costs, row by row, at every stage: planned, being made and finished. */}
+      {view?.live && <LivePlanFold job={view} />}
       {view && view.status !== "idle" && (
         <JobBody
           key={selectedModel ?? ""}

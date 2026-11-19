@@ -1,6 +1,7 @@
 import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "@shared/board";
 import type { Script } from "@shared/ipc";
 import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
+import { type StagingState, stagingState } from "@shared/session-steps";
 import type { VideoJob } from "@shared/video-job";
 import { Link } from "@tanstack/react-router";
 import {
@@ -632,8 +633,8 @@ function ScriptCard({
   const [prompting, setPrompting] = useState(false);
   /** "Lời thoại" or "Dàn dựng", per card. */
   const [tab, setTab] = useState<CardTab>("lines");
-  // Staging makes itself, also for a script not sent yet: its tab shows it at work.
-  const planning = Boolean(useVideoJobs(shared.sessionId)?.jobs.get(script.id)?.planning);
+  // Staging makes itself, also for a script not sent yet: the card is in progress until it exists.
+  const staging = useStaging(shared.sessionId, script);
   // "Tùy chỉnh" chosen from the right-click menu opens this card's prompt.
   useEffect(() => {
     if (customiseId !== script.id) return;
@@ -697,9 +698,9 @@ function ScriptCard({
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
             {script.status === "ready" && script.lines.length > 0 && (
-              <CardTabs value={tab} onChange={setTab} planning={planning} />
+              <CardTabs value={tab} onChange={setTab} staging={staging} />
             )}
-            {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
+            {isSent && <SentBadge sessionId={shared.sessionId} job={job} staging={staging} />}
             {!inGallery &&
               shared.testChoice &&
               script.status === "ready" &&
@@ -853,6 +854,7 @@ function CompactCard({
   const liveWriting = useLiveWriting(script.id);
   const writing = script.status === "writing" || liveWriting;
   const dimmed = shared.isDimmed(script.id);
+  const staging = useStaging(shared.sessionId, script);
   return (
     <CardMenu script={script} shared={shared} canOpen>
       <article
@@ -880,7 +882,11 @@ function CompactCard({
         <DragHandle className="top-[17px] left-0.5" />
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
-            {isSent && <SentBadge sessionId={shared.sessionId} job={job} />}
+            {isSent ? (
+              <SentBadge sessionId={shared.sessionId} job={job} staging={staging} />
+            ) : (
+              <StagingMark sessionId={shared.sessionId} scriptId={script.id} state={staging} />
+            )}
           </CardMeta>
           <h3 className="mt-1 line-clamp-2 font-semibold leading-snug text-balance">
             {script.title || <Bars count={1} className="pt-1" />}
@@ -1130,21 +1136,70 @@ function VersionTag({ script }: { script: Script }) {
   return <span className="whitespace-nowrap">· bản {script.version}</span>;
 }
 
+/** Where a written script's Dàn dựng stands; "none" while the jobs load. */
+function useStaging(sessionId: string, script: Script): StagingState {
+  const jobs = useVideoJobs(sessionId);
+  return jobs ? stagingState(script, jobs.jobs.get(script.id)) : "none";
+}
+
+/**
+ * On a compact card not sent to video: its staging still being made (the
+ * script is not done yet), or the way to try again after it failed. Full
+ * cards say it on their "Dàn dựng" tab.
+ */
+function StagingMark({
+  sessionId,
+  scriptId,
+  state,
+}: {
+  sessionId: string;
+  scriptId: string;
+  state: StagingState;
+}) {
+  if (state === "staging") {
+    return <span className="shimmer-text text-2xs whitespace-nowrap">Đang lên dàn dựng</span>;
+  }
+  if (state !== "failed") return null;
+  return (
+    <Button
+      variant="outline"
+      size="xs"
+      className="h-5 px-1.5 text-2xs"
+      onClick={(e) => {
+        // The card opens on a click; this one only retries.
+        e.stopPropagation();
+        void api.invoke("video:plan", { sessionId, scriptId }).catch(() => undefined);
+      }}
+    >
+      Lên dàn dựng
+    </Button>
+  );
+}
+
 /** On a script sent to video: where its video stands; opens the Video tab. */
-function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null | undefined }) {
-  const label = job?.planning
-    ? "Lên dàn dựng"
-    : !job || job.status === "idle"
-      ? "Chờ tạo"
-      : job.status === "done"
-        ? "Có video"
-        : job.status === "review"
-          ? "Chờ xem thử"
-          : job.status === "stopped"
-            ? "Video đã dừng"
-            : job.status === "failed"
-              ? "Video lỗi"
-              : "Đang tạo video";
+function SentBadge({
+  sessionId,
+  job,
+  staging,
+}: {
+  sessionId: string;
+  job: VideoJob | null | undefined;
+  staging: StagingState;
+}) {
+  const label =
+    staging === "staging"
+      ? "Lên dàn dựng"
+      : !job || job.status === "idle"
+        ? "Chờ tạo"
+        : job.status === "done"
+          ? "Có video"
+          : job.status === "review"
+            ? "Chờ xem cảnh chính"
+            : job.status === "stopped"
+              ? "Video đã dừng"
+              : job.status === "failed"
+                ? "Video lỗi"
+                : "Đang tạo video";
   return (
     <Link
       to="/sessions/$sessionId/videos"
@@ -1170,12 +1225,12 @@ const CARD_TABS: { id: CardTab; label: string }[] = [
 function CardTabs({
   value,
   onChange,
-  planning,
+  staging,
 }: {
   value: CardTab;
   onChange: (tab: CardTab) => void;
-  /** The staging is being made: its tab shimmers. */
-  planning?: boolean;
+  /** Being made: its tab shimmers (the script is not done yet); failed: marked. */
+  staging: StagingState;
 }) {
   return (
     <fieldset className="flex shrink-0 rounded-[var(--control-radius)] border p-px">
@@ -1189,8 +1244,12 @@ function CardTabs({
           aria-pressed={value === t.id}
           onClick={() => onChange(t.id)}
         >
-          {planning && t.id === "staging" ? (
+          {staging === "staging" && t.id === "staging" ? (
             <span className="shimmer-text" title="Đang lên dàn dựng">
+              {t.label}
+            </span>
+          ) : staging === "failed" && t.id === "staging" ? (
+            <span className="text-destructive-foreground" title="Chưa lên được dàn dựng">
               {t.label}
             </span>
           ) : (

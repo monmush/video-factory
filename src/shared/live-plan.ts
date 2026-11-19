@@ -336,6 +336,11 @@ export interface PlannedKeyframe {
   kind: KeyframeKind;
   characterId: string | null;
   framing: string;
+  /**
+   * How many cast members the picture shows (a shot list's `people`), for the
+   * still check. Missing on live-director plans and jobs saved before 19 Nov.
+   */
+  people?: number;
   /** Placeholders of the files it is made from. */
   references: string[];
   endpoint: string;
@@ -1109,16 +1114,18 @@ export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[
 export const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
   table.knownUsd > table.budgetUsd * 1.25;
 
-/** Warnings shown with the plan: over the guide budget, unknown prices. */
+/** Steps the table could not price. */
+export const unknownPriceWarnings = (table: Pick<CostTable, "unknownSteps">): string[] =>
+  table.unknownSteps ? [`${table.unknownSteps} step(s) have no recorded price.`] : [];
+
+/** Warnings kept with a live director's plan (legacy): over the guide budget, unknown prices. */
 export function costWarnings(table: CostTable): string[] {
-  const warnings: string[] = [];
-  if (overBudget(table)) {
-    warnings.push(
-      `Over the guide budget: ~$${table.knownUsd.toFixed(2)} of $${table.budgetUsd.toFixed(2)}.`,
-    );
-  }
-  if (table.unknownSteps) warnings.push(`${table.unknownSteps} step(s) have no recorded price.`);
-  return warnings;
+  return [
+    ...(overBudget(table)
+      ? [`Over the guide budget: ~$${table.knownUsd.toFixed(2)} of $${table.budgetUsd.toFixed(2)}.`]
+      : []),
+    ...unknownPriceWarnings(table),
+  ];
 }
 
 /** What a job keeps of its live direction: the plan, its prices and how it was made. */

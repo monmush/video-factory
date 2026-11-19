@@ -1,12 +1,13 @@
 import { formatCost } from "@shared/credits";
-import { type CostRow, overBudget } from "@shared/live-plan";
+import type { CostRow } from "@shared/live-plan";
 import { costToPreviewUsd, liveCostTable, stopsForPreview, type VideoJob } from "@shared/video-job";
 import { Check } from "lucide-react";
 
-// The plan on the video card before its hold and at "Nghe và xem thử". One row
-// per kind of step and model, every step on request. Prices follow one rule:
-// charged amounts plain (with a check), estimates with "~". Once something is
-// paid the total reads "Đã chi · Còn · Tổng", and "Còn" is what the hold shows.
+// What a video costs, on its card at every stage: planned, being made and
+// finished. One row per kind of step and model, every step on request. Prices
+// follow one rule: charged amounts plain (with a check), estimates with "~".
+// Once something is paid the total reads "Đã chi · Còn · Tổng", and "Còn" is
+// what the hold shows; once everything is paid, only "Đã chi".
 
 /** "Khung hình master" → "Khung hình"; "Cảnh 3 · Khẩu hình" → "Khẩu hình". */
 function kindOf(row: CostRow): string {
@@ -55,17 +56,25 @@ function Price({ usd, paid }: { usd: number | null; paid?: boolean }) {
   );
 }
 
+/** Charged so far, and whether nothing priced is left to make. */
+function paidOf(rows: CostRow[]) {
+  const paidUsd = rows.reduce((n, r) => n + (r.paid ? (r.usd ?? 0) : 0), 0);
+  const allPaid = paidUsd > 0 && rows.every((r) => r.paid || r.usd === 0);
+  return { paidUsd, allPaid };
+}
+
 /**
- * The plan's table folded under its total, closed until asked for: the hold
- * button already carries the price staff need.
+ * The table folded under its total, closed until asked for: the hold button
+ * and the status line already carry the price staff need.
  */
 export function LivePlanFold({ job }: { job: VideoJob }) {
   const costs = liveCostTable(job);
   if (!costs) return null;
+  const { paidUsd, allPaid } = paidOf(costs.rows);
   return (
     <details className="mt-3 ml-7.5 max-w-xl text-xs">
       <summary className="w-fit cursor-pointer text-muted-foreground tabular-nums hover:text-foreground">
-        Chi phí ~{formatCost(costs.knownUsd)}
+        {allPaid ? `Chi phí ${formatCost(paidUsd)}` : `Chi phí ~${formatCost(costs.knownUsd)}`}
         {costs.unknownSteps > 0 ? " +?" : ""}
       </summary>
       <LivePlanTable job={job} className="mt-1.5" />
@@ -77,8 +86,7 @@ export function LivePlanFold({ job }: { job: VideoJob }) {
 export function LivePlanTable({ job, className }: { job: VideoJob; className?: string }) {
   const costs = liveCostTable(job);
   if (!costs) return null;
-  const over = overBudget(costs);
-  const paidUsd = costs.rows.reduce((n, r) => n + (r.paid ? (r.usd ?? 0) : 0), 0);
+  const { paidUsd, allPaid } = paidOf(costs.rows);
   return (
     <div className={className ?? "mt-3 ml-7.5 max-w-xl text-xs"}>
       <table className="w-full tabular-nums">
@@ -101,30 +109,33 @@ export function LivePlanTable({ job, className }: { job: VideoJob; className?: s
         {/* Nothing paid yet and the hold stops at the preview: its price, as on the button. */}
         {paidUsd === 0 && stopsForPreview(job) && (
           <>
-            <span className="font-medium">Bản xem thử ~{formatCost(costToPreviewUsd(job))}</span>
+            <span className="font-medium">Các cảnh chính ~{formatCost(costToPreviewUsd(job))}</span>
             <span className="text-muted-foreground">·</span>
           </>
         )}
-        {paidUsd > 0 && (
-          <>
-            <span className="font-medium">Đã chi {formatCost(paidUsd)}</span>
-            <span className="text-muted-foreground">·</span>
-            <span>Còn ~{formatCost(costs.knownUsd - paidUsd)}</span>
-            <span className="text-muted-foreground">·</span>
-          </>
+        {allPaid ? (
+          <span className="font-medium">Đã chi {formatCost(paidUsd)}</span>
+        ) : (
+          paidUsd > 0 && (
+            <>
+              <span className="font-medium">Đã chi {formatCost(paidUsd)}</span>
+              <span className="text-muted-foreground">·</span>
+              <span>Còn ~{formatCost(costs.knownUsd - paidUsd)}</span>
+              <span className="text-muted-foreground">·</span>
+            </>
+          )
         )}
-        <span
-          className={paidUsd > 0 || stopsForPreview(job) ? "text-muted-foreground" : "font-medium"}
-        >
-          Tổng ~{formatCost(costs.knownUsd)}
-        </span>
+        {!allPaid && (
+          <span
+            className={
+              paidUsd > 0 || stopsForPreview(job) ? "text-muted-foreground" : "font-medium"
+            }
+          >
+            Tổng ~{formatCost(costs.knownUsd)}
+          </span>
+        )}
         {costs.unknownSteps > 0 && (
           <span className="text-muted-foreground">{costs.unknownSteps} bước chưa rõ giá</span>
-        )}
-        {over && (
-          <span className="text-destructive-foreground">
-            vượt mức gợi ý {formatCost(costs.budgetUsd)}
-          </span>
         )}
       </div>
       <details className="mt-1.5">

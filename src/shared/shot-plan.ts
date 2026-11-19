@@ -384,15 +384,8 @@ export function readDirectorAnswer(
   errors.push(...coverageErrors(shots, ctx.lines));
   errors.push(...holdErrors(shots));
 
-  // C2/C7: open and close on the speaker's face.
-  if (shots.length) {
-    if (shots[0]?.kind !== "speaker") errors.push("The first shot must be a speaker shot.");
-    if (shots.at(-1)?.kind !== "speaker") errors.push("The last shot must be a speaker shot.");
-  }
-  // C3: the place early (only when there is one and the video is long enough).
-  if (ctx.hasPlace && shots.length >= 4 && !shots.slice(0, 3).some((s) => s.kind === "wide")) {
-    errors.push("Use a wide shot within the first three shots.");
-  }
+  // No fixed opening, closing or wide shot (19 Nov 2026): the director decides
+  // case by case how the video opens, ends and shows the place (C2, C3).
   // C9: no more than two alike in a row.
   for (let i = 2; i < shots.length; i++) {
     const a = shots[i - 2] as PlannedShot;

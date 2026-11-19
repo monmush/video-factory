@@ -9,7 +9,10 @@ import * as video from "./video/runner";
 // the product is rewritten: the lines that name or describe it, and its place
 // in the staging. A script whose video has started changes on a new version
 // (src/shared/versions.ts); one sent to video but not started changes in
-// place, and a plan made for it is dropped (the plan names the product shot).
+// place. Its Dàn dựng follows in code when the words are unchanged or only
+// renamed the product (src/shared/product-follow.ts), else it is staged
+// again. A change while the staging is still being made is applied: the
+// staging follows it when it lands.
 
 export interface ProductChange {
   script: Script;
@@ -38,8 +41,8 @@ export async function setProduct(
     await updateSeries({ id: series.id, productIds: [...series.productIds, productId] });
   }
   const committed = (await board.sentScriptIds(sessionId)).has(scriptId);
-  if ((await video.jobFor(sessionId, scriptId))?.planning) throw new Error("Đang lên kế hoạch");
-  const started = committed && (await video.videoStarted(sessionId, scriptId));
+  // Staging still being made is not a started video: the change applies in place.
+  const started = committed && (await video.videoMade(sessionId, scriptId));
   const begun = await board.beginProductChange(sessionId, scriptId, productId, {
     copy: started,
     log,
@@ -62,8 +65,8 @@ export async function setProduct(
     await board.finishProductChange(sessionId, targetId, written, { created, log });
   }
   if (!written) throw new Error("Chưa đổi được sản phẩm");
-  // Sent to video but nothing made: its plan named the old product shot.
-  if (committed && !started) await video.dropPlan(sessionId, scriptId);
+  // Nothing made: the staging follows the new product.
+  if (!started) await video.followScript(sessionId, targetId);
   const script = (await board.getBoard(sessionId)).scripts.find((s) => s.id === targetId);
   if (!script) throw new Error("Không tìm thấy kịch bản");
   const sameCount = before.lines.length === script.lines.length;
@@ -81,11 +84,11 @@ export async function setProduct(
 export async function undoProduct(sessionId: string, scriptId: string): Promise<null> {
   const committed = (await board.sentScriptIds(sessionId)).has(scriptId);
   // Changed in place while sent to video: only while its video has not started.
-  if (committed && (await video.videoStarted(sessionId, scriptId))) {
+  if (committed && (await video.videoMade(sessionId, scriptId))) {
     throw new Error("Video đã bắt đầu tạo nên không hoàn tác được");
   }
   const { inPlace } = await board.undoProductChange(sessionId, scriptId);
-  if (inPlace && committed) await video.dropPlan(sessionId, scriptId);
+  if (inPlace) await video.followScript(sessionId, scriptId);
   return null;
 }
 

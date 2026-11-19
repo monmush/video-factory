@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserWindow, dialog } from "electron";
@@ -11,8 +12,10 @@ import {
 import type { Asset, Script } from "../../shared/ipc";
 import { mediaLevel } from "../../shared/media-level";
 import { isNetworkError } from "../../shared/net-error";
+import { followProduct } from "../../shared/product-follow";
 import { cutoutsToMake } from "../../shared/product-shot";
 import { assertCommitted, committedIds, NOT_COMMITTED } from "../../shared/ready-check";
+import { reconcileJob, withSending } from "../../shared/request-reconcile";
 import {
   castOf,
   heldSpans,
@@ -41,6 +44,7 @@ import {
   isGenerated,
   type JobAction,
   type JobFrame,
+  type JobStep,
   jobPhase,
   MIN_SHOT_SEC,
   madeByProvider,
@@ -75,9 +79,10 @@ import { DEFAULT_VIDEO_MODEL, fitResolution, videoModel } from "../../shared/vid
 import { chooseTake, chosenView, deleteTake, focusTake, startTake } from "../../shared/video-takes";
 import { getBoard, onBoardChanged } from "../board";
 import { assetDir } from "../media";
-import { dataFile, mediaDir, writeJsonAtomic } from "../paths";
+import { dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
 import { getWorkspace } from "../store";
+import { openFalRequests } from "../usage";
 import { checkStill } from "./checks";
 import { directJob } from "./director";
 import {
@@ -116,8 +121,9 @@ import {
 // Each job's state is job.json in its folder, written atomically after every
 // change, so navigating away, quitting or crashing never loses a paid result:
 // on start, unfinished jobs continue, saved request ids are polled and files
-// on disk are reused. One video runs at a time; at most three shots are with
-// the provider at once. Progress goes to the renderer as "video:job".
+// on disk are reused. One video runs at a time; every shot of it that has
+// what it needs is sent to fal at once (fal queues what is over the account's
+// limit), local shots one at a time. Progress goes to the renderer as "video:job".
 
 const JOB_FILE = "job.json";
 const AVERAGES_FILE = "video-averages.json";
@@ -201,21 +207,38 @@ async function loadAll(): Promise<void> {
   await loadAverages();
   const ws = await getWorkspace();
   const repair = repairOf(ws.assets);
+  // Paid requests fal accepted whose ids never reached job.json (closed mid-send).
+  const open = await openFalRequests();
   for (const session of ws.sessions) {
     const dir = join(mediaDir(session.seriesId, session.id), "videos");
     const names = await readdir(dir).catch(() => [] as string[]);
     for (const name of names) {
+      const folder = join(dir, name);
+      // Leftovers of writes cut off by a quit or crash; job.json itself is never partial.
+      await removeStaleTmp(folder);
+      let raw: string;
+      try {
+        raw = await readFile(join(folder, JOB_FILE), "utf8");
+      } catch {
+        continue; // Not a job folder.
+      }
       try {
         // A job that failed only because the connection was gone continues from where it was.
-        const job = repair(
-          migrateJob(JSON.parse(await readFile(join(dir, name, JOB_FILE), "utf8"))),
-        );
+        let job = repair(migrateJob(JSON.parse(raw)));
         // A plan interrupted by a restart is made again when asked.
         delete job.planning;
         delete job.planningSteps;
+        const found = reconcileJob(job, open);
+        if (found.job !== job) {
+          job = found.job;
+          if (found.attached.length) {
+            console.log(`[video] ${name}: attached ${found.attached.join(", ")}`);
+          }
+          await writeJsonAtomic(join(folder, JOB_FILE), job);
+        }
         jobs.set(jobKey(job), job);
-      } catch {
-        // Not a job folder.
+      } catch (error) {
+        console.warn(`[video] could not read ${name}/${JOB_FILE}:`, (error as Error).message);
       }
     }
   }
@@ -309,7 +332,12 @@ async function autoPlan(sessionId: string) {
     const key = keyOf(sessionId, script.id);
     const job = jobs.get(key);
     if (job && (job.plan || !unstarted(job))) continue;
-    const said = JSON.stringify([spoken.map((l) => [l.characterId, l.text]), script.productIds]);
+    // A job made again (plan dropped: script or level changed) is staged again.
+    const said = JSON.stringify([
+      spoken.map((l) => [l.characterId, l.text]),
+      script.productIds,
+      job?.createdAt ?? null,
+    ]);
     if (autoTried.get(key) === said) continue;
     autoTried.set(key, said);
     void planOnly(sessionId, script.id).catch((error) =>
@@ -413,7 +441,11 @@ export async function start(sessionId: string, scriptId: string): Promise<null> 
 export async function planOnly(sessionId: string, scriptId: string): Promise<null> {
   await ensureLoaded();
   const key = keyOf(sessionId, scriptId);
-  if (!jobs.has(key)) await createJob(sessionId, scriptId, true, "idle");
+  const had = jobs.get(key);
+  // No job yet, or staging failed with nothing made: (re)made idle, wishes kept.
+  if (!had || (had.status === "failed" && !had.plan && !had.dialogue && spentUsd(had) === 0)) {
+    await createJob(sessionId, scriptId, true, "idle", had?.direction);
+  }
   const job = jobs.get(key) as VideoJob;
   if (job.plan || job.planning || job.status !== "idle") return null;
   const planning = await update(key, (j) => ({ ...j, planning: true }));
@@ -532,27 +564,95 @@ async function syncScripts(sessionId: string, scripts: Script[]) {
     session,
     ws.series.find((s) => s.id === session?.seriesId),
   ).id;
+  const all = ws.assets;
   for (const job of [...jobs.values()]) {
-    if (job.sessionId !== sessionId || !unstarted(job)) continue;
-    const key = jobKey(job);
+    if (job.sessionId !== sessionId) continue;
     const script = scripts.find((s) => s.id === job.scriptId);
-    try {
-      if (!script || script.deletedAt) await removeJob(key);
-      else if (
-        script.status === "ready" &&
-        (jobStale(job, script) || (job.plan && mediaLevel(job.level).id !== level))
-      ) {
-        const direction = anchoredDirection(job.direction, script.lines);
-        // A script that can no longer be planned (no spoken line left) has no video.
-        await createJob(sessionId, job.scriptId, true, "idle", direction).catch(() =>
-          removeJob(key),
-        );
-      }
-    } catch (error) {
-      console.warn("[video] could not follow the script:", (error as Error).message);
-    }
+    await followScriptNow(job, script, level, all);
   }
   // Staging follows the script: a dropped plan, or a new script, is planned again.
+  scheduleAutoPlan(sessionId);
+}
+
+/**
+ * One unpaid video following its script. A product change on a planned video
+ * whose words are unchanged (or changed only by the product's name) is
+ * followed in code, with no new staging (src/shared/product-follow.ts);
+ * anything else drops the plan, to be staged again. `force`: compare products
+ * even on a job that did not record them (older jobs).
+ */
+async function followScriptNow(
+  job: VideoJob,
+  script: Script | undefined,
+  level: string,
+  all: readonly Asset[],
+  force = false,
+) {
+  if (!unstarted(job)) return;
+  const key = jobKey(job);
+  try {
+    if (!script || script.deletedAt) {
+      await removeJob(key);
+      return;
+    }
+    if (script.status !== "ready") return;
+    const otherLevel = Boolean(job.plan && mediaLevel(job.level).id !== level);
+    if (!otherLevel && !jobStale(job, script) && !(force && !job.productIds)) return;
+    if (!otherLevel && job.plan) {
+      const product = (id: string) => {
+        const a = all.find((x) => x.id === id && x.kind === "product");
+        return a ? { id: a.id, name: a.name } : null;
+      };
+      const cutouts = (id: string) => {
+        const a = all.find((x) => x.id === id);
+        return a ? cutoutsToMake(a) : 0;
+      };
+      const followed = followProduct(job, script, product, cutouts);
+      if (followed.kind === "patched") {
+        const next = await update(key, (j) => (j === job ? followed.job : j));
+        if (next?.plan) {
+          await writeJsonAtomic(join(jobDir(next), "plan.json"), next.plan);
+          if (next.live) await writeJsonAtomic(join(jobDir(next), "live-plan.json"), next.live);
+        }
+        return;
+      }
+      // A product change that could not be followed in code: staged again, said in the log.
+      if (job.productIds?.[0] !== script.productIds[0]) {
+        console.log(`[video] product change staged again (${followed.why})`);
+      }
+    }
+    // An older job with nothing planned has nothing to follow.
+    if (!otherLevel && !jobStale(job, script) && !job.plan) return;
+    const direction = anchoredDirection(job.direction, script.lines);
+    // A script that can no longer be planned (no spoken line left) has no video.
+    await createJob(job.sessionId, job.scriptId, true, "idle", direction).catch(() =>
+      removeJob(key),
+    );
+  } catch (error) {
+    console.warn("[video] could not follow the script:", (error as Error).message);
+  }
+}
+
+/**
+ * After a product change (or its undo) on the card or by the chat: the video
+ * follows it now. While its staging runs, it follows when that lands
+ * (`planOnly` syncs after every plan).
+ */
+export async function followScript(sessionId: string, scriptId: string): Promise<void> {
+  await ensureLoaded();
+  const job = jobs.get(keyOf(sessionId, scriptId));
+  if (!job) {
+    scheduleAutoPlan(sessionId);
+    return;
+  }
+  const ws = await getWorkspace();
+  const session = ws.sessions.find((s) => s.id === sessionId);
+  const level = batchMediaLevel(
+    session,
+    ws.series.find((s) => s.id === session?.seriesId),
+  ).id;
+  const script = (await getBoard(sessionId)).scripts.find((s) => s.id === scriptId);
+  await followScriptNow(job, script, level, ws.assets, true);
   scheduleAutoPlan(sessionId);
 }
 
@@ -571,6 +671,17 @@ export async function videoStarted(sessionId: string, scriptId: string): Promise
   return Boolean(job && !unstarted(job));
 }
 
+/**
+ * Whether anything of a script's video was made, sent or spent; false with no
+ * job, and false while only its staging is being made (that is free and
+ * follows the script when it lands).
+ */
+export async function videoMade(sessionId: string, scriptId: string): Promise<boolean> {
+  await ensureLoaded();
+  const job = jobs.get(keyOf(sessionId, scriptId));
+  return Boolean(job && !unstarted({ ...job, planning: false }));
+}
+
 /** "Lập lại": the plan made again at the batch's Media level as it is now (free, the user's AI). */
 export async function replan(sessionId: string, scriptId: string): Promise<null> {
   await dropPlan(sessionId, scriptId);
@@ -579,7 +690,7 @@ export async function replan(sessionId: string, scriptId: string): Promise<null>
 
 /**
  * "Make everything" on the Video tab: every committed script of the session
- * runs to the end, with no stop at "Nghe và xem thử". New ones are never
+ * runs to the end, with no stop at "Nghe và xem cảnh chính". New ones are never
  * test videos; finished videos are left alone.
  */
 export async function runAll(sessionId: string): Promise<null> {
@@ -1010,6 +1121,24 @@ const patchFrameOf = (key: string, frameId: string) => (patch: Partial<JobFrame>
     frames: j.frames.map((f) => (f.id === frameId ? { ...f, ...patch } : f)),
   }));
 
+/**
+ * Saves a fresh "being sent" mark on a still or shot before anything is paid.
+ * The request's record carries the same mark, so a restart attaches the
+ * request instead of paying again (src/shared/request-reconcile.ts). Null when
+ * the job is gone.
+ */
+async function markSending(key: string, step: JobStep): Promise<VideoJob | null> {
+  return update(key, (j) => withSending(j, step, randomUUID()));
+}
+
+/** Sends a still marked as being sent; the request id replaces the mark. */
+async function sendMarked(key: string, job: VideoJob, frameId: string, inputs: FrameInputs) {
+  const marked = (await markSending(key, { frame: frameId }))?.frames.find((f) => f.id === frameId);
+  if (!marked) return;
+  const sent = await sendFrame(job, marked, inputs);
+  await patchFrameOf(key, frameId)({ ...sent, submittedAt: nowIso(), sending: undefined });
+}
+
 const frameFile = (job: VideoJob, frame: JobFrame) =>
   revFile(job, `still-${frame.id.replace(/[^a-z0-9-]+/gi, "-")}`, "png");
 
@@ -1047,8 +1176,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
         }
         if (cutout) {
           if (jobs.get(key)?.status !== "running") return;
-          const latest = jobs.get(key)?.frames.find((f) => f.id === frameId) ?? frame;
-          await patchFrame({ ...(await sendFrame(job, latest, inputs)), submittedAt: nowIso() });
+          await sendMarked(key, job, frameId, inputs);
           await online(key);
           return;
         }
@@ -1082,7 +1210,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
     }
     // Stopped meanwhile: send nothing new.
     if (jobs.get(key)?.status !== "running") return;
-    await patchFrame({ ...(await sendFrame(job, frame, inputs)), submittedAt: nowIso() });
+    await sendMarked(key, job, frameId, inputs);
     await online(key);
   } catch (error) {
     // No connection: not an attempt; the still is sent again once it is back.
@@ -1288,11 +1416,14 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
       });
       return;
     }
+    // Marked as being sent before anything is paid (survives a restart).
+    const marked = (await markSending(key, { shot: index }))?.shots[index];
+    if (!marked) return;
     if (job.live && shot.route && !shot.fallback) {
       // Planned: the plan's endpoint and input, recorded with the request.
       const sent = await submitLiveShot(
         job,
-        shot,
+        marked,
         join(dir, frame.file),
         shot.audio ? join(dir, shot.audio) : undefined,
         dir,
@@ -1300,7 +1431,9 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
       await update(key, (j) => ({
         ...j,
         shots: j.shots.map((s) =>
-          s.index === index ? { ...s, state: "rendering", ...sent, submittedAt: nowIso() } : s,
+          s.index === index
+            ? { ...s, state: "rendering", ...sent, submittedAt: nowIso(), sending: undefined }
+            : s,
         ),
       }));
       await online(key);
@@ -1325,12 +1458,19 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
       await padAudio(audio, model.minSec, padded);
       audio = padded;
     }
-    const requestId = await submitShot(job, shot, model, still, audio);
+    const requestId = await submitShot(job, marked, model, still, audio);
     await update(key, (j) => ({
       ...j,
       shots: j.shots.map((s) =>
         s.index === index
-          ? { ...s, state: "rendering", model: model.id, requestId, submittedAt: nowIso() }
+          ? {
+              ...s,
+              state: "rendering",
+              model: model.id,
+              requestId,
+              submittedAt: nowIso(),
+              sending: undefined,
+            }
           : s,
       ),
     }));

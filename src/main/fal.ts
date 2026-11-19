@@ -1,13 +1,15 @@
 import type { falClient } from "./providers";
-import { logUsage, recordSubmitted } from "./usage";
+import { logUsage, recordFailed, recordSubmitted } from "./usage";
 
 // Every paid fal request goes through `falCall`, so the bookkeeping is the
 // same everywhere: the request id is written to requests.jsonl the moment fal
 // accepts it (before any charge can complete), and usage.jsonl gets the cost
 // as soon as the result arrives, before the caller does anything else with it
-// (a failed download afterwards still leaves the charge on record).
-// Long-running jobs will reconcile requests.jsonl on restart so a closed app
-// never pays twice.
+// (a failed download afterwards still leaves the charge on record). A
+// request the provider reports as failed gets a `failed` line in
+// requests.jsonl. On start, video jobs attach any request recorded here whose
+// id never reached job.json (the app closed mid-send), so a closed app never
+// pays twice (src/shared/request-reconcile.ts).
 
 export type Fal = Awaited<ReturnType<typeof falClient>>;
 
@@ -45,9 +47,13 @@ export async function falCall<T>(
 }
 
 // Long jobs use fal's queue directly instead of a blocking subscribe: the
-// request id is saved by the caller (job.json) and recorded in requests.jsonl
-// the moment fal accepts it, so a restart polls the same request instead of
-// paying again. The cost is logged when the result is read, before download.
+// request id is recorded in requests.jsonl the moment fal accepts it, before
+// this returns, and the caller then saves it (job.json, the asset). The log
+// carries whatever lets a restart find its step again (a video step's
+// `attempt` mark, a cut-out's photo), so closing the app between the two
+// polls the same request instead of paying again. Only the instant between
+// fal's answer and the record's append is uncovered. The cost is logged when
+// the result is read, before download.
 
 /** Submits a paid request; returns its id once fal has accepted it. */
 export async function falSubmit(
@@ -98,6 +104,8 @@ export async function falPoll<T>(
     // on the provider's side. Anything else (no status: network) is retried.
     const status = (error as { status?: number }).status;
     if (typeof status === "number" && status >= 400 && status !== 429) {
+      // Settled: nothing to collect from it after a restart.
+      await recordFailed({ provider: "fal", requestId });
       return { state: "failed", message: (error as Error).message || `Lỗi ${status}` };
     }
     throw error;

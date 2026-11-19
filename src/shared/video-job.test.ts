@@ -13,6 +13,7 @@ import {
   lineCuts,
   lineSpans,
   lossIfStoppedUsd,
+  madeByProvider,
   migrateJob,
   modelLocked,
   newJob,
@@ -23,7 +24,6 @@ import {
   resumesOnStart,
   retryShot,
   runThrough,
-  SHOTS_IN_FLIGHT,
   settle,
   shotFailed,
   shotModel,
@@ -459,17 +459,29 @@ describe("next actions and resume", () => {
     ]);
   });
 
-  it(`sends at most ${SHOTS_IN_FLIGHT} shots at a time`, () => {
+  it("sends every ready provider shot at once", () => {
     const j = readyForShots();
-    expect(nextActions(j, new Set()).map((a) => a.kind)).toEqual([
-      "submit-shot",
-      "submit-shot",
-      "submit-shot",
-    ]);
+    expect(nextActions(j, new Set())).toEqual(
+      j.shots.map((s) => ({ kind: "submit-shot", index: s.index })),
+    );
+    // Shots already with the provider or being sent are not sent again.
     patch(j.shots, 0, { state: "rendering", requestId: "r0" });
-    expect(nextActions(j, new Set(["shot:0", "shot:1"]))).toEqual([
-      { kind: "submit-shot", index: 2 },
-    ]);
+    expect(nextActions(j, new Set(["shot:0", "shot:1"]))).toEqual(
+      j.shots.slice(2).map((s) => ({ kind: "submit-shot", index: s.index })),
+    );
+  });
+
+  it("never sends more than one local shot at a time", () => {
+    const j = withShotAudio(
+      job({ status: "running", dialogue: "d.mp3" }, MIXED),
+      LINES.map((_, i) => ({ start: i * 2, end: i * 2 + 2, audio: `l${i}`, audioSec: 2 })),
+    );
+    j.frames = j.frames.map((f) => ({ ...f, file: `${f.id}.png` }));
+    const sent = nextActions(j, new Set()).flatMap((a) =>
+      a.kind === "submit-shot" ? [j.shots[a.index] as JobShot] : [],
+    );
+    expect(sent.filter((s) => !madeByProvider(s))).toHaveLength(1);
+    expect(sent.filter(madeByProvider)).toHaveLength(j.shots.filter(madeByProvider).length);
   });
 
   it("after a restart, saved requests are polled, never resubmitted", () => {
@@ -509,16 +521,20 @@ describe("next actions and resume", () => {
 
 describe("time left", () => {
   const avg = { plan: 60, voice: 20, frame: 40, shot: 120, assemble: 15 };
-  it("counts shot waves of three", () => {
+  it("counts the shots left as one round, all sent at once", () => {
     const j = readyForShots();
-    // 5 queued shots → two waves.
-    expect(remainingSec(j, avg, Date.parse(NOW))).toBe(240 + 15);
+    expect(remainingSec(j, avg, Date.parse(NOW))).toBe(120 + 15);
+    // Some already sent: the round ends with the longest of them.
+    patch(j.shots, 0, { state: "rendering", requestId: "r0", submittedAt: NOW });
+    expect(remainingSec(j, avg, Date.parse(NOW) + 30_000)).toBe(120 + 15);
+    j.shots = j.shots.map((s) => ({ ...s, state: "rendering", requestId: "r", submittedAt: NOW }));
+    expect(remainingSec(j, avg, Date.parse(NOW) + 30_000)).toBe(90 + 15);
   });
   it("counts down while voice runs", () => {
     const j = job({ status: "running", phaseStartedAt: NOW });
     const left = remainingSec(j, avg, Date.parse(NOW) + 10_000);
-    // Voice left, then the wide still and the rest, then two waves of shots.
-    expect(left).toBe(10 + 2 * 40 + 240 + 15);
+    // Voice left, then the wide still and the rest, then one round of shots.
+    expect(left).toBe(10 + 2 * 40 + 120 + 15);
   });
 });
 
@@ -555,11 +571,12 @@ describe("line timings", () => {
 });
 
 describe("one at a time", () => {
-  it("waits for a stopped job's shots still with the provider", () => {
+  it("starts the next video while a stopped one's shots are still collected", () => {
     const stopped = { ...readyForShots({ status: "stopped" }) };
     patch(stopped.shots, 0, { state: "rendering", requestId: "r" });
     const next = job({ scriptId: "n", status: "waiting" });
-    expect(pickNext([stopped, next])).toBeNull();
+    expect(pickNext([stopped, next])?.scriptId).toBe("n");
+    expect(nextActions(stopped, new Set())).toEqual([{ kind: "poll-shot", index: 0 }]);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Script, Session } from "./ipc";
-import { jobNeedsYou, sessionSteps } from "./session-steps";
+import { jobNeedsYou, sessionSteps, stagingState } from "./session-steps";
 import type { VideoJob } from "./video-job";
 
 const script = (id: string, fields: Partial<Script> = {}): Script => ({
@@ -46,6 +46,23 @@ describe("jobNeedsYou", () => {
     expect(jobNeedsYou(job("running"))).toBe(false);
     expect(jobNeedsYou(job("waiting"))).toBe(false);
     expect(jobNeedsYou(job("done"))).toBe(false);
+  });
+});
+
+describe("stagingState", () => {
+  const voiced = script("a", { lines: [{ characterId: "c", speaker: "An", text: "Chào." }] });
+  const plan = { source: "rules" } as VideoJob["plan"];
+  it("stays in progress until the staging exists, which follows by itself", () => {
+    expect(stagingState(voiced, null)).toBe("staging");
+    expect(stagingState(voiced, job("idle"))).toBe("staging");
+    expect(stagingState(voiced, job("idle", { planning: true }))).toBe("staging");
+    expect(stagingState(voiced, job("idle", { plan }))).toBe("ready");
+  });
+  it("shows a failed staging, and nothing for a script not written or being made", () => {
+    expect(stagingState(voiced, job("failed"))).toBe("failed");
+    expect(stagingState({ ...voiced, status: "writing" }, null)).toBe("none");
+    expect(stagingState(script("b"), null)).toBe("none");
+    expect(stagingState(voiced, job("running"))).toBe("none");
   });
 });
 

@@ -376,6 +376,8 @@ export async function submitFrame(
       sessionId: job.sessionId,
       scriptId: job.scriptId,
       frame: frame.id,
+      // The mark saved in job.json for this attempt (src/shared/request-reconcile.ts).
+      attempt: frame.sending,
     },
   );
 }
@@ -456,6 +458,7 @@ export async function submitShot(
       sessionId: job.sessionId,
       scriptId: job.scriptId,
       shot: shot.index,
+      attempt: shot.sending,
     },
   );
 }
@@ -644,6 +647,7 @@ export async function submitLiveFrame(
     sessionId: job.sessionId,
     scriptId: job.scriptId,
     frame: frame.id,
+    attempt: frame.sending,
   });
   return { requestId, endpoint: keyframe.endpoint };
 }
@@ -724,6 +728,7 @@ export async function submitLiveShot(
     sessionId: job.sessionId,
     scriptId: job.scriptId,
     shot: shot.index,
+    attempt: shot.sending,
   });
   return { requestId, endpoint };
 }
