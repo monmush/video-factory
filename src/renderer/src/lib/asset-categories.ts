@@ -1,5 +1,3 @@
-// Characters, products and environments are built; styles and scenes are still candidates
-// (docs/SERIES_SETUP_DECISIONS.md), not a finalised taxonomy.
 export const ASSET_CATEGORIES = [
   { id: "characters", label: "Nhân vật" },
   { id: "products", label: "Sản phẩm" },

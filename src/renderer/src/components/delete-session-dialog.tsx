@@ -7,7 +7,6 @@ import { refreshWorkspace } from "@/lib/workspace";
 import { Button } from "./ui/button";
 import { Dialog, DialogClose, DialogFooter, DialogPopup, DialogTitle } from "./ui/dialog";
 
-/** Confirms and deletes one session. Leaves for its series page when it is open. */
 export function DeleteSessionDialog({
   session,
   open,

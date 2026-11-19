@@ -22,22 +22,11 @@ import { getWorkspace, updateSeries } from "./store";
 
 export type { TurnLog };
 
-// A session's script board and chat, saved as board.json in the session's
-// folder. The main process owns all writing work, so it keeps running when the
-// operator leaves the screen; every change is pushed to the renderer with
-// "board:changed". Work stops if the app quits: on the next start, interrupted
-// cards become "failed" (with "Thử lại") or keep their previous text.
-// Rules: docs/SCRIPT_BOARD_DECISIONS.md.
-
 const FILE = "board.json";
 const cache = new Map<string, Board>();
-// One file read per session at a time. Two overlapping cold reads could
-// otherwise finish after a write and put the older board back in the cache.
-const reading = new Map<string, Promise<Board>>();
-const queues = new Map<string, Promise<unknown>>();
-// Work running in this process. Anything else marked as writing was interrupted.
-const runningScripts = new Set<string>();
-/** Assistant messages whose turn is running in this process (pipeline or agent). */
+const singleColdReadPerSession = new Map<string, Promise<Board>>();
+const writesInOrderPerSession = new Map<string, Promise<unknown>>();
+const scriptsBeingWrittenInThisProcess = new Set<string>();
 export const runningRequests = new Set<string>();
 
 export const now = () => new Date().toISOString();
@@ -50,30 +39,19 @@ export async function findSession(sessionId: string) {
   return { ws, session };
 }
 
-/**
- * Scripts sent to video. They never change; edits go to a new version
- * (docs/VIDEO_COMMIT_DECISIONS.md, "Moving between Kịch bản and Video").
- */
 const lockedIds = (session: Session, board: Board) => new Set(committedIds(session, board.scripts));
 
-/** Ids of the session's scripts sent to video. */
 export async function sentScriptIds(sessionId: string): Promise<Set<string>> {
   const { session } = await findSession(sessionId);
   return lockedIds(session, await load(sessionId));
 }
 
-/** Inserts a new version of `source` after its chain and returns it. */
 function insertCopy(b: Board, source: Script): Script {
   const { copy, index } = copyScript(b.scripts, source, { id: randomUUID(), now: now() });
   b.scripts.splice(index, 0, copy);
   return copy;
 }
 
-/**
- * The script an agent edit should change: the script itself, or for one sent
- * to video, its new version in this turn (made on first use and recorded as
- * added, so the turn's undo removes it).
- */
 function editTarget(b: Board, locked: ReadonlySet<string>, log: TurnLog, script: Script) {
   if (!locked.has(script.id)) return { target: script, copied: false, created: false };
   log.copies ??= new Map();
@@ -88,7 +66,6 @@ function editTarget(b: Board, locked: ReadonlySet<string>, log: TurnLog, script:
   return { target: copy, copied: true, created: true };
 }
 
-/** Takes back a version this turn made when it turned out identical. */
 function dropCopy(b: Board, log: TurnLog, copy: Script) {
   copy.deletedAt = now();
   for (const [source, id] of log.copies ?? []) if (id === copy.id) log.copies?.delete(source);
@@ -100,10 +77,10 @@ function dropCopy(b: Board, log: TurnLog, copy: Script) {
 function load(sessionId: string): Promise<Board> {
   const cached = cache.get(sessionId);
   if (cached) return Promise.resolve(cached);
-  let pending = reading.get(sessionId);
+  let pending = singleColdReadPerSession.get(sessionId);
   if (!pending) {
-    pending = read(sessionId).finally(() => reading.delete(sessionId));
-    reading.set(sessionId, pending);
+    pending = read(sessionId).finally(() => singleColdReadPerSession.delete(sessionId));
+    singleColdReadPerSession.set(sessionId, pending);
   }
   return pending;
 }
@@ -117,7 +94,6 @@ async function read(sessionId: string): Promise<Board> {
     ) as Board;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    // A new session: the request typed on the series page opens the chat.
     board = {
       version: 1,
       scripts: [],
@@ -127,7 +103,7 @@ async function read(sessionId: string): Promise<Board> {
     };
   }
   for (const s of board.scripts) {
-    if (s.status === "writing" && !runningScripts.has(s.id)) {
+    if (s.status === "writing" && !scriptsBeingWrittenInThisProcess.has(s.id)) {
       s.status = s.lines.length ? "ready" : "failed";
     }
   }
@@ -137,7 +113,6 @@ async function read(sessionId: string): Promise<Board> {
       if (m.parts) m.outcome = "stopped";
       else m.text ||= "Đã dừng giữa chừng.";
     }
-    // Queued behind a turn when the app quit: never sent.
     if (m.queued && !runningRequests.has(m.id)) {
       m.queued = false;
       m.unsent = true;
@@ -156,16 +131,13 @@ function broadcast(sessionId: string, board: Board) {
 type BoardListener = (sessionId: string, board: Board) => void;
 const boardListeners = new Set<BoardListener>();
 
-/** Called after every saved board change (the video runner follows its scripts). */
 export function onBoardChanged(listener: BoardListener): () => void {
   boardListeners.add(listener);
   return () => boardListeners.delete(listener);
 }
 
-/** Serialised per session, like the workspace store. */
 export function mutateBoard<T>(sessionId: string, change: (board: Board) => T): Promise<T> {
-  const run = (queues.get(sessionId) ?? Promise.resolve()).then(async () => {
-    // Throws once the session is deleted, so late results never recreate its folder.
+  const run = (writesInOrderPerSession.get(sessionId) ?? Promise.resolve()).then(async () => {
     const { session } = await findSession(sessionId);
     const board = structuredClone(await load(sessionId));
     const result = change(board);
@@ -181,7 +153,7 @@ export function mutateBoard<T>(sessionId: string, change: (board: Board) => T): 
     }
     return result;
   });
-  queues.set(
+  writesInOrderPerSession.set(
     sessionId,
     run.catch(() => undefined),
   );
@@ -192,13 +164,8 @@ export async function getBoard(sessionId: string): Promise<Board> {
   return structuredClone(await load(sessionId));
 }
 
-/** Most recent series titles the writer is told to avoid repeating. */
 const MAX_AVOID = 80;
 
-/**
- * Names of approved sessions whose scripts use an asset. Videos are made from
- * approved scripts, so their characters and products must not disappear.
- */
 export async function approvedSessionsUsing(assetId: string): Promise<string[]> {
   const ws = await getWorkspace();
   const names: string[] = [];
@@ -212,7 +179,6 @@ export async function approvedSessionsUsing(assetId: string): Promise<string[]> 
   return names;
 }
 
-/** The last model chosen in any chat; sessions without their own choice use it. */
 const readChoice = () => {
   const settings = readSettings();
   return { model: settings.chatModel, effort: settings.chatEffort };
@@ -223,8 +189,6 @@ export async function writerContext(sessionId: string): Promise<writer.WriterCon
   const series = ws.series.find((s) => s.id === session.seriesId);
   if (!series) throw new Error("Không tìm thấy series");
   const pick = (ids: string[]) => ids.flatMap((id) => ws.assets.find((a) => a.id === id) ?? []);
-  // Recent titles in the series, so new stories do not repeat old ones. Capped
-  // so prompts stay small as the series grows (sessions are newest first).
   const avoid = new Set<string>();
   for (const other of ws.sessions.filter((s) => s.seriesId === series.id)) {
     if (avoid.size >= MAX_AVOID) break;
@@ -266,7 +230,6 @@ export function newScript(fields: Pick<Script, "brief"> & Partial<Script>): Scri
   };
 }
 
-/** Marks show what the latest request did; a new request starts clean (and so does a card's undo). */
 export function clearMarks(board: Board) {
   for (const s of board.scripts) {
     s.mark = null;
@@ -274,13 +237,6 @@ export function clearMarks(board: Board) {
   }
 }
 
-/**
- * Products for new topic cards (docs/SCRIPT_BOARD_DECISIONS.md, "Product per
- * video"): one named for a topic is kept; the others go to the products the
- * request mentions, else follow the batch's mix, else are shared evenly over
- * the series' products (rules: newTopicProducts). Products the request
- * mentions join the series. Undefined: the writer chooses.
- */
 async function topicProducts(
   sessionId: string,
   b: Board,
@@ -314,7 +270,6 @@ async function topicProducts(
   });
 }
 
-/** Library products used for this series' scripts join it, so the writer knows them. */
 export async function joinSeries(
   series: Series,
   productIds: readonly (string | null | undefined)[],
@@ -329,9 +284,6 @@ export async function joinSeries(
   });
 }
 
-// ---------------------------------------------------------------- chat requests
-
-/** fal pipeline: add scripts, edit in place, or answer. Returns once the message is on the board. */
 export async function send(sessionId: string, text: string, refs: string[]): Promise<null> {
   const clean = text.trim();
   if (!clean) return null;
@@ -339,7 +291,6 @@ export async function send(sessionId: string, text: string, refs: string[]): Pro
   return null;
 }
 
-/** fal pipeline: starts the request typed on the series page, already the board's first message. */
 export async function startFromRequest(sessionId: string): Promise<void> {
   const board = await load(sessionId);
   const first = board.messages[0];
@@ -397,7 +348,6 @@ async function runRequest(sessionId: string, replyId: string, text: string, refs
 
 type Say = (patch: Partial<ChatMessage>) => Promise<void>;
 
-/** Topic cards appear first; dialogue is written into each in parallel. */
 async function addScripts(
   sessionId: string,
   ctx: writer.WriterContext,
@@ -416,7 +366,7 @@ async function addScripts(
       },
     }),
   );
-  for (const c of cards) runningScripts.add(c.id);
+  for (const c of cards) scriptsBeingWrittenInThisProcess.add(c.id);
   const products = await topicProducts(
     sessionId,
     await load(sessionId),
@@ -427,7 +377,6 @@ async function addScripts(
     if (products[i] !== undefined && c.brief.kind === "topic") c.brief.productId = products[i];
   });
   await mutateBoard(sessionId, (b) => {
-    // "Mới" only tells later additions apart; a session's first batch is all new.
     if (!b.scripts.some((s) => !s.deletedAt)) for (const c of cards) c.mark = null;
     b.scripts.push(...cards);
     const reply = b.messages.at(-1);
@@ -443,7 +392,6 @@ async function addScripts(
   });
 }
 
-/** Chat edits change scripts in place; one undo restores them all. */
 async function editScripts(
   sessionId: string,
   ctx: writer.WriterContext,
@@ -458,7 +406,6 @@ async function editScripts(
     await say({ text: "Chưa có kịch bản nào để sửa." });
     return;
   }
-  // Scripts sent to video are edited on a new version (a fresh copy each).
   const { session } = await findSession(sessionId);
   const copies: string[] = [];
   const chosen = await mutateBoard(sessionId, (b) => {
@@ -470,7 +417,7 @@ async function editScripts(
       return structuredClone(copy);
     });
     const ids = new Set(list.map((s) => s.id));
-    for (const id of ids) runningScripts.add(id);
+    for (const id of ids) scriptsBeingWrittenInThisProcess.add(id);
     for (const s of b.scripts) if (ids.has(s.id)) s.status = "writing";
     const reply = b.messages.at(-1);
     if (reply?.pending) reply.text = `Đang sửa ${list.length} kịch bản…`;
@@ -492,13 +439,12 @@ async function editScripts(
       } catch (error) {
         console.error("[board] revise failed", error);
       }
-      runningScripts.delete(before.id);
+      scriptsBeingWrittenInThisProcess.delete(before.id);
       await mutateBoard(sessionId, (b) => {
         const s = b.scripts.find((x) => x.id === before.id);
         if (!s) return;
         if (written)
           Object.assign(s, written, { mark: "edited", productUndo: undefined, updatedAt: now() });
-        // A stated length sticks, so later variants of this script keep it.
         if (written && plan.targetSec) s.brief = { ...s.brief, targetSec: plan.targetSec };
         s.status = "ready";
       }).catch(() => {});
@@ -506,13 +452,11 @@ async function editScripts(
     }),
   );
 
-  // Copies are new cards: undo removes them rather than restoring them.
   const changed = chosen.filter((s, i) => outcomes[i] === "changed" && !copies.includes(s.id));
   const changedCopies = chosen.filter((s, i) => outcomes[i] === "changed" && copies.includes(s.id));
   const unchangedCopies = chosen.filter(
     (s, i) => outcomes[i] !== "changed" && copies.includes(s.id),
   );
-  // A copy that did not change is only a duplicate: take it away again.
   if (unchangedCopies.length) {
     await mutateBoard(sessionId, (b) => {
       for (const s of b.scripts)
@@ -543,13 +487,12 @@ async function editScripts(
   });
 }
 
-/** Writes dialogue into a topic or variant card. Returns false if it failed. */
 async function writeCard(
   sessionId: string,
   scriptId: string,
   context?: writer.WriterContext,
 ): Promise<boolean> {
-  runningScripts.add(scriptId);
+  scriptsBeingWrittenInThisProcess.add(scriptId);
   try {
     const ctx = context ?? (await writerContext(sessionId));
     const board = await load(sessionId);
@@ -563,7 +506,6 @@ async function writeCard(
       const { sourceId } = card.brief;
       const source = board.scripts.find((s) => s.id === sourceId);
       if (!source?.lines.length) throw new Error("Không còn kịch bản gốc");
-      // A variant features its source's product.
       const product = source.productIds[0];
       written = writer.oneProduct(
         await writer.writeVariant(
@@ -575,7 +517,6 @@ async function writeCard(
         product,
       );
     } else {
-      // The product given to the topic (the batch's mix or the chat), else the writer's choice.
       const { productId } = card.brief;
       written = writer.oneProduct(
         await writer.writeTopic(
@@ -587,7 +528,7 @@ async function writeCard(
         productId,
       );
     }
-    runningScripts.delete(scriptId);
+    scriptsBeingWrittenInThisProcess.delete(scriptId);
     await mutateBoard(sessionId, (b) => {
       const s = b.scripts.find((x) => x.id === scriptId);
       if (s) Object.assign(s, written, { status: "ready", updatedAt: now() });
@@ -595,7 +536,7 @@ async function writeCard(
     return true;
   } catch (error) {
     console.error("[board] write failed", error);
-    runningScripts.delete(scriptId);
+    scriptsBeingWrittenInThisProcess.delete(scriptId);
     await mutateBoard(sessionId, (b) => {
       const s = b.scripts.find((x) => x.id === scriptId);
       if (s) s.status = "failed";
@@ -604,9 +545,6 @@ async function writeCard(
   }
 }
 
-// ---------------------------------------------------------------- card actions
-
-/** A new independent script directly after its source. */
 export async function variant(
   sessionId: string,
   scriptId: string,
@@ -619,7 +557,7 @@ export async function variant(
       ...(direction?.trim() ? { direction: direction.trim() } : {}),
     },
   });
-  runningScripts.add(card.id);
+  scriptsBeingWrittenInThisProcess.add(card.id);
   try {
     await mutateBoard(sessionId, (b) => {
       const index = b.scripts.findIndex((s) => s.id === scriptId);
@@ -627,14 +565,12 @@ export async function variant(
       if (!source) throw new Error("Không tìm thấy kịch bản");
       clearMarks(b);
       card.mark = "new";
-      // Variants keep the source's length.
       card.brief.targetSec = source.brief.targetSec ?? DEFAULT_TARGET_SEC;
-      // A pinned source keeps its variant beside it in the pinned group.
       card.pinned = source.pinned;
       b.scripts.splice(index + 1, 0, card);
     });
   } catch (error) {
-    runningScripts.delete(card.id);
+    scriptsBeingWrittenInThisProcess.delete(card.id);
     throw error;
   }
   void writeCard(sessionId, card.id);
@@ -642,7 +578,7 @@ export async function variant(
 }
 
 export async function retry(sessionId: string, scriptId: string): Promise<null> {
-  runningScripts.add(scriptId);
+  scriptsBeingWrittenInThisProcess.add(scriptId);
   const ok = await mutateBoard(sessionId, (b) => {
     const s = b.scripts.find((x) => x.id === scriptId);
     if (s?.status !== "failed") return false;
@@ -650,7 +586,7 @@ export async function retry(sessionId: string, scriptId: string): Promise<null> 
     return true;
   }).catch(() => false);
   if (ok) void writeCard(sessionId, scriptId);
-  else runningScripts.delete(scriptId);
+  else scriptsBeingWrittenInThisProcess.delete(scriptId);
   return null;
 }
 
@@ -659,10 +595,6 @@ async function changeBoard(sessionId: string, change: (b: Board) => void): Promi
   return null;
 }
 
-/**
- * "Sửa" on a script sent to video: a new version after its chain, ready to
- * edit through the chat and made into its own video. Returns its id.
- */
 export async function copy(sessionId: string, scriptId: string): Promise<string> {
   const { session } = await findSession(sessionId);
   return mutateBoard(sessionId, (b) => {
@@ -691,12 +623,6 @@ export const pin = (sessionId: string, scriptId: string, pinned: boolean) =>
     if (s) s.pinned = pinned;
   });
 
-/**
- * Restores every script a chat turn changed, and removes the scripts it added.
- * `editable`: scripts sent to video whose video has not started, which may
- * still change (a product change edits them in place); returns the ones of
- * those it restored, whose plan no longer fits.
- */
 export async function undo(
   sessionId: string,
   messageId: string,
@@ -711,15 +637,6 @@ export async function undo(
   });
 }
 
-// ---------------------------------------------------------------- product per video
-
-/**
- * Starts a product change on one ready script (src/main/product-change.ts):
- * on the script itself, or on a new version when `copy` (its video has
- * started). Saves what undo needs in the same write: the chat turn's log, or
- * on the card. Returns the script as the writer should revise it, or null
- * when it already has that product.
- */
 export async function beginProductChange(
   sessionId: string,
   scriptId: string,
@@ -757,19 +674,18 @@ export async function beginProductChange(
     const before = { ...structuredClone(target), status: "ready" as const };
     target.status = "writing";
     target.changing = "product";
-    runningScripts.add(target.id);
+    scriptsBeingWrittenInThisProcess.add(target.id);
     return { before, targetId: target.id, created, copied: opts.copy };
   });
 }
 
-/** Ends a product change: the revised lines and staging, or the script as it was when writing failed. */
 export async function finishProductChange(
   sessionId: string,
   targetId: string,
   written: writer.WrittenScript | null,
   opts: { created: boolean; log?: TurnLog },
 ): Promise<Script | null> {
-  runningScripts.delete(targetId);
+  scriptsBeingWrittenInThisProcess.delete(targetId);
   return mutateBoard(sessionId, (b) => {
     const s = b.scripts.find((x) => x.id === targetId);
     if (!s) return null;
@@ -794,7 +710,6 @@ export async function finishProductChange(
   });
 }
 
-/** "Hoàn tác" on a card after a product change: its product, lines and staging back, or the new version gone. */
 export async function undoProductChange(
   sessionId: string,
   scriptId: string,
@@ -820,18 +735,10 @@ export async function undoProductChange(
   });
 }
 
-// ---------------------------------------------------------------- agent turns
-
-/** Scripts in the numbering the operator sees (#1, #2…). */
 export async function orderedScripts(sessionId: string): Promise<Script[]> {
   return boardOrder((await load(sessionId)).scripts);
 }
 
-/**
- * Replaces fields of one ready script, written by the agent itself. A script
- * sent to video is left alone and the edit goes to its new version;
- * `copied` says so.
- */
 export async function agentUpdate(
   sessionId: string,
   scriptId: string,
@@ -850,11 +757,9 @@ export async function agentUpdate(
   });
 }
 
-/** Topic cards appear at once; dialogue is written into each in parallel. */
 export async function agentAdd(
   sessionId: string,
   plan: {
-    /** `productId`: the product named for that topic (null: none); missing: shared out (topicProducts). */
     topics: (writer.Topic & { productId?: string | null })[];
     direction: string;
     targetSec: number | null;
@@ -879,7 +784,7 @@ export async function agentAdd(
       },
     }),
   );
-  for (const c of cards) runningScripts.add(c.id);
+  for (const c of cards) scriptsBeingWrittenInThisProcess.add(c.id);
   await mutateBoard(sessionId, (b) => {
     if (!b.scripts.some((s) => !s.deletedAt)) for (const c of cards) c.mark = null;
     b.scripts.push(...cards);
@@ -895,10 +800,6 @@ export async function agentAdd(
   return { written, failed: results.filter((ok) => !ok).length };
 }
 
-/**
- * Rewrites several scripts in parallel with the script writer, in place.
- * Scripts sent to video are rewritten on their new version (`copied` counts them).
- */
 export async function agentRewrite(
   sessionId: string,
   targets: Script[],
@@ -924,7 +825,7 @@ export async function agentRewrite(
       if (edit.copied) copies.add(target.id);
       else if (recordTouch(b, log, target)) fresh.add(target.id);
       target.status = "writing";
-      runningScripts.add(target.id);
+      scriptsBeingWrittenInThisProcess.add(target.id);
       list.push({ ...structuredClone(target), status: "ready" });
     }
     return list;
@@ -944,7 +845,7 @@ export async function agentRewrite(
         console.error("[board] agent rewrite failed", error);
         failed = true;
       }
-      runningScripts.delete(before.id);
+      scriptsBeingWrittenInThisProcess.delete(before.id);
       return mutateBoard(sessionId, (b) => {
         const s = b.scripts.find((x) => x.id === before.id);
         if (!s) return { outcome: "failed" as const };
@@ -969,11 +870,6 @@ export async function agentRewrite(
   };
 }
 
-/**
- * Deletes scripts for the agent. Scripts sent to video stay: deleting one
- * removes a paid video from view, so only the operator does that. Returns
- * the ids it left alone.
- */
 export async function agentDelete(
   sessionId: string,
   scriptIds: string[],
@@ -996,10 +892,8 @@ export async function agentDelete(
   });
 }
 
-/** Approval needs at least one finished script and nothing still being written. */
 export async function assertApprovable(sessionId: string): Promise<void> {
   const board = await load(sessionId);
-  // The chat could still change or add scripts after approval.
   if (board.messages.some((m) => m.pending)) throw new Error("Đang làm yêu cầu trong khung chat");
   const scripts = boardOrder(board.scripts);
   if (scripts.length === 0) throw new Error("Chưa có kịch bản");
@@ -1007,11 +901,6 @@ export async function assertApprovable(sessionId: string): Promise<void> {
   if (!scripts.some((s) => s.status === "ready")) throw new Error("Chưa có kịch bản viết xong");
 }
 
-/**
- * The scripts an approval commits: the given ones, or every finished one.
- * Refuses scripts already committed, unfinished or blocked (the ready check
- * shows why), so nothing is ever committed twice.
- */
 export async function scriptsToCommit(sessionId: string, ids?: string[]): Promise<string[]> {
   const { ws, session } = await findSession(sessionId);
   if (!session.approvedAt) await assertApprovable(sessionId);
@@ -1028,10 +917,6 @@ export async function scriptsToCommit(sessionId: string, ids?: string[]): Promis
   return chosen.map((s) => s.id);
 }
 
-/**
- * Lines spoken by `speaker` that match no library character go to
- * `characterId`. Committed scripts never change.
- */
 export async function linkSpeaker(
   sessionId: string,
   speaker: string,

@@ -4,12 +4,6 @@ import { falClient, providerMode } from "./providers";
 import { readSettings } from "./settings";
 import { logUsage } from "./usage";
 
-// Text-only AI calls (script planning and writing), routed like descriptions:
-//   - "claude-code": the user's own Claude Code CLI, billed to their plan;
-//   - "fal": an LLM hosted on fal, live mode only;
-//   - "fixture": fal selected in fixture mode; callers use sample content instead.
-
-// fal's text router. Same model as the vision tasks; not yet run live for scripts.
 const FAL_ENDPOINT = "openrouter/router";
 const FAL_MODEL = "google/gemini-2.5-flash";
 
@@ -22,7 +16,6 @@ export function textAiMode(): TextAiMode {
 
 export const textAiIsOwn = () => textAiMode() !== "fal";
 
-/** Runs at most `limit` tasks at once; the rest wait their turn. */
 function limiter(limit: number) {
   let active = 0;
   const waiting: (() => void)[] = [];
@@ -38,20 +31,17 @@ function limiter(limit: number) {
   };
 }
 
-// Each Claude Code call is a separate process, so keep the count low.
-const queues = { "claude-code": limiter(3), fal: limiter(6) };
+const CLAUDE_CODE_PROCESSES_AT_ONCE = 3;
+const queues = { "claude-code": limiter(CLAUDE_CODE_PROCESSES_AT_ONCE), fal: limiter(6) };
 
 export async function askText(input: {
   system: string;
   prompt: string;
-  /** What the app was doing, for usage.jsonl. */
   purpose: string;
   sessionId?: string;
   temperature?: number;
-  /** Claude only: the session's chosen model and effort. */
   model?: string;
   effort?: string;
-  /** Claude only: the answer so far, as it is written. */
   onText?: (soFar: string) => void;
 }): Promise<string> {
   const mode = textAiMode();
@@ -100,7 +90,6 @@ export async function askText(input: {
   });
 }
 
-/** The JSON object in a model answer, ignoring any text or code fence around it. */
 export function parseJsonObject<T>(text: string): T {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");

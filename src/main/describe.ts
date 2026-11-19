@@ -6,11 +6,6 @@ import { falClient, providerMode } from "./providers";
 import { readSettings } from "./settings";
 import { logUsage } from "./usage";
 
-// Describes an asset (character or product) from its reference images, in
-// Vietnamese. Routed to the text provider chosen in settings:
-//   - "claude-code": the user's own Claude Code CLI (their plan; no per-call charge to us)
-//   - "fal": a vision model hosted on fal (fixture mode returns a sample instead)
-
 const FAL_ENDPOINT = "openrouter/router/vision";
 const FAL_MODEL = "google/gemini-2.5-flash";
 const MAX_IMAGES = 4;
@@ -32,7 +27,6 @@ Viết bằng tiếng Việt tự nhiên, một đoạn duy nhất gồm 2–4 c
     fixture:
       "[Mô tả mẫu] Khi gọi AI thật, phần này sẽ mô tả độ tuổi, khuôn mặt, kiểu tóc, vóc dáng, trang phục và màu sắc chủ đạo của nhân vật trong ảnh.",
   },
-  // A place to stage scenes in. People and products are described elsewhere.
   environment: {
     system: `Bạn viết mô tả bối cảnh để dùng làm chỉ dẫn cho mô hình tạo ảnh và video.
 Chỉ mô tả không gian nhìn thấy trong ảnh: loại địa điểm, kiến trúc, đồ vật và vật liệu chính, cây cối, thời điểm trong ngày, ánh sáng, bảng màu và không khí chung.
@@ -45,8 +39,6 @@ Viết bằng tiếng Việt tự nhiên, một đoạn duy nhất gồm 2–4 c
     fixture:
       "[Mô tả mẫu] Khi gọi AI thật, phần này sẽ mô tả địa điểm, kiến trúc, đồ vật, ánh sáng, bảng màu và không khí của bối cảnh trong ảnh.",
   },
-  // Products must stay factual: brand fidelity is a firm requirement, so the
-  // description copies visible text and never invents claims.
   product: {
     system: `Bạn viết mô tả sản phẩm để dùng làm chỉ dẫn cho mô hình tạo ảnh và video. Độ chính xác về thương hiệu là bắt buộc.
 Chỉ mô tả những gì nhìn thấy trong ảnh: loại bao bì, hình dạng, chất liệu, kích thước tương đối, màu sắc, họa tiết, vị trí logo.

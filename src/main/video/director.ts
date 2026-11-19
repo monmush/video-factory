@@ -37,14 +37,6 @@ import PROMPT from "./director-prompt.md?raw";
 import { checkAnswer } from "./live-prompt";
 import { shotListPrompt } from "./shot-list-prompt";
 
-// The directing pass (docs/DIRECTING_RULES.md, layer A; docs/PLAN_PHASE_PROPOSAL.md):
-// the user's own AI turns the committed script into a shot list (shots,
-// pictures, a route per shot; no models), and code builds the requests and
-// the price from it and the recipe. The answer is checked mechanically; one
-// retry with the problems listed, then the rules-only list, so a video is
-// never blocked by the director. Free: it runs on the user's own AI. Prompt
-// and answers are saved beside the job for whoever maintains the rules.
-
 const SYSTEM =
   "You are a film director for short vertical videos. Answer with one JSON object and nothing else.";
 
@@ -72,10 +64,6 @@ async function fixtureShotList(ctx: PlanContext, caps: ShotListCaps): Promise<Sh
   }
 }
 
-/**
- * The recipe a video is built with: HYAN_RECIPE (a saved recipe or live plan,
- * JSON; a developer override) when readable, else the built-in one.
- */
 async function loadRecipe(level: MediaLevel): Promise<Recipe> {
   const file = process.env.HYAN_RECIPE;
   if (file) {
@@ -93,7 +81,6 @@ async function loadRecipe(level: MediaLevel): Promise<Recipe> {
   return builtinRecipe(level);
 }
 
-/** A job's plan; with `live` when it was built from a shot list (or a live director made it). */
 export interface Direction {
   plan: ShotPlan;
   live?: LiveDirection;
@@ -106,10 +93,6 @@ function liveRefs(place: Asset, cast: Asset[]): string[] {
   ];
 }
 
-/**
- * Fixture mode: HYAN_FIXTURE_LIVE_PLAN, a folder with a live session's
- * `answer.json` and `record.json`, put through the same checks and prices.
- */
 async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
   const folder = process.env.HYAN_FIXTURE_LIVE_PLAN;
   if (!folder) return null;
@@ -138,11 +121,9 @@ async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
   }
 }
 
-/** The plan for a job, and how it was made. */
 export async function directJob(
   job: VideoJob,
   dir: string,
-  /** What the director is doing, as it plans (src/shared/plan-progress.ts). */
   onSteps?: (steps: string[]) => void,
 ): Promise<Direction> {
   const ws = await getWorkspace();
@@ -164,7 +145,6 @@ export async function directJob(
     hasPlace: job.useEnvironment && Boolean(place),
   };
 
-  // Without a place there is nothing to stage, and without text AI nobody to ask.
   if (!ctx.hasPlace || !place) return { plan: rulesPlan(ctx) };
   const level = mediaLevel(job.level);
   const liveCtx: LiveContext = { ...ctx, refs: liveRefs(place, cast), level };
@@ -227,7 +207,6 @@ export async function directJob(
   let problems: string[] = [];
   const startedAt = Date.now();
   for (let attempt = 1; attempt <= 2; attempt++) {
-    // A second attempt says why before it rewrites the plan.
     const opening =
       attempt === 1 ? [] : [`Sửa ${problems.length} chỗ chưa đúng quy tắc, viết lại kế hoạch`];
     const report = (text: string, tail: string[] = []) =>

@@ -1,9 +1,3 @@
-/*
- * Design tokens adapted from T3 Code's default palette (snapshot c6ca6056, MIT —
- * see references/t3code/upstream/LICENSE). Values come from
- * references/t3code/default-colors.json and the accepted prototype theme.
- * Components use the semantic names below; never hard-code colours in screens.
- */
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark, .dark *));
@@ -40,7 +34,6 @@
   --warning-foreground: #bb4d00;
   --warning-surface: #fcf4e8;
 
-  /* Window chrome (rail and sidebar); a step darker than the content card. */
   --sidebar: #f4f4f5;
   --sidebar-foreground: #27272a;
   --sidebar-muted-foreground: #71717b;
@@ -98,7 +91,6 @@
 @theme inline {
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: calc(1 / 0.6875);
-  /* Chat reading size: Vietnamese stacks diacritics, so 14px reads tight. */
   --text-chat: 0.9375rem;
   --text-chat--line-height: 1.6;
   --text-chat-meta: 0.8125rem;
@@ -142,7 +134,6 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* Transparent images (product cut-outs): a quiet checkerboard in either theme. */
 @utility bg-checker {
   background-color: var(--background);
   background-image: repeating-conic-gradient(
@@ -152,7 +143,6 @@
   background-size: 16px 16px;
 }
 
-/* Window chrome: the top bar drags the window; controls inside it opt out. */
 @utility app-drag {
   -webkit-app-region: drag;
 }
@@ -160,7 +150,6 @@
   -webkit-app-region: no-drag;
 }
 
-/* Writing state: a soft sheen sweeping across placeholder bars or text. */
 @keyframes shimmer {
   from {
     background-position: 150% 0;
@@ -169,8 +158,6 @@
     background-position: -50% 0;
   }
 }
-/* Text that is still working: a narrow bright band sweeps across the words, over
-   muted text (T3 Code's live-tool-shine, references/t3code/upstream/apps/web/src/index.css). */
 @keyframes live-shine {
   from {
     background-position:
@@ -211,7 +198,6 @@
   animation: shimmer 1.6s linear infinite;
 }
 
-/* Finished text writes in line by line; set the delay per line. */
 @keyframes line-in {
   from {
     opacity: 0;
@@ -222,7 +208,6 @@
   animation: line-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-/* A still with a slow push-in, as "Nhanh" makes wide and detail scenes (quality-chip.tsx). */
 @keyframes slow-zoom {
   from {
     transform: scale(1);
@@ -237,7 +222,6 @@
   }
 }
 
-/* Hold buttons (components/ui/hold-button.tsx): a quick tap nudges as a hint. */
 @keyframes hold-nudge {
   25% {
     transform: translateX(-3px);
@@ -250,7 +234,6 @@
   animation: hold-nudge 350ms ease-in-out;
 }
 
-/* Something new to try (the dialogue play button once the voice is ready). */
 @keyframes ring-out {
   from {
     box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 45%, transparent);
@@ -263,8 +246,6 @@
   animation: ring-out 1.4s ease-out 3;
 }
 
-/* Long sidebar names (sidebar.tsx ScrollingName): fade at the right edge; on hover,
-   glide left to the end, swapping the fade to the left edge. --shift and --dur are set inline. */
 @property --fade-l {
   syntax: "<length>";
   inherits: false;
@@ -318,7 +299,6 @@
     overflow: hidden;
     overscroll-behavior: none;
   }
-  /* Desktop app, not a document: only text the user works with is selectable. */
   body {
     user-select: none;
   }
@@ -350,9 +330,6 @@
   }
 }
 
-/* Scroll areas that run up to a container edge (session chat): content fades out
-   under the top edge instead of being cut. No fade at the very top; it grows over
-   the first 32px of scrolling. */
 @property --fade-top {
   syntax: "<length>";
   inherits: false;

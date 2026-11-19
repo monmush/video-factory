@@ -17,7 +17,7 @@ import {
 const model = (id: string) => videoModel(id);
 
 describe("video model registry", () => {
-  it("has unique ids, one suggested model per level, and only 720p to 1080p", () => {
+  it("has unique ids, one suggested model per level, only 720p to 1080p, and never shows the middleman's name", () => {
     expect(new Set(VIDEO_MODELS.map((m) => m.id)).size).toBe(VIDEO_MODELS.length);
     for (const level of Object.keys(LEVEL_LABEL)) {
       expect(VIDEO_MODELS.filter((m) => m.level === level && "pick" in m && m.pick)).toHaveLength(
@@ -28,7 +28,6 @@ describe("video model registry", () => {
       for (const out of Object.values(m.outputs)) {
         expect(["720p", "768p", "1080p"]).toContain(out.resolution);
       }
-      // Never the middleman's name in what is shown.
       expect(`${m.name} ${m.maker} ${m.blurb}`).not.toMatch(/fal/i);
     }
   });
@@ -55,7 +54,6 @@ describe("video model registry", () => {
     expect(modelOutput(minimax, "720p")).toEqual({ resolution: "768p", usdPerSec: 0.08 });
     expect(modelOutput(minimax, "1080p")).toEqual({ resolution: "1080p", usdPerSec: 0.16 });
     expect(modelOutput(minimax)).toEqual(modelOutput(minimax, "720p"));
-    // Fixed models do not change.
     expect(modelOutput(model("fabric-1-720p"), "1080p").resolution).toBe("720p");
     expect(modelOutput(model("kling-avatar-v2-pro"), "720p").resolution).toBe("1080p");
   });
@@ -71,7 +69,6 @@ describe("video model registry", () => {
         videoModel: "minimax-h3-lipsync-768p",
       }).resolution,
     ).toBe("720p");
-    // A resolution set on its own wins.
     expect(
       migrateSettings({ videoModel: "minimax-h3-lipsync-1080p", resolution: "720p" }).resolution,
     ).toBe("720p");
@@ -99,7 +96,6 @@ describe("video model registry", () => {
     expect(clipUsd(minimax, 20)).toBeCloseTo(20 * 0.08 * 1.2);
     expect(clipUsd(model("omnihuman-v2"), 2.5)).toBeCloseTo(4 * 0.105);
     expect(clipUsd(videoModel(), 2.5)).toBeCloseTo(2.5 * 0.0562);
-    // Nothing made, nothing billed, even with a minimum.
     expect(clipUsd(minimax, 0)).toBe(0);
   });
 
@@ -124,7 +120,7 @@ describe("board estimates follow the batch's model", () => {
   });
 
   it("another model's rate, with short lines raised to its minimum", () => {
-    const short = 4 / 3.7 + 0.3; // "Con chào ông ạ" alone
+    const short = 4 / 3.7 + 0.3;
     expect(estimateUsd(lines, { model: "omnihuman-v2" })).toBeCloseTo(
       (estimateSeconds(lines) + (4 - short)) * 0.105 + estimateVoiceUsd(lines),
     );

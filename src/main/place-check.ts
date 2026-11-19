@@ -5,7 +5,13 @@ import { nativeImage } from "electron";
 import type { ImageRef, PlaceFinding, StagedImage } from "../shared/ipc";
 import { mediaUrl } from "../shared/ipc";
 import { cleanPrompt, cleanSize, PLACE_CHECK_QUESTION, readFinding } from "../shared/place-check";
-import { DEFAULT_IMAGE_MODEL, estimateAngles, MODELS, stageFromUrl } from "./angles";
+import {
+  DEFAULT_IMAGE_MODEL,
+  estimateAngles,
+  historicalAverageImageCost,
+  MODELS,
+  stageFromUrl,
+} from "./angles";
 import { askClaudeCode } from "./claude-code";
 import { falCall } from "./fal";
 import { uploadImages } from "./fal-upload";
@@ -16,18 +22,6 @@ import { parseJsonObject } from "./text-ai";
 import { logUsage } from "./usage";
 import { checksEnabled } from "./video/checks";
 
-// Place photos (docs/SERIES_SETUP_DECISIONS.md, "Clean place photos"). The
-// user's own AI looks at each photo of a place for people and packaging,
-// which the image model would otherwise copy into every still. Free, like
-// the still checks: only live with Claude as the text AI; a check that cannot
-// run returns null and never blocks saving. A flagged photo can be cleaned by
-// the image-edit model the stills use (paid, through falCall; fixture mode
-// copies the photo instead).
-//
-// HYAN_FIXTURE_PLACE_CHECK=1 (fixture mode only) answers every photo as
-// showing people and packaging, except photos "cleaned" in fixture mode, so
-// the whole flow can be driven without any AI.
-
 const SYSTEM = "You inspect images for a video production. Answer with one JSON object only.";
 
 const fixtureChecks = () =>
@@ -35,10 +29,8 @@ const fixtureChecks = () =>
 
 export const placeChecksEnabled = () => checksEnabled() || fixtureChecks();
 
-/** Files made by the fixture clean: the fixture check finds nothing in them. */
 const fixtureCleaned = new Set<string>();
 
-/** Findings by absolute path, and checks still running, so a photo is asked about once. */
 const results = new Map<string, PlaceFinding>();
 const running = new Map<string, Promise<PlaceFinding | null>>();
 
@@ -73,7 +65,6 @@ async function ask(path: string): Promise<PlaceFinding | null> {
   }
 }
 
-/** The finding for one image file, asking at most once per file at a time. */
 function checkFile(path: string): Promise<PlaceFinding | null> {
   const known = results.get(path);
   if (known) return Promise.resolve(known);
@@ -89,10 +80,6 @@ function checkFile(path: string): Promise<PlaceFinding | null> {
   return task;
 }
 
-/**
- * A staged photo being saved into an asset folder keeps its finding, or its
- * check still running. Returns the finding when it is already known.
- */
 export function carryOverCheck(from: string, to: string): PlaceFinding | undefined {
   const known = results.get(from);
   if (known) {
@@ -114,7 +101,6 @@ export function carryOverCheck(from: string, to: string): PlaceFinding | undefin
   return undefined;
 }
 
-/** Saves a finding on the asset's photo without touching the asset's updatedAt. */
 async function record(assetId: string, file: string, finding: PlaceFinding) {
   await mutate((ws) => {
     const image = ws.assets.find((a) => a.id === assetId)?.images.find((i) => i.file === file);
@@ -122,7 +108,6 @@ async function record(assetId: string, file: string, finding: PlaceFinding) {
   });
 }
 
-/** Checks place photos (staged or saved). Saved photos keep their finding and are not asked again. */
 export async function checkPlaceImages(refs: ImageRef[]): Promise<(PlaceFinding | null)[]> {
   if (!placeChecksEnabled()) return refs.map(() => null);
   const ws = await getWorkspace();
@@ -149,7 +134,6 @@ export async function checkPlaceImages(refs: ImageRef[]): Promise<(PlaceFinding 
   );
 }
 
-/** After a place is saved: checks its photos that have no finding yet (in the background). */
 export async function checkPlace(assetId: string): Promise<void> {
   if (!placeChecksEnabled()) return;
   const ws = await getWorkspace();
@@ -162,7 +146,6 @@ export async function checkPlace(assetId: string): Promise<void> {
   );
 }
 
-/** The file a place photo ref shows: a restored photo is its original. */
 export async function placePhotoPath(ref: ImageRef): Promise<string> {
   if (ref.source === "staged") return imageRefPath(ref);
   const image = (await getWorkspace()).assets
@@ -175,13 +158,8 @@ export async function placePhotoPath(ref: ImageRef): Promise<string> {
   );
 }
 
-/** Price of one cleaned photo: the image model's per-image estimate. */
 export const estimateClean = () => estimateAngles(DEFAULT_IMAGE_MODEL, 1);
 
-/**
- * Asks the image-edit model to remove what the check found, keeping
- * everything else. The result is staged and checked again.
- */
 export async function cleanPlacePhoto(
   path: string,
   finding: PlaceFinding,
@@ -213,10 +191,9 @@ export async function cleanPlacePhoto(
   const config = MODELS[model];
   const fal = await falClient();
   const [url] = await uploadImages(fal, [path]);
-  const { cost: unitCost } = await estimateAngles(model, 1);
+  const unitCost = await historicalAverageImageCost(model);
   const size = nativeImage.createFromPath(path).getSize();
   const base = config.input(cleanPrompt(finding), [url as string]);
-  // The original's aspect ratio: an exact size where the model takes one.
   const input =
     model === "gpt-image"
       ? { ...base, image_size: cleanSize(size.width, size.height) }

@@ -22,36 +22,24 @@ import { currentChoice } from "./models";
 import type { Runner, TurnEvents } from "./runner";
 import { pendingLabel, recentFeedback, SILENT_TOOLS, type ToolHost } from "./tools";
 
-// The session chat as an agent conversation. One turn runs at a time per
-// session; messages sent meanwhile wait in order. Streamed text and "being
-// written" hints travel as unsaved "chat:live" updates (coalesced to 50 ms,
-// like T3 Code); finished text blocks, tool rows, choices and undo are saved
-// on the board as they happen, so a stop or crash keeps everything done so far.
-// With fal as the text AI, chat requests use the one-shot pipeline in board.ts.
-
-/** Close an idle Claude process after this long; the next message resumes it. */
-const IDLE_MS = 10 * 60 * 1000;
-const LIVE_MS = 50;
+const CLOSE_IDLE_CLAUDE_AFTER_MS = 10 * 60 * 1000;
+const COALESCE_LIVE_UPDATES_MS = 50;
 
 interface ActiveTurn {
   messageId: string;
   text: string;
   writing: Set<string>;
-  /** Tool call id → name and input streamed so far. */
   tools: Map<string, { name: string; json: string }>;
   stop: () => Promise<void>;
 }
 
 interface ChatState {
   runner: Runner | null;
-  /** Which mode the runner was made for; switching the text AI replaces it. */
   runnerMode: ChatMode | null;
-  /** Set synchronously while queued messages are being worked through. */
   draining: boolean;
   turn: ActiveTurn | null;
   idle: ReturnType<typeof setTimeout> | null;
   liveTimer: ReturnType<typeof setTimeout> | null;
-  /** The session is being deleted: run nothing more for it. */
   closed: boolean;
 }
 
@@ -80,8 +68,6 @@ export function chatMode(): ChatMode {
   return mode === "claude-code" ? "agent" : mode === "fixture" ? "fixture" : "pipeline";
 }
 
-// ---------------------------------------------------------------- live updates
-
 function sendLive(sessionId: string, live: ChatLive | null) {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("chat:live", { sessionId, live });
@@ -98,10 +84,8 @@ function scheduleLive(sessionId: string) {
       sessionId,
       t ? { messageId: t.messageId, text: t.text, writingIds: [...t.writing] } : null,
     );
-  }, LIVE_MS);
+  }, COALESCE_LIVE_UPDATES_MS);
 }
-
-// ---------------------------------------------------------------- saving parts
 
 const changeMessage = (sessionId: string, messageId: string, change: (m: ChatMessage) => void) =>
   board
@@ -118,8 +102,6 @@ function addPart(m: ChatMessage, part: ChatPart) {
 function partOf(m: ChatMessage, id: string) {
   return m.parts?.find((p) => "id" in p && p.id === id);
 }
-
-// ---------------------------------------------------------------- system prompt
 
 async function systemPrompt(sessionId: string) {
   const ctx = await board.writerContext(sessionId);
@@ -177,8 +159,6 @@ ${writer.writingRules(45)}
 (Độ dài mặc định 45 giây; theo độ dài người dùng yêu cầu nếu có.)${avoid}${earlier}`;
 }
 
-// ---------------------------------------------------------------- runners
-
 async function runnerFor(sessionId: string, choice: ChatModelChoice, mode: ChatMode) {
   const s = state(sessionId);
   if (
@@ -187,7 +167,6 @@ async function runnerFor(sessionId: string, choice: ChatModelChoice, mode: ChatM
       s.runner.choice.model !== choice.model ||
       s.runner.choice.effort !== choice.effort)
   ) {
-    // A different model or effort: reopen the same conversation with it.
     s.runner.close();
     s.runner = null;
   }
@@ -237,10 +216,8 @@ function armIdle(sessionId: string) {
   if (s.idle) clearTimeout(s.idle);
   s.idle = setTimeout(() => {
     if (!s.turn) closeRunner(sessionId);
-  }, IDLE_MS);
+  }, CLOSE_IDLE_CLAUDE_AFTER_MS);
 }
-
-// ---------------------------------------------------------------- turns
 
 async function messageContent(sessionId: string, user: ChatMessage) {
   const ordered = await board.orderedScripts(sessionId);
@@ -253,7 +230,6 @@ async function messageContent(sessionId: string, user: ChatMessage) {
   return [...(await attachmentBlocks(sessionId, user.attachments)), { type: "text", text }];
 }
 
-/** Runs queued messages one after another until none are left. */
 async function drain(sessionId: string) {
   const s = state(sessionId);
   if (s.draining) return;
@@ -267,7 +243,6 @@ async function drain(sessionId: string) {
       try {
         await runTurn(sessionId, next);
       } catch (error) {
-        // The session was deleted or its folder became unwritable: stop here.
         console.error("[chat] turn could not run", error);
         break;
       }
@@ -315,7 +290,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
     const m = b.messages.find((x) => x.id === user.id);
     if (m) m.queued = false;
     board.clearMarks(b);
-    // The reply goes right after its message, before anything still queued.
     const index = b.messages.findIndex((x) => x.id === user.id);
     b.messages.splice(index + 1, 0, reply);
   });
@@ -327,7 +301,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
     if (!text.trim()) return;
     void changeMessage(sessionId, reply.id, (m) => {
       const last = m.parts?.at(-1);
-      // Text split around nothing else joins into one part.
       if (last?.type === "text") last.text += text;
       else addPart(m, { type: "text", text });
     });
@@ -360,7 +333,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
       const call = turn.tools.get(id);
       if (!call) return;
       call.json += partial;
-      // Show the card being written as soon as its number is known.
       if (call.name === "update_script" && !turn.writing.size) {
         const n = Number(call.json.match(/"number"\s*:\s*(\d+)/)?.[1]);
         if (n) {
@@ -399,8 +371,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
     },
   };
 
-  // Tools run in the order the model calls them, so the newest running row
-  // without a specific label is the one being run.
   const host: ToolHost = {
     sessionId,
     log: { messageId: reply.id, touched: new Set() },
@@ -437,7 +407,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
       host,
       events,
     });
-    // A resumed conversation Claude Code no longer has: start a new one once.
     if (
       result.outcome === "failed" &&
       /no conversation found|session.*not found/i.test(result.error.message) &&
@@ -469,7 +438,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
   }
   if (result.outcome === "failed") {
     console.error("[chat] turn failed", result.error);
-    // A failed process cannot be trusted with the next turn.
     closeRunner(sessionId);
   }
 
@@ -482,10 +450,8 @@ async function runTurn(sessionId: string, user: ChatMessage) {
       m.pending = false;
       m.outcome = result.outcome;
       if (error) m.error = error;
-      // A limit that was waited out (or stopped) is no longer the turn's story.
       else if (m.error?.kind === "usage-limit") delete m.error;
       for (const part of m.parts ?? []) {
-        // A stopped turn's last tool was cut short, not broken; "Đã dừng." says so.
         if (part.type === "tool" && part.status === "running") {
           part.status = result.outcome === "failed" ? "error" : "done";
         }
@@ -497,8 +463,6 @@ async function runTurn(sessionId: string, user: ChatMessage) {
   s.turn = null;
   sendLive(sessionId, null);
 }
-
-// ---------------------------------------------------------------- public API
 
 export async function send(input: {
   sessionId: string;
@@ -533,7 +497,6 @@ export async function send(input: {
   return null;
 }
 
-/** The request typed on the series page is the board's first message. */
 export async function startFromRequest(sessionId: string): Promise<void> {
   if (chatMode() === "pipeline") return board.startFromRequest(sessionId);
   const current = await board.getBoard(sessionId);
@@ -596,7 +559,6 @@ export async function choose(
   return send({ sessionId, text: option, refs: [], attachments: [] });
 }
 
-/** The operator accepts a proposed video fix: it starts, and the proposal is spent. */
 export async function applyFix(
   sessionId: string,
   messageId: string,
@@ -619,21 +581,16 @@ export async function applyFix(
   return null;
 }
 
-/** Model for this session's next turns (the conversation itself continues). */
 export async function setSessionModel(sessionId: string, choice: ChatModelChoice) {
   await board.mutateBoard(sessionId, (b) => {
-    // Before the first turn there is no conversation yet: record the choice on
-    // a not-yet-started one, which the first turn then opens with this model.
     if (b.agent) Object.assign(b.agent, choice);
     else b.agent = { sessionId: randomUUID(), started: false, ...choice };
   });
 }
 
-/** Stops processes and deletes Claude transcripts of deleted sessions. */
 export async function forget(agentSessionIds: { sessionId: string; agentId?: string }[]) {
   for (const { sessionId, agentId } of agentSessionIds) {
     const s = states.get(sessionId);
-    // Set before stopping, so the queue does not start the next message.
     if (s) s.closed = true;
     await s?.turn?.stop();
     closeRunner(sessionId);

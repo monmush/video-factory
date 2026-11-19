@@ -1,5 +1,3 @@
-// Adapted from T3 Code apps/web/src/components/ui/badge.tsx (snapshot c6ca6056, MIT).
-// Trimmed to the quiet variants this app uses: a label, never an action or the primary colour.
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -14,9 +12,7 @@ const badgeVariants = cva(
         default: "h-4.5 min-w-4.5 px-[calc(--spacing(1.5)-1px)] text-[.6875rem] leading-none",
       },
       variant: {
-        /** A plain label: hairline border, muted text. */
         outline: "border-border text-muted-foreground",
-        /** Set apart from plain labels: a soft fill, foreground text. */
         secondary: "bg-accent text-foreground",
       },
     },

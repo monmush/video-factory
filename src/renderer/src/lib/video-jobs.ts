@@ -3,15 +3,11 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
 import { errorMessage } from "./errors";
 
-// Video jobs as last pushed by the main process ("video:job"). Jobs run in
-// the main process; this is only a view of them, so leaving the screen
-// changes nothing.
-
 type SessionJobs = { jobs: Map<string, VideoJob>; averages: StepAverages };
 const sessions = new Map<string, SessionJobs>();
 const loading = new Set<string>();
 const failures = new Map<string, string>();
-const pending = new Map<string, Map<string, VideoJob>>();
+const pushedWhileLoading = new Map<string, Map<string, VideoJob>>();
 const listeners = new Set<() => void>();
 const emit = () => {
   for (const listener of listeners) listener();
@@ -25,14 +21,11 @@ const subscribe = (listener: () => void) => {
 
 api.on("video:job", ({ job, averages }) => {
   const current = sessions.get(job.sessionId);
-  // Not loaded yet: the first load fetches every job. Keeping only this push
-  // would make the session look loaded with one job; while loading, it is
-  // kept aside and wins over the fetched copy (it is newer).
   if (!current) {
     if (loading.has(job.sessionId)) {
-      const aside = pending.get(job.sessionId) ?? new Map<string, VideoJob>();
-      aside.set(job.scriptId, job);
-      pending.set(job.sessionId, aside);
+      const newerThanLoad = pushedWhileLoading.get(job.sessionId) ?? new Map<string, VideoJob>();
+      newerThanLoad.set(job.scriptId, job);
+      pushedWhileLoading.set(job.sessionId, newerThanLoad);
     }
     return;
   }
@@ -43,7 +36,7 @@ api.on("video:job", ({ job, averages }) => {
 });
 
 api.on("video:job-removed", ({ sessionId, scriptId }) => {
-  pending.get(sessionId)?.delete(scriptId);
+  pushedWhileLoading.get(sessionId)?.delete(scriptId);
   const current = sessions.get(sessionId);
   if (!current?.jobs.has(scriptId)) return;
   const jobs = new Map(current.jobs);
@@ -60,8 +53,8 @@ function load(sessionId: string) {
     .invoke("video:jobs", sessionId)
     .then(({ jobs, averages }) => {
       const map = new Map(jobs.map((j) => [j.scriptId, j]));
-      for (const [id, job] of pending.get(sessionId) ?? []) map.set(id, job);
-      pending.delete(sessionId);
+      for (const [id, job] of pushedWhileLoading.get(sessionId) ?? []) map.set(id, job);
+      pushedWhileLoading.delete(sessionId);
       sessions.set(sessionId, { jobs: map, averages });
       emit();
     })
@@ -77,14 +70,12 @@ export const reloadVideoJobs = (sessionId: string) => load(sessionId);
 export const useVideoJobsError = (sessionId: string) =>
   useSyncExternalStore(subscribe, () => failures.get(sessionId) ?? null);
 
-/** The session's video jobs by script id; null until loaded. */
 export function useVideoJobs(sessionId: string): SessionJobs | null {
   const value = useSyncExternalStore(subscribe, () => sessions.get(sessionId) ?? null);
   useEffect(() => load(sessionId), [sessionId]);
   return value;
 }
 
-/** Current time, ticking while `active`, for "còn ~N phút". */
 export function useNow(active: boolean, everyMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -95,10 +86,10 @@ export function useNow(active: boolean, everyMs = 1000): number {
   return now;
 }
 
-// Dialogues the operator has played, so the play button stops pulsing.
-const heard = new Set<string>();
+const dialoguesPlayedOnce = new Set<string>();
 export const markHeard = (key: string) => {
-  heard.add(key);
+  dialoguesPlayedOnce.add(key);
   emit();
 };
-export const useHeard = (key: string) => useSyncExternalStore(subscribe, () => heard.has(key));
+export const useHeard = (key: string) =>
+  useSyncExternalStore(subscribe, () => dialoguesPlayedOnce.has(key));

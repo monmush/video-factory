@@ -11,23 +11,9 @@ import {
 import { levelRates, type MediaLevel, type MediaLevelId, mediaLevel } from "./media-level";
 import { DEFAULT_VIDEO_MODEL, videoModel } from "./video-models";
 
-// The recipe (docs/PLAN_PHASE_PROPOSAL.md, part 1): which model plays each
-// role of a video and how it is asked, as data. The director's shot list
-// never names a model; code combines the two (src/shared/build-direction.ts).
-//
-// Templates are request bodies with slots written as whole string values,
-// like the plan's own placeholders:
-// - stills: "{{prompt}}" (the assembled text) and "{{references}}" as the
-//   single element of the reference array, replaced by the file placeholders;
-// - speak: "{{keyframe}}" and "{{audio}}" (resolved when sent), optional "{{prompt}}";
-// - motion: "{{keyframe}}", optional "{{prompt}}"; the length field is fitted
-//   to the planned seconds (`fitDuration`).
-
 export interface RoleModel {
   endpoint: string;
-  /** Display name, never the middleman's. */
   name: string;
-  /** Request template with slots. */
   input: Record<string, unknown>;
   rate: Rate;
   schema: ModelSchema;
@@ -38,18 +24,15 @@ export type RecipeSource = "builtin" | "plan" | "session";
 
 export interface Recipe {
   version: 1;
-  /** "builtin", or any id. */
   id: string;
   source: RecipeSource;
   level: MediaLevelId;
   madeAt: string | null;
   stills: RoleModel & { maxReferences?: number };
   speak: RoleModel;
-  /** No motion route: every shot that does not speak is a still-move. */
   motion: RoleModel | null;
 }
 
-/** Most reference images a still is sent with, unless the recipe says otherwise. */
 export const DEFAULT_MAX_REFERENCES = 8;
 
 export const PROMPT_SLOT = "{{prompt}}";
@@ -67,7 +50,6 @@ const param = (
   ...(values ? { enum: values } : {}),
 });
 
-/** The default image model as a role: the same request the fixed pipeline sends for a 9:16 still. */
 function builtinStills(rate: Rate): Recipe["stills"] {
   const model = MODELS[DEFAULT_IMAGE_MODEL];
   return {
@@ -96,7 +78,6 @@ function builtinStills(rate: Rate): Recipe["stills"] {
   };
 }
 
-/** The default speaking-shot model as a role (request as in src/main/video/shot-models.ts). */
 function builtinSpeak(rate: Rate): RoleModel {
   const model = videoModel(DEFAULT_VIDEO_MODEL);
   return {
@@ -126,14 +107,6 @@ function builtinSpeak(rate: Rate): RoleModel {
   };
 }
 
-/**
- * An image-to-video model for shots that do not speak (wide, detail): the
- * people breathe and shift, leaves move, the camera drifts, instead of a still
- * with a zoom. Wan 3.0 Prime: the live director's own pick for motion (13 Nov);
- * schema and price read from the provider on 16 Nov (MOTION_RATE in
- * media-level.ts, 2 to 30 seconds), about $0.3–0.5 for a video's two or three
- * wide shots.
- */
 const MOTION_ENDPOINT = "alibaba/wan-3.0-prime/image-to-video";
 
 function builtinMotion(rate: Rate): RoleModel {
@@ -146,7 +119,6 @@ function builtinMotion(rate: Rate): RoleModel {
       resolution: "1080p",
       aspect_ratio: "9:16",
       duration: 3,
-      // Our own voice runs under the whole video; the clip's sound is never used.
       audio: false,
     },
     rate,
@@ -168,12 +140,6 @@ function builtinMotion(rate: Rate): RoleModel {
   };
 }
 
-/**
- * The app's own recipe: the default image and speaking models, and on a level
- * with motion ("Cân bằng") a motion model for wide and detail shots; "Nhanh"
- * keeps the free still with a slow push-in. Rates: levelRates (media-level.ts),
- * which also price the level in the "Chất lượng" menu.
- */
 export function builtinRecipe(level: MediaLevel): Recipe {
   const rates = levelRates(level);
   return {
@@ -188,13 +154,8 @@ export function builtinRecipe(level: MediaLevel): Recipe {
   };
 }
 
-// ---------------------------------------------------------------------------
-// A recipe from an existing live plan: the models it chose, as templates.
-// ---------------------------------------------------------------------------
-
 type Input = Record<string, unknown>;
 
-/** The text field a template's prompt slot replaces: `prompt`, else a field named like one. */
 function promptField(input: Input): string | null {
   const text = (k: string) => typeof input[k] === "string" && !placeholderOf(input[k]);
   if (text("prompt")) return "prompt";
@@ -222,12 +183,6 @@ function role(live: LiveDirection, endpoint: string, input: Input, why?: string)
 const whyOf = (live: LiveDirection, endpoint: string) =>
   live.plan.models.find((m) => m.endpoint === endpoint)?.why || undefined;
 
-/**
- * A recipe from a live plan (source "plan"): the master keyframe's model and
- * input for stills (its prompt → the prompt slot, the array of file
- * placeholders → the references slot), the first lip-sync route for speak,
- * the first motion route for motion (or none).
- */
 export function recipeFromDirection(live: LiveDirection): Recipe {
   const plan = live.plan;
   const master = plan.keyframes.find((k) => k.kind === "master") ?? plan.keyframes[0];
@@ -246,7 +201,6 @@ export function recipeFromDirection(live: LiveDirection): Recipe {
   const motion = plan.routes.find((r) => r.route === "motion" && r.endpoint && r.input);
   const slotted = (input: Input) => {
     const field = promptField(input);
-    // The length is fitted to each shot when built, never kept from one shot.
     const rest = Object.fromEntries(
       Object.entries(input).filter(([k]) => !DURATION_FIELDS.includes(k)),
     );
@@ -256,7 +210,6 @@ export function recipeFromDirection(live: LiveDirection): Recipe {
     version: 1,
     id: `plan-${plan.level}`,
     source: "plan",
-    // A level no longer offered reads as the one that makes the same video.
     level: mediaLevel(plan.level).id,
     madeAt: null,
     stills: {
@@ -271,10 +224,6 @@ export function recipeFromDirection(live: LiveDirection): Recipe {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Reading a saved recipe.
-// ---------------------------------------------------------------------------
-
 const isObj = (v: unknown): v is Record<string, unknown> =>
   Boolean(v) && typeof v === "object" && !Array.isArray(v);
 
@@ -288,10 +237,6 @@ const isRole = (v: unknown): v is RoleModel =>
   isObj(v.schema) &&
   Array.isArray(v.schema.params);
 
-/**
- * A saved recipe, or a saved live plan (`live-plan.json`, with `plan` and
- * `rates`) turned into one. Null when it is neither.
- */
 export function readRecipe(json: unknown): Recipe | null {
   if (!isObj(json)) return null;
   if (isObj(json.plan) && isObj(json.rates)) {

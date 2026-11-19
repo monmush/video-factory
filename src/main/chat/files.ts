@@ -8,10 +8,6 @@ import { imageBlock } from "../claude-code";
 import { mediaDir } from "../paths";
 import { childPath } from "../safe-path";
 
-// Files attached to chat messages: images, PDFs and plain text, copied into
-// the session folder (media/<series>/<session>/chat-files/) when they are
-// added, so a sent message keeps its files even if the originals move.
-
 const KINDS: Record<string, { kind: ChatAttachment["kind"]; maxBytes: number }> = {
   png: { kind: "image", maxBytes: 10 * 1024 * 1024 },
   jpg: { kind: "image", maxBytes: 10 * 1024 * 1024 },
@@ -27,7 +23,6 @@ const KINDS: Record<string, { kind: ChatAttachment["kind"]; maxBytes: number }> 
 
 export const CHAT_FILE_EXTENSIONS = Object.keys(KINDS);
 
-/** Text sent to the model per text file; longer files are cut. */
 const MAX_TEXT_CHARS = 100_000;
 
 export async function chatFilesDir(sessionId: string) {
@@ -74,7 +69,6 @@ export async function stageChatFiles(
   return staged;
 }
 
-/** Content blocks for the model, in the order the files were attached. */
 export async function attachmentBlocks(sessionId: string, attachments: ChatAttachment[]) {
   const blocks: unknown[] = [];
   for (const a of attachments) {

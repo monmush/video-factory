@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 
-/** A boolean UI preference that survives restarts (panel open/closed and similar). */
 export function usePersistentToggle(key: string, initial: boolean) {
   const storageKey = `hyan:${key}`;
   const [value, setValue] = useState(() => {
@@ -31,7 +30,6 @@ export function usePersistentToggle(key: string, initial: boolean) {
   return [value, toggle, set] as const;
 }
 
-/** A numeric UI preference that survives restarts (sidebar width and similar). */
 export function usePersistentNumber(key: string, initial: number) {
   const storageKey = `hyan:${key}`;
   const [value, setValue] = useState(() => {

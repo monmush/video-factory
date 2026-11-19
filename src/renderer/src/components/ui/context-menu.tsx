@@ -1,8 +1,6 @@
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { cn } from "@/lib/utils";
 
-// Right-click menus. Items and separators come from ./menu (same Base UI parts).
-
 const ContextMenu = ContextMenuPrimitive.Root;
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
 

@@ -20,12 +20,6 @@ import { HoldButton } from "./ui/hold-button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 
-// Batch product import. Photos are dropped in bulk, grouped into products by
-// AI (or by hand), reviewed on a drag-and-drop board, then created together.
-//   - drag a photo between products, into "Chưa xếp nhóm", "Bỏ qua" or "Sản phẩm mới"
-//   - drag a product (by its handle) onto another to put it in that set; drag it
-//     to "Tách khỏi bộ" to take it out again. Sets are one level deep.
-
 const PHOTO = "x-hyan/photo";
 const GROUP = "x-hyan/group";
 
@@ -42,7 +36,6 @@ interface Group {
   description: string;
   photos: string[];
   include: boolean;
-  /** Key of the set this product belongs to. */
   parent: string | null;
   note?: string;
 }
@@ -68,22 +61,22 @@ export function ProductImportDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called with the new products after they are created. */
   onCreated?: (assets: Asset[]) => void;
 }) {
-  // "busy": work in flight, closing waits. "dirty": photos added, closing asks first.
-  const [guard, setGuard] = useState<"busy" | "dirty" | null>(null);
+  const [guard, setGuard] = useState<"work-in-flight" | "photos-added" | null>(null);
   const [closeRequests, setCloseRequests] = useState(0);
   const requestClose = (next: boolean) => {
     if (next) return onOpenChange(true);
-    if (guard === "busy") return;
-    if (guard === "dirty") return setCloseRequests((n) => n + 1);
+    if (guard === "work-in-flight") return;
+    if (guard === "photos-added") return setCloseRequests((n) => n + 1);
     onOpenChange(false);
   };
   return (
-    // Clicking outside never closes it: a stray click must not lose an import.
     <Dialog open={open} onOpenChange={requestClose} disablePointerDismissal>
-      <DialogPopup className="h-[calc(100vh-3rem)] max-w-6xl" showCloseButton={guard !== "busy"}>
+      <DialogPopup
+        className="h-[calc(100vh-3rem)] max-w-6xl"
+        showCloseButton={guard !== "work-in-flight"}
+      >
         {open && (
           <ImportBoard
             closeRequests={closeRequests}
@@ -107,7 +100,7 @@ function ImportBoard({
   onDone,
 }: {
   closeRequests: number;
-  onGuardChange: (guard: "busy" | "dirty" | null) => void;
+  onGuardChange: (guard: "work-in-flight" | "photos-added" | null) => void;
   onCreated?: (assets: Asset[]) => void;
   onDone: () => void;
 }) {
@@ -129,15 +122,13 @@ function ImportBoard({
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const dirty = photos.size > 0;
   useEffect(
-    () => onGuardChange(busy || adding ? "busy" : dirty ? "dirty" : null),
+    () => onGuardChange(busy || adding ? "work-in-flight" : dirty ? "photos-added" : null),
     [busy, adding, dirty, onGuardChange],
   );
   useEffect(() => {
     if (closeRequests > 0) setConfirmDiscard(true);
   }, [closeRequests]);
   const cancel = () => (dirty ? setConfirmDiscard(true) : onDone());
-
-  // ---- adding photos -------------------------------------------------------
 
   const room = MAX_IMPORT_PHOTOS - photos.size;
 
@@ -188,8 +179,6 @@ function ImportBoard({
     return true;
   };
 
-  // ---- AI grouping ---------------------------------------------------------
-
   const autoGroup = async () => {
     const keys = [...photos.keys()];
     setGrouping(true);
@@ -231,12 +220,9 @@ function ImportBoard({
     );
   };
 
-  // ---- editing groups ------------------------------------------------------
-
   const updateGroup = (key: string, patch: Partial<Group>) =>
     setGroups((current) => current.map((g) => (g.key === key ? { ...g, ...patch } : g)));
 
-  /** Removes a photo from wherever it is now. */
   const detachPhoto = (photo: string) => {
     setGroups((current) =>
       current.map((g) => ({ ...g, photos: g.photos.filter((p) => p !== photo) })),
@@ -245,7 +231,6 @@ function ImportBoard({
     setSkipped((current) => current.filter((s) => s.key !== photo));
   };
 
-  /** Takes a photo out of this import entirely. */
   const removePhoto = (photo: string) => {
     detachPhoto(photo);
     setPhotos((current) => {
@@ -256,7 +241,6 @@ function ImportBoard({
   };
 
   const removeButton = (key: string, label: string, onClick: () => void) => (
-    // key keeps React happy when several buttons render in one list
     <span key={`remove-${key}`} className="contents">
       <button
         type="button"
@@ -309,7 +293,6 @@ function ImportBoard({
     setUnassigned((current) => [...current, ...group.photos]);
   };
 
-  /** Puts `child` into the set `parentKey` (one level deep). */
   const nestGroup = (child: string, onto: string) => {
     if (child === onto) return;
     const target = groups.find((g) => g.key === onto);
@@ -323,8 +306,6 @@ function ImportBoard({
     }
     updateGroup(child, { parent: parentKey });
   };
-
-  // ---- drag and drop -------------------------------------------------------
 
   const startDrag = (event: DragEvent, kind: "photo" | "group", key: string) => {
     event.dataTransfer.setData(kind === "photo" ? PHOTO : GROUP, key);
@@ -359,8 +340,6 @@ function ImportBoard({
       else if (handlers.files) dropFiles(event);
     },
   });
-
-  // ---- validation and create -----------------------------------------------
 
   const included = groups.filter((g) => g.include);
   const takenHandles = new Set(workspace.assets.map((a) => a.handle));
@@ -407,14 +386,11 @@ function ImportBoard({
     }
   };
 
-  // ---- render --------------------------------------------------------------
-
   const thumb = (key: string, extra?: ReactNode) => {
     const photo = photos.get(key);
     if (!photo) return null;
     return (
-      // biome-ignore lint/a11y/noStaticElementInteractions: pointer drag-and-drop on the review board; every item also has buttons
-      <div
+      <figure
         key={key}
         draggable={!busy}
         onDragStart={(e) => startDrag(e, "photo", key)}
@@ -423,7 +399,7 @@ function ImportBoard({
       >
         <img src={photo.url} alt="" className="size-full object-contain" draggable={false} />
         {extra}
-      </div>
+      </figure>
     );
   };
 
@@ -449,7 +425,6 @@ function ImportBoard({
               <p className="text-xs text-muted-foreground">Tối đa {MAX_IMPORT_PHOTOS} ảnh</p>
             </div>
           ) : (
-            // Large previews so photos can be checked before grouping.
             <div className="grid max-h-full w-full grid-cols-[repeat(auto-fill,minmax(168px,1fr))] content-start gap-3 overflow-y-auto">
               {[...photos.values()].map((photo) => (
                 <div
@@ -476,7 +451,6 @@ function ImportBoard({
         </div>
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_260px] overflow-hidden">
-          {/* Products, with set members nested under their set. */}
           <div className="flex min-h-0 flex-col gap-3 overflow-y-auto p-4">
             {dragKind === "group" && (
               <DropZone
@@ -536,7 +510,6 @@ function ImportBoard({
             </button>
           </div>
 
-          {/* Trays: photos not in any product yet, and photos set aside. */}
           <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto border-l p-4">
             <Tray title="Chưa xếp nhóm" {...dropTarget({ photo: unassignPhoto, files: true })}>
               {unassigned.map((key) =>
@@ -677,8 +650,7 @@ function GroupRow({
 }) {
   const [over, setOver] = useState(false);
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: pointer drag-and-drop on the review board; every item also has buttons
-    <div
+    <article
       className={cn(
         "flex gap-3 rounded-xl border bg-card p-3 transition-colors",
         over && "border-foreground/40 bg-accent",
@@ -773,7 +745,6 @@ function GroupRow({
           value={group.description}
           placeholder="Mô tả"
           onChange={(e) => onChange({ description: e.target.value })}
-          // Grows with its text so the whole description is readable without scrolling.
           className="min-h-20 [field-sizing:content]"
         />
 
@@ -788,7 +759,7 @@ function GroupRow({
           </p>
         )}
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -805,8 +776,8 @@ function Tray({
 }) {
   const [over, setOver] = useState(false);
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: pointer drag-and-drop on the review board; every item also has buttons
     <section
+      aria-label={title}
       className={cn("flex flex-col gap-2 rounded-xl border border-dashed p-3", over && "bg-accent")}
       onDragOver={(e) => {
         onDragOver(e);

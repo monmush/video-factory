@@ -2,10 +2,6 @@ import type { Board } from "@shared/ipc";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { api } from "./api";
 
-// Session boards as last pushed by the main process ("board:changed"), plus
-// view state the board and the chat panel share (chat references, layout). The
-// view state lives for as long as the app runs, like drafts.
-
 const boards = new Map<string, Board>();
 const loading = new Set<string>();
 const listeners = new Set<() => void>();
@@ -24,41 +20,44 @@ api.on("board:changed", ({ sessionId, board }) => {
   emit();
 });
 
-// Sessions some mounted component is showing, so a failed read can be retried.
-const wanted = new Map<string, number>();
+const sessionsOnScreen = new Map<string, number>();
+const RETRY_AFTER_FAILED_READ_MS = 2000;
 
-function load(sessionId: string, retry: boolean) {
+function load(sessionId: string, retryOnceOnFailure: boolean) {
   if (boards.has(sessionId) || loading.has(sessionId)) return;
   loading.add(sessionId);
   api
     .invoke("board:get", sessionId)
     .then((fresh) => {
-      // A pushed change that arrived meanwhile is newer; keep it.
-      if (!boards.has(sessionId)) boards.set(sessionId, fresh);
+      const pushedMeanwhile = boards.has(sessionId);
+      if (!pushedMeanwhile) boards.set(sessionId, fresh);
       emit();
     })
     .catch((error) => {
       console.error(error);
-      // One automatic retry; after that, the next mount or window focus tries again.
-      if (retry) setTimeout(() => wanted.has(sessionId) && load(sessionId, false), 2000);
+      if (retryOnceOnFailure) {
+        setTimeout(
+          () => sessionsOnScreen.has(sessionId) && load(sessionId, false),
+          RETRY_AFTER_FAILED_READ_MS,
+        );
+      }
     })
     .finally(() => loading.delete(sessionId));
 }
 
 window.addEventListener("focus", () => {
-  for (const sessionId of wanted.keys()) load(sessionId, false);
+  for (const sessionId of sessionsOnScreen.keys()) load(sessionId, false);
 });
 
-/** The session's board; null until the first read arrives. */
 export function useBoard(sessionId: string): Board | null {
   const board = useSyncExternalStore(subscribe, () => boards.get(sessionId) ?? null);
   useEffect(() => {
-    wanted.set(sessionId, (wanted.get(sessionId) ?? 0) + 1);
+    sessionsOnScreen.set(sessionId, (sessionsOnScreen.get(sessionId) ?? 0) + 1);
     load(sessionId, true);
     return () => {
-      const count = (wanted.get(sessionId) ?? 1) - 1;
-      if (count > 0) wanted.set(sessionId, count);
-      else wanted.delete(sessionId);
+      const count = (sessionsOnScreen.get(sessionId) ?? 1) - 1;
+      if (count > 0) sessionsOnScreen.set(sessionId, count);
+      else sessionsOnScreen.delete(sessionId);
     };
   }, [sessionId]);
   return board;
@@ -67,22 +66,13 @@ export function useBoard(sessionId: string): Board | null {
 export type BoardLayout = "gallery" | "list";
 
 export interface BoardView {
-  /** Scripts referenced in the chat composer; sent with the next message. */
   refs: string[];
-  /** Chosen with the view toggle; null follows the number of scripts. */
   layout: BoardLayout | null;
-  /** The script open in the list view. */
   activeId: string | null;
-  /**
-   * "One video first": the card chosen as the test; null means the first
-   * finished card. Board-local until approval commits it.
-   */
   testId: string | null;
-  /** Pointer or focus on "Tạo cả N video": every card shows undimmed. */
   previewAll: boolean;
 }
 
-/** Up to this many scripts open as full cards side by side; more open as a list. */
 export const FULL_CARDS_MAX = 6;
 
 export const boardLayout = (view: BoardView, count: number): BoardLayout =>
@@ -96,7 +86,6 @@ const DEFAULT_VIEW: BoardView = {
   previewAll: false,
 };
 
-/** The test card: the chosen one while it is still finished, else the first finished. */
 export const testCardId = (view: BoardView, finishedIds: string[]): string | null =>
   view.testId && finishedIds.includes(view.testId) ? view.testId : (finishedIds[0] ?? null);
 const views = new Map<string, BoardView>();
@@ -117,7 +106,6 @@ export function useBoardView(sessionId: string) {
   return [view, update] as const;
 }
 
-/** Adds or removes a script from the chat references. Returns true if added. */
 export function toggleRef(sessionId: string, scriptId: string): boolean {
   const current = views.get(sessionId) ?? DEFAULT_VIEW;
   const added = !current.refs.includes(scriptId);
@@ -129,37 +117,30 @@ export function toggleRef(sessionId: string, scriptId: string): boolean {
   return added;
 }
 
-// Asks the shell to open the chat panel and the chat to focus its composer.
-// Kept pending until the chat (which may mount only after the panel opens)
-// takes it.
-let focusRequest: string | null = null;
+let pendingChatFocus: string | null = null;
 let insertRequest: { sessionId: string; text: string } | null = null;
 const focusListeners = new Set<() => void>();
 
-/** `insert` is put at the start of the composer, e.g. "Video #2, cảnh 7: " for a shot of a video. */
 export function requestChatFocus(sessionId: string, insert?: string) {
-  focusRequest = sessionId;
+  pendingChatFocus = sessionId;
   if (insert) insertRequest = { sessionId, text: insert };
   for (const listener of focusListeners) listener();
 }
 
-/** Calls `listener` on every request, and once now if one is pending. */
 export function onChatFocusRequest(listener: () => void) {
   focusListeners.add(listener);
-  if (focusRequest) listener();
+  if (pendingChatFocus) listener();
   return () => {
     focusListeners.delete(listener);
   };
 }
 
-/** The chat for `sessionId` takes a pending focus request, if there is one. */
 export function takeChatFocus(sessionId: string): boolean {
-  if (focusRequest !== sessionId) return false;
-  focusRequest = null;
+  if (pendingChatFocus !== sessionId) return false;
+  pendingChatFocus = null;
   return true;
 }
 
-/** Text waiting to be put in this session's composer, once. */
 export function takeChatInsert(sessionId: string): string | null {
   if (insertRequest?.sessionId !== sessionId) return null;
   const { text } = insertRequest;
@@ -167,7 +148,6 @@ export function takeChatInsert(sessionId: string): string | null {
   return text;
 }
 
-/** Adds scripts to the chat references (keeps order, skips ones already there). */
 export function addRefs(sessionId: string, scriptIds: string[]) {
   const current = views.get(sessionId) ?? DEFAULT_VIEW;
   const refs = [...current.refs, ...scriptIds.filter((id) => !current.refs.includes(id))];
@@ -175,7 +155,6 @@ export function addRefs(sessionId: string, scriptIds: string[]) {
   emit();
 }
 
-// Dragging scripts from the board onto the chat references them.
 export const SCRIPT_DRAG_TYPE = "application/x-hyan-scripts";
 
 export interface ScriptDrag {
@@ -183,7 +162,6 @@ export interface ScriptDrag {
   ids: string[];
 }
 
-/** Starts a drag carrying scripts, with a small chip as the drag image. */
 export function startScriptDrag(
   e: { dataTransfer: DataTransfer | null },
   drag: ScriptDrag,
@@ -212,7 +190,6 @@ export function startScriptDrag(
   setTimeout(() => chip.remove(), 0);
 }
 
-/** The scripts a drag carries, if it is a script drag. */
 export function readScriptDrag(e: { dataTransfer: DataTransfer | null }): ScriptDrag | null {
   try {
     const raw = e.dataTransfer?.getData(SCRIPT_DRAG_TYPE);
@@ -225,11 +202,6 @@ export function readScriptDrag(e: { dataTransfer: DataTransfer | null }): Script
 export const isScriptDrag = (e: { dataTransfer: DataTransfer | null }) =>
   Boolean(e.dataTransfer?.types.includes(SCRIPT_DRAG_TYPE));
 
-/**
- * "Sửa" on a script sent to video: makes its new version, opens it in the
- * list view, and references it in the chat, which is where scripts are
- * edited. Returns the new script's id.
- */
 export async function editAsNewVersion(sessionId: string, scriptId: string): Promise<string> {
   const id = await api.invoke("board:copy", { sessionId, scriptId });
   const current = views.get(sessionId) ?? DEFAULT_VIEW;

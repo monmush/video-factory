@@ -6,10 +6,6 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { useAction } from "@/lib/use-action";
 
-/**
- * Learned preferences ("Ghi nhớ") saved from the chat: click a sentence to
- * edit it, × removes it at once. The workspace push re-renders the list.
- */
 export function NotesList({ notes }: { notes: Note[] }) {
   const { error, run } = useAction();
   return (
@@ -39,15 +35,14 @@ function NoteRow({
   onRemove: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
-  // Enter and Escape close the field, whose blur then fires: act only once.
-  const closed = useRef(false);
+  const alreadyClosed = useRef(false);
   const open = () => {
-    closed.current = false;
+    alreadyClosed.current = false;
     setDraft(note.text);
   };
   const close = (save: boolean) => {
-    if (closed.current) return;
-    closed.current = true;
+    if (alreadyClosed.current) return;
+    alreadyClosed.current = true;
     if (save && draft?.trim() && draft.trim() !== note.text) onSave(draft);
     setDraft(null);
   };

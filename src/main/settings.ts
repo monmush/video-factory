@@ -5,9 +5,9 @@ import { dataFile, writeJsonAtomic } from "./paths";
 interface Settings {
   theme: ThemePreference;
   textProvider: TextProvider;
-  /** Last model chosen in a session chat; new sessions start with it. */
   chatModel: string;
   chatEffort: ChatEffort | null;
+  onboarded: boolean;
 }
 
 const FILE = "settings.json";
@@ -16,10 +16,9 @@ const defaults: Settings = {
   textProvider: "fal",
   chatModel: "opus",
   chatEffort: "medium",
+  onboarded: false,
 };
 
-// Read synchronously: the theme must be known before the first window is created
-// so the native background matches and there is no light/dark flash.
 export function readSettings(): Settings {
   try {
     return { ...defaults, ...JSON.parse(readFileSync(dataFile(FILE), "utf8")) };

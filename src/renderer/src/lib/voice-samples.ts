@@ -1,7 +1,6 @@
 import type { VoiceId } from "@shared/voices";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Sample clips bundled with the renderer: playback needs no IPC or network.
 const files = import.meta.glob<string>("../assets/voices/*.mp3", {
   eager: true,
   query: "?url",
@@ -12,10 +11,6 @@ const SAMPLES = Object.fromEntries(
   Object.entries(files).map(([path, url]) => [path.replace(/^.*\/|\.mp3$/g, ""), url]),
 ) as Partial<Record<VoiceId, string>>;
 
-/**
- * Plays one voice sample at a time. Starting another stops the current one;
- * playing the same one again stops it. Stops when the component unmounts.
- */
 export function useVoiceSample() {
   const audio = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState<VoiceId | null>(null);

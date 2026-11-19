@@ -11,10 +11,6 @@ import { claudeCodeStatus, claudeEnv, findClaude } from "../claude-code";
 import { readSettings, writeSettings } from "../settings";
 import { textAiMode } from "../text-ai";
 
-// Which models the chat offers. Claude Code reports them (aliases such as
-// "opus", "sonnet", with their effort levels); the list is read once per run
-// without sending a prompt, and a short built-in list covers the time before.
-
 const EFFORTS: ChatEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 const FALLBACK: ChatModelOption[] = [
@@ -35,7 +31,6 @@ export async function rememberChoice(choice: ChatModelChoice) {
   await writeSettings({ chatModel: choice.model, chatEffort: choice.effort });
 }
 
-/** Asks Claude Code for its model list; no prompt is sent, nothing is used up. */
 async function readModels(): Promise<ChatModelOption[] | null> {
   const bin = await findClaude();
   if (!bin) return null;
@@ -57,8 +52,6 @@ async function readModels(): Promise<ChatModelOption[] | null> {
       q.supportedModels(),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 15_000)),
     ]);
-    // Aliases follow the newest models; dated ids are for pinning and stay out,
-    // and so do the hidden models.
     return list
       .filter((m) => !m.value.startsWith("claude-") && !HIDDEN_CHAT_MODELS.includes(m.value))
       .map((m) => ({

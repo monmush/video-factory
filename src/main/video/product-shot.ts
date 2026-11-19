@@ -22,20 +22,9 @@ import { mutate } from "../store";
 import { openFalRequests } from "../usage";
 import { fixtureCutout, productShot, readRgba, type Size } from "./ffmpeg";
 
-// Product shots (docs/DIRECTING_RULES.md, "Product shots"): the product's
-// cut-out, made once per photo and kept beside it in the asset's folder, is
-// placed on a generated plate of the spot in the scene. The original photo is
-// never modified or replaced. Every paid call goes through src/main/fal.ts.
-
-/**
- * Background removal steered by a prompt (Bria Guided Remove Background on
- * fal, $0.03 per image): keeps the product's own pixels and drops the hand
- * holding it, which plain removal (Bria RMBG 2.0) kept as part of the subject.
- * Tested live on 16 Nov with "only the tea pouch, without the hand"; this
- * wording is the brand-neutral form of it.
- */
 const CUTOUT_ENDPOINT = "bria/guided-remove-background";
-const CUTOUT_PROMPT = "only the product package, without the hand holding it";
+const PROMPT_KEEPING_PRODUCT_WITHOUT_HOLDING_HAND =
+  "only the product package, without the hand holding it";
 
 const cutoutFile = (imageId: string) => `${imageId}.cutout.png`;
 
@@ -66,11 +55,6 @@ export function productCutout(
   return task;
 }
 
-/**
- * Removes the photo's background on fal (paid, CUTOUT_USD) and writes the PNG
- * with alpha to `out`, waiting for the answer: the product dialog
- * (src/main/product-cutout.ts). Videos use `queuedCutout`, which survives a restart.
- */
 export async function removeBackground(
   client: Awaited<ReturnType<typeof falClient>>,
   photo: string,
@@ -81,7 +65,7 @@ export async function removeBackground(
   const { data } = await falCall<{ image?: { url?: string } }>(
     client,
     CUTOUT_ENDPOINT,
-    { image_url: url, prompt: CUTOUT_PROMPT },
+    { image_url: url, prompt: PROMPT_KEEPING_PRODUCT_WITHOUT_HOLDING_HAND },
     { purpose: "product-cutout", productId, cost: () => CUTOUT_USD },
   );
   const result = data.image?.url;
@@ -123,7 +107,7 @@ async function queuedCutout(
     requestId = await falSubmit(
       client,
       CUTOUT_ENDPOINT,
-      { image_url: url, prompt: CUTOUT_PROMPT },
+      { image_url: url, prompt: PROMPT_KEEPING_PRODUCT_WITHOUT_HOLDING_HAND },
       { purpose: "product-cutout", productId, photoId: photo.id, photoFile: photo.file },
     );
     sentAt = new Date().toISOString();
@@ -177,7 +161,6 @@ function photoCutout(
   return task;
 }
 
-/** Whether a cut-out shows the product alone (src/shared/product-shot.ts, usableCutout). */
 export async function isUsableCutout(path: string): Promise<boolean> {
   const pixels = await readRgba(path, 4096);
   return usableCutout(
@@ -220,13 +203,11 @@ async function makeCutout(
   return null;
 }
 
-/** How a cut-out sits on its plate at this size: its box, place and the tone gains. */
 async function layers(plate: string, cutout: string, size: Size) {
   const cut = await readRgba(cutout, 4096);
   const box = alphaBox(cut.data, cut.width, cut.height);
   if (!box) throw new Error("Ảnh tách nền trống");
   const place = placement(size, box);
-  // The plate's colour around the spot (the band where the product stands).
   const small = await readRgba(plate, 256);
   const row = (share: number) => Math.round(small.height * share) * small.width * 4;
   const top = (place.y + place.h * 0.4) / size.height;
@@ -237,7 +218,6 @@ async function layers(plate: string, cutout: string, size: Size) {
   return { box, place, gains };
 }
 
-/** The product shot's still: the cut-out on its plate (also what the Video tab shows). */
 export async function productStillOn(
   plate: string,
   cutout: string,
@@ -248,7 +228,6 @@ export async function productStillOn(
   await productShot({ plate, cutout, ...layout, frames: 1, size, zoom: PARALLAX, out });
 }
 
-/** The product shot as a clip of exactly `frames` frames, plate and product moving apart. */
 export async function productClip(
   plate: string,
   cutout: string,

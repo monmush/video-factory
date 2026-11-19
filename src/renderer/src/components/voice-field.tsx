@@ -17,13 +17,8 @@ const GROUPS = [
   { label: "Nữ", voices: VOICES.filter((v) => v.gender === "female") },
 ];
 
-/** Only Northern voices exist so far; the others show what will come. */
 const AVAILABLE_ACCENT = "north";
 
-/**
- * A character's voice: the current one with a sample, a menu to change it,
- * and the accent (read-only for now). Samples stop when this unmounts.
- */
 export function VoiceField({
   value,
   onChange,
@@ -37,7 +32,6 @@ export function VoiceField({
   const sample = useVoiceSample();
   if (!voice) return null;
 
-  // A sample of another voice would keep playing with no stop button left.
   const pick = (id: VoiceId) => {
     if (sample.playing && sample.playing !== id) sample.stop();
     onChange(id);

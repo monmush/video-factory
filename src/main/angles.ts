@@ -9,10 +9,6 @@ import { uploadImages } from "./fal-upload";
 import { stagingDir } from "./media";
 import { falClient, getKey, providerMode } from "./providers";
 
-// "Tạo thêm góc nhìn": generates the generic core character sheet (close-up,
-// three-quarter, full body) from the character's reference images with a fal
-// image-edit model. Results are staged; the user keeps or discards each one.
-
 export { DEFAULT_IMAGE_MODEL, type ImageShape, MODELS } from "../shared/image-models";
 
 const MAX_REFERENCES = 4;
@@ -39,7 +35,6 @@ function prompt(angle: CoreAngle, description: string) {
     .join(" ");
 }
 
-/** Average cost per image from fal's own billing history (free to query). */
 export async function estimateAngles(model: AngleModel, count: number): Promise<{ cost: number }> {
   const { endpoint, fallbackUsd } = MODELS[model];
   const key = await getKey("fal");
@@ -61,7 +56,10 @@ export async function estimateAngles(model: AngleModel, count: number): Promise<
   }
 }
 
-/** Downloads a generated image into the staging folder; returns its file name. */
+export async function historicalAverageImageCost(model: AngleModel): Promise<number> {
+  return (await estimateAngles(model, 1)).cost;
+}
+
 export async function stageFromUrl(url: string): Promise<string> {
   const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Không tải được ảnh (${res.status})`);
@@ -80,8 +78,6 @@ export async function generateAngles(input: {
   if (input.angles.length === 0) return { images: [], failed: [], source: "fal", cost: null };
   await mkdir(stagingDir(), { recursive: true });
 
-  // Fixture mode: copies of the first reference stand in for results, so the
-  // flow can be tested without spending credits.
   if (providerMode() === "fixture") {
     await new Promise((r) => setTimeout(r, 1500));
     const images: GeneratedAngle[] = [];
@@ -96,12 +92,10 @@ export async function generateAngles(input: {
   const config = MODELS[input.model];
   const fal = await falClient();
   const urls = await uploadImages(fal, input.referencePaths.slice(0, MAX_REFERENCES));
-  const { cost: unitCost } = await estimateAngles(input.model, 1);
+  const unitCost = await historicalAverageImageCost(input.model);
 
   const settled = await Promise.allSettled(
     input.angles.map(async (angle) => {
-      // Image models bill by tokens and do not return the charge; log fal's
-      // historical average so cost per character can still be tracked.
       const { data } = await falCall<{ images?: { url: string }[] }>(
         fal,
         config.endpoint,

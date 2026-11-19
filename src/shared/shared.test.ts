@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { boardOrder, formatSeconds, syllables } from "./board";
+import {
+  boardOrder,
+  estimateSeconds,
+  formatSeconds,
+  MAX_HOLDS_SEC,
+  SPEECH_RATE,
+  syllables,
+} from "./board";
 import { cleanHandleInput, toHandle } from "./handle";
-import type { Script } from "./ipc";
+import { HIDDEN_CHAT_MODELS, resolveChoice, type Script } from "./ipc";
 
 describe("boardOrder", () => {
   const s = (id: string, pinned = false, deleted = false) =>
@@ -16,6 +23,13 @@ describe("boardOrder", () => {
 describe("length estimate", () => {
   it("counts Vietnamese syllables, ignoring punctuation-only tokens", () => {
     expect(syllables([{ text: "Trà ngon — uống chậm thôi." }])).toBe(5);
+  });
+
+  it("counts every hold at its cap before a plan exists, so the plan never adds length or price", () => {
+    const lines = [{ text: "Trà ngon uống chậm thôi." }, { text: "Dạ, con mời bà." }];
+    expect(estimateSeconds(lines) - syllables(lines) / SPEECH_RATE).toBeGreaterThanOrEqual(
+      MAX_HOLDS_SEC,
+    );
   });
 
   it("formats seconds and minutes", () => {
@@ -33,5 +47,20 @@ describe("handles", () => {
 
   it("keeps a trailing dash while typing", () => {
     expect(cleanHandleInput("@Trà ")).toBe("tra-");
+  });
+});
+
+describe("chat model choice", () => {
+  it("always names a model and effort: saves from when Claude Code chose map to the default", () => {
+    expect(resolveChoice({ model: "default", effort: null })).toEqual({
+      model: "opus",
+      effort: "medium",
+    });
+    expect(resolveChoice(null)).toEqual({ model: "opus", effort: "medium" });
+  });
+
+  it("never offers Fable, which uses up a plan's limits far too fast for batch writing", () => {
+    expect(HIDDEN_CHAT_MODELS).toContain("fable");
+    expect(resolveChoice({ model: "fable", effort: "high" }).model).toBe("opus");
   });
 });

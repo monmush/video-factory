@@ -5,6 +5,7 @@ import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { nativeImage } from "electron";
 import type { ClaudeCodeStatus, ClaudeLimits, ClaudeLimitWindow } from "../shared/ipc";
+import { advanceFakeClaude, fakeClaudeActive, fakeClaudeStatus } from "./claude-fake";
 import { streamReader } from "./claude-stream";
 import { dataDir } from "./paths";
 import { saveClaudeLimits } from "./usage";
@@ -14,7 +15,6 @@ interface RawWindow {
   resetsAt?: number;
 }
 
-/** Claude Code reports plan usage per window (5-hour session, 7-day week) with each call. */
 export function toLimits(
   info: { unifiedWindows?: Record<string, RawWindow> } | undefined,
 ): ClaudeLimits {
@@ -29,27 +29,21 @@ export function toLimits(
   };
 }
 
-// Runs the user's own Claude Code CLI for text and image-understanding tasks,
-// the same pattern T3 Code uses. Constraints from Anthropic's Claude Code
-// "Legal and compliance" page (checked 2026-11-12):
-//   - run the binary unmodified, as installed by the user;
-//   - never collect, store or relay Claude credentials: the user signs in
-//     through Anthropic's own flow (`claude auth login` in Terminal);
-//   - usage is billed to the user's own plan or key; we never pay for,
-//     resell or intermediate it;
-//   - do not use the Claude Code name or logo as our product/feature name.
-// Every call disables all tools, MCP servers and settings, so Claude can only
-// answer the question; it cannot run commands or touch files.
-
 const run = promisify(execFile);
 
-/**
- * Environment for the user's Claude processes: everything except the app's own
- * provider keys (loaded from .env.local in development), which Claude never needs.
- */
+const APP_KEYS_CLAUDE_NEVER_NEEDS = ["FAL_KEY", "FAL_BILLING_KEY", "ELEVENLABS_API_KEY"];
+
+const ANSWER_ONLY_NO_TOOLS_MCP_OR_SETTINGS = [
+  "--tools",
+  "",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "",
+];
+
 export function claudeEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const name of ["FAL_KEY", "FAL_BILLING_KEY", "ELEVENLABS_API_KEY"]) delete env[name];
+  for (const name of APP_KEYS_CLAUDE_NEVER_NEEDS) delete env[name];
   return env;
 }
 
@@ -94,6 +88,8 @@ export async function findClaude(): Promise<string | null> {
 }
 
 export async function claudeCodeStatus(): Promise<ClaudeCodeStatus> {
+  const fake = fakeClaudeStatus();
+  if (fake) return fake;
   cachedPath = undefined;
   shellPath = null;
   const bin = await findClaude();
@@ -118,6 +114,70 @@ export async function claudeCodeStatus(): Promise<ClaudeCodeStatus> {
   }
 }
 
+const INSTALL_TIMEOUT_MS = 5 * 60_000;
+const INSTALL_COMMAND = "set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash";
+
+let installing: Promise<ClaudeCodeStatus> | null = null;
+
+export function installClaude(): Promise<ClaudeCodeStatus> {
+  installing ??= runInstaller().finally(() => {
+    installing = null;
+  });
+  return installing;
+}
+
+async function runInstaller(): Promise<ClaudeCodeStatus> {
+  if (fakeClaudeActive()) {
+    await advanceFakeClaude();
+    return claudeCodeStatus();
+  }
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = spawn("/bin/bash", ["-lc", INSTALL_COMMAND], {
+      env: claudeEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.add(child);
+    let tail = "";
+    const keep = (chunk: Buffer) => {
+      tail = (tail + chunk.toString()).slice(-MAX_STDERR_CHARS);
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, INSTALL_TIMEOUT_MS);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      children.delete(child);
+      console.error("[claude] installer failed to start", error);
+      reject(new Error("Không cài được Claude"));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      children.delete(child);
+      if (code === 0) return resolve(tail);
+      console.error("[claude] installer failed", { code, timedOut, tail });
+      reject(new Error(installFailure(tail, timedOut)));
+    });
+  });
+  const status = await claudeCodeStatus();
+  if (!status.installed) {
+    console.error("[claude] installer finished but claude was not found", output);
+    throw new Error("Không cài được Claude");
+  }
+  return status;
+}
+
+function installFailure(tail: string, timedOut: boolean): string {
+  if (timedOut) return "Cài quá lâu nên đã dừng";
+  if (/could not resolve host|failed to connect|network is unreachable|timed out/i.test(tail)) {
+    return "Không kết nối được mạng";
+  }
+  return "Không cài được Claude";
+}
+
 export async function imageBlock(path: string, maxSide: number) {
   const image = nativeImage.createFromPath(path);
   if (image.isEmpty()) throw new Error("Không đọc được ảnh");
@@ -138,36 +198,30 @@ export async function imageBlock(path: string, maxSide: number) {
 
 export interface ClaudeCodeAnswer {
   text: string;
-  /** Claude Code's API-price estimate. Not charged per call on a subscription. */
   notionalCostUsd: number | null;
   durationMs: number | null;
 }
 
-/** One question, optional images, no tools. */
 export async function askClaudeCode(input: {
   system: string;
   prompt: string;
   imagePaths?: string[];
-  /** Prefix each image with "Ảnh n:" so the answer can refer to it. */
   numberImages?: boolean;
   maxImageSide?: number;
   model?: string;
   effort?: string;
   timeoutMs?: number;
-  /** Called with the answer so far as it is written (streamed). */
   onText?: (soFar: string) => void;
 }): Promise<ClaudeCodeAnswer> {
   const bin = await findClaude();
   if (!bin) throw new Error("Chưa cài Claude Code trên máy này");
 
-  // An empty working folder, so no project instructions or files are picked up.
-  const cwd = join(dataDir(), "claude-code");
-  await mkdir(cwd, { recursive: true });
+  const folderWithoutProjectInstructions = join(dataDir(), "claude-code");
+  await mkdir(folderWithoutProjectInstructions, { recursive: true });
 
   const blocks = await Promise.all(
     (input.imagePaths ?? []).map((p) => imageBlock(p, input.maxImageSide ?? 1024)),
   );
-  // Numbered images let the answer refer to "Ảnh 3" unambiguously.
   const content = [
     ...blocks.flatMap((block, i) =>
       input.numberImages ? [{ type: "text", text: `Ảnh ${i + 1}:` }, block] : [block],
@@ -182,11 +236,7 @@ export async function askClaudeCode(input: {
     "stream-json",
     "--verbose",
     ...(input.onText ? ["--include-partial-messages"] : []),
-    "--tools",
-    "",
-    "--strict-mcp-config",
-    "--setting-sources",
-    "",
+    ...ANSWER_ONLY_NO_TOOLS_MCP_OR_SETTINGS,
     "--no-session-persistence",
     "--model",
     input.model ?? "sonnet",
@@ -196,7 +246,11 @@ export async function askClaudeCode(input: {
   ];
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, env: claudeEnv(), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, {
+      cwd: folderWithoutProjectInstructions,
+      env: claudeEnv(),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     children.add(child);
     let settled = false;
     const finish = (error: Error | null, answer?: ClaudeCodeAnswer) => {

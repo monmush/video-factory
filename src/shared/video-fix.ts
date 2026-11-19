@@ -14,23 +14,12 @@ import {
   type VideoJob,
 } from "./video-job";
 
-// Fixing a video after the operator has seen it (docs/VIDEO_REVIEW_DECISIONS.md).
-// A fix changes the picture in place: only what the change touches is made
-// again, the rest is reused, and the cut before the fix stays playable as
-// `previous`. Changing the words is not a fix; that is a new script version.
-// Everything here is pure: the same functions price a proposal and apply it.
-
 export type FixChange =
-  /** Make one shot again; `visual` also changes what it shows. A wide or detail shot remakes its still. */
   | { op: "redo_shot"; shot: number; visual?: string }
-  /** Make one generated still again with a correction, and every shot made from it. */
   | { op: "redo_still"; frame: string; note?: string }
-  /** Show something else during one dialogue line: its shots are replaced by these. */
   | { op: "replace_line"; line: number; shots: PlannedShot[] }
-  /** Make the voice again, and with it every shot. */
   | { op: "redo_voice" };
 
-/** Fixes apply to a finished video, or to a test video waiting at its pause. */
 export const canFix = (job: VideoJob) =>
   (job.status === "done" && Boolean(job.final)) || job.status === "review";
 
@@ -87,7 +76,6 @@ export const clearShot = (s: JobShot): JobShot => ({
   sending: undefined,
   resultUrl: undefined,
   costUsd: undefined,
-  // Made again with the video's model (one model per video); recorded again when sent.
   model: undefined,
   retried: false,
   failures: 0,
@@ -97,7 +85,6 @@ export const clearShot = (s: JobShot): JobShot => ({
 const clearFrame = (f: JobFrame, note?: string): JobFrame => ({
   ...f,
   file: undefined,
-  // A product shot draws its plate again; its cut-out (the product itself) stays.
   plate: undefined,
   source: undefined,
   requestId: undefined,
@@ -112,14 +99,8 @@ const clearFrame = (f: JobFrame, note?: string): JobFrame => ({
   ...(note?.trim() ? { note: note.trim() } : {}),
 });
 
-/** A problem the operator (or the chat) can act on, in Vietnamese. */
 export class FixError extends Error {}
 
-/**
- * The job with the changes applied and ready to run again. Throws FixError
- * when a change cannot be made. Costs of replaced parts move to
- * `pastCostUsd`, so the total spent never goes down.
- */
 export function applyFix(job: VideoJob, changes: FixChange[], now: string): VideoJob {
   if (!canFix(job)) throw new FixError("Video này đang được tạo, chưa sửa được");
   if (!changes.length) throw new FixError("Không có gì để sửa");
@@ -188,7 +169,6 @@ function redoShot(job: VideoJob, index: number, visual?: string): VideoJob {
       shots: job.shots.map((s) => (s.index === index ? clearShot(withVisual(s)) : s)),
     };
   }
-  // Wide and detail shots are a still moved locally: the still is what changes.
   const frame = frameFor(job, shot);
   if (!frame || !isGenerated(job, frame)) {
     throw new FixError(`Cảnh ${index + 1} dùng ảnh gốc của sản phẩm nên không tạo lại được`);
@@ -245,8 +225,6 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
     }
   }
 
-  // Shots: other lines keep theirs (the plan and the shots are index-aligned);
-  // in this line an identical shot is reused.
   const delta = parts.length - replaced.length;
   const spare = job.shots.filter((s) => s.lineIndex === line);
   const origin = new Map<number, number>();
@@ -260,9 +238,8 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
     }
     if (old) {
       origin.set(index, old.index);
-      // Same shot with another hold: its length changes, so it is made again
-      // (a wide or detail shot only re-moves its still, free).
-      return (old.hold ?? 0) === (p.hold ?? 0)
+      const sameLengthSoReused = (old.hold ?? 0) === (p.hold ?? 0);
+      return sameLengthSoReused
         ? { ...old, index }
         : { ...clearShot({ ...old, index }), hold: p.hold };
     }
@@ -283,8 +260,6 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
       failures: 0,
     };
   });
-  // A hold moves everything after it: every shot is placed again from the
-  // saved voice (free) before anything is made.
   const holdsOf = (list: { hold?: number }[]) => list.map((s) => s.hold ?? 0).join();
   const placed =
     holdsOf(replaced) === holdsOf(parts)
@@ -296,7 +271,6 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
           state: s.state === "queued" ? ("planned" as const) : s.state,
         }));
 
-  // Stills: scene and character stills stay; a detail's still follows its shot.
   const pictured = new Set(placed.filter((s) => s.keyframe).map(frameIdFor));
   const frames: JobFrame[] = job.frames.filter(
     (f) => f.kind === "wide" || f.kind === "character" || pictured.has(f.id),
@@ -308,7 +282,6 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
     const id = frameIdFor(shot);
     if (shot.kind === "wide") {
       add({ id, kind: "wide", retried: false });
-      // The scene still is made first, so it leads the list.
       frames.sort((a, b) => Number(b.kind === "wide") - Number(a.kind === "wide"));
     } else if (madeByProvider(shot) && shot.characterId) {
       add({ id, kind: "character", characterId: shot.characterId, retried: false });
@@ -339,12 +312,6 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
   return { ...job, plan: nextPlan, shots: placed, frames, ...liveAfterFix(job, placed, origin) };
 }
 
-/**
- * A new shot on a planned video starts from a picture the plan already has,
- * so a fix never pays for a still the plan made: a wide shot from the master,
- * a person from their own picture (the closest framing). Nothing fits (a new
- * detail): the fixed still request, as before.
- */
 function plannedStart(job: VideoJob, p: PlannedShot): Pick<JobShot, "keyframe" | "route"> {
   const live = job.live;
   if (!live) return {};
@@ -355,7 +322,6 @@ function plannedStart(job: VideoJob, p: PlannedShot): Pick<JobShot, "keyframe" |
   }
   if ((p.kind === "speaker" || p.kind === "listener") && p.characterId) {
     const own = pictures.filter((k) => k.kind === "character" && k.characterId === p.characterId);
-    // The shot's framing is "close" or "medium_close"; pictures describe theirs in words.
     const medium = (framing: string) => /medium/i.test(framing);
     const pick = own.find((k) => medium(k.framing) === (p.framing === "medium_close")) ?? own[0];
     if (!pick) return {};
@@ -364,13 +330,6 @@ function plannedStart(job: VideoJob, p: PlannedShot): Pick<JobShot, "keyframe" |
   return {};
 }
 
-/**
- * The plan's routes follow the shots after a fix: they are looked up by shot
- * index, so a fix that adds or removes shots would otherwise send a later shot
- * with another shot's request. Kept shots keep their route; a new speaking
- * shot takes the request of another speaking shot of the same person (same
- * model and settings; the shot's own picture and audio fill it).
- */
 function liveAfterFix(
   job: VideoJob,
   shots: JobShot[],
@@ -395,12 +354,10 @@ function liveAfterFix(
   return { live: { ...live, plan: { ...live.plan, routes } } };
 }
 
-/** What a fix costs: what must be made again, beyond what the job already owed. */
 export function fixPriceUsd(job: VideoJob, changes: FixChange[], now: string): number {
   return Math.max(0, costToFinishUsd(applyFix(job, changes, now)) - costToFinishUsd(job));
 }
 
-/** Parts a fix makes again, for the proposal ("2 cảnh, 1 khung hình"). */
 export function fixScope(job: VideoJob, changes: FixChange[], now: string) {
   const fixed = applyFix(job, changes, now);
   const before = new Set(job.shots.filter((s) => s.state === "done").map((s) => s.clip));
@@ -411,12 +368,10 @@ export function fixScope(job: VideoJob, changes: FixChange[], now: string) {
   };
 }
 
-/** Nothing of this cut is still with the provider (so swapping loses no paid result). */
 export const settled = (job: VideoJob) =>
   !job.shots.some((s) => s.state === "rendering") &&
   !job.frames.some((f) => !f.file && f.requestId);
 
-/** After going back, the other cut is the newer one. */
 export const previousIsNewer = (job: VideoJob) => (job.previous?.cutRev ?? 0) > (job.cutRev ?? 0);
 
 export const canRestore = (job: VideoJob) =>
@@ -425,10 +380,6 @@ export const canRestore = (job: VideoJob) =>
   job.status !== "running" &&
   job.status !== "waiting";
 
-/**
- * Back to the cut before the last fix. The two cuts swap, so the same action
- * returns to the newer one; nothing is deleted and nothing is charged.
- */
 export function restorePrevious(job: VideoJob, now: string): VideoJob {
   if (!job.previous?.final) throw new FixError("Không có bản trước");
   if (!canUseCut(job, job.previous)) throw new FixError(OLD_CUT);

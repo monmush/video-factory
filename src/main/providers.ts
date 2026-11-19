@@ -3,10 +3,6 @@ import { app, safeStorage } from "electron";
 import type { ProviderId, ProviderMode, ProviderStatus, ProvidersInfo } from "../shared/ipc";
 import { dataFile, writeJsonAtomic } from "./paths";
 
-// Provider keys never leave the main process. In development they come from
-// `.env.local`; in the packaged app the operator enters them once and they are
-// stored encrypted by the OS (Keychain on macOS) via safeStorage.
-
 const ENV_NAMES: Record<ProviderId, string> = {
   fal: "FAL_KEY",
   "fal-billing": "FAL_BILLING_KEY",
@@ -15,7 +11,8 @@ const ENV_NAMES: Record<ProviderId, string> = {
 const PROVIDERS = Object.keys(ENV_NAMES) as ProviderId[];
 const SECRETS_FILE = "secrets.json";
 
-type StoredSecrets = Partial<Record<ProviderId, string>>; // base64 ciphertext
+type Base64Ciphertext = string;
+type StoredSecrets = Partial<Record<ProviderId, Base64Ciphertext>>;
 
 async function readStored(): Promise<StoredSecrets> {
   try {
@@ -25,18 +22,18 @@ async function readStored(): Promise<StoredSecrets> {
   }
 }
 
+const bundledKey = (id: ProviderId): string | null => __BUNDLED_KEYS__[ENV_NAMES[id]] || null;
+
 export async function getKey(id: ProviderId): Promise<string | null> {
   const fromEnv = process.env[ENV_NAMES[id]];
   if (fromEnv) return fromEnv;
   const stored = (await readStored())[id];
-  if (!stored || !safeStorage.isEncryptionAvailable()) return null;
-  return safeStorage.decryptString(Buffer.from(stored, "base64"));
+  if (stored && safeStorage.isEncryptionAvailable()) {
+    return safeStorage.decryptString(Buffer.from(stored, "base64"));
+  }
+  return bundledKey(id);
 }
 
-/**
- * Fixture mode is the default in development so UI work never spends credits.
- * Set HYAN_PROVIDER_MODE=live to allow real requests while developing.
- */
 export function providerMode(): ProviderMode {
   const requested = process.env.HYAN_PROVIDER_MODE;
   if (requested === "live" || requested === "fixture") return requested;
@@ -46,7 +43,13 @@ export function providerMode(): ProviderMode {
 export async function providersInfo(): Promise<ProvidersInfo> {
   const stored = await readStored();
   const providers: ProviderStatus[] = PROVIDERS.map((id) => {
-    const source = process.env[ENV_NAMES[id]] ? "env" : stored[id] ? "stored" : null;
+    const source = process.env[ENV_NAMES[id]]
+      ? "env"
+      : stored[id]
+        ? "stored"
+        : bundledKey(id)
+          ? "bundled"
+          : null;
     return { id, configured: source !== null, source };
   });
   return { mode: providerMode(), canStoreKeys: safeStorage.isEncryptionAvailable(), providers };
@@ -70,18 +73,14 @@ export async function clearKey(id: ProviderId): Promise<ProvidersInfo> {
   return providersInfo();
 }
 
-// Clients are created lazily so app start-up does not load either SDK.
-// Fixture mode never gets a client, so a forgotten mode check in a caller
-// fails loudly instead of spending credits.
-
-function assertLive(provider: string) {
+function refuseClientInFixtureMode(provider: string) {
   if (providerMode() === "fixture") {
     throw new Error(`${provider} is disabled in fixture mode (set HYAN_PROVIDER_MODE=live)`);
   }
 }
 
 export async function falClient() {
-  assertLive("fal");
+  refuseClientInFixtureMode("fal");
   const credentials = await getKey("fal");
   if (!credentials) throw new Error("Chưa có khóa fal. Thêm khóa trong Cài đặt.");
   const { createFalClient } = await import("@fal-ai/client");
@@ -89,7 +88,7 @@ export async function falClient() {
 }
 
 export async function elevenLabsClient() {
-  assertLive("ElevenLabs");
+  refuseClientInFixtureMode("ElevenLabs");
   const apiKey = await getKey("elevenlabs");
   if (!apiKey) throw new Error("Chưa có khóa ElevenLabs. Thêm khóa trong Cài đặt.");
   const { ElevenLabsClient } = await import("@elevenlabs/elevenlabs-js");

@@ -1,4 +1,3 @@
-// Runs synchronously before the app bundle. Keep in sync with src/lib/theme.ts.
 (() => {
   let preference = "system";
   try {

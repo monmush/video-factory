@@ -2,6 +2,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./lib/api";
+import { loadOnboarded } from "./lib/claude-setup";
 import { refreshWorkspace } from "./lib/workspace";
 import { router } from "./router";
 import "./styles.css";
@@ -11,8 +12,7 @@ if (!root) throw new Error("Missing #root");
 
 document.documentElement.dataset.platform = api.platform;
 
-// Load persisted state before the first paint so screens never render an empty flash.
-await refreshWorkspace();
+await Promise.all([refreshWorkspace(), loadOnboarded()]);
 
 createRoot(root).render(
   <StrictMode>

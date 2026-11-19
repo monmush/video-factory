@@ -11,11 +11,6 @@ import { getWorkspace } from "./store";
 import { fixtureCutout } from "./video/ffmpeg";
 import { isUsableCutout, removeBackground } from "./video/product-shot";
 
-// Products: the dialog's "Giữ để tách nền". The cut-out is staged; "Dùng ảnh
-// này" puts it in the photo's place and records it as the photo's cut-out
-// (src/main/assets.ts), so videos use it without paying again.
-
-/** A saved photo's cut-out made before (by a video), if it is still the original. */
 async function keptCutout(ref: ImageRef): Promise<string | null> {
   if (ref.source !== "asset" || ref.restore) return null;
   const image = (await getWorkspace()).assets

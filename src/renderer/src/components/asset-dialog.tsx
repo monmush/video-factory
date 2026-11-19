@@ -45,18 +45,10 @@ interface DraftImage {
   url: string;
   origin: ImageOrigin;
   angle?: AngleId;
-  /**
-   * Places: what the check found (src/shared/place-check.ts); null when
-   * nothing was or it could not run; missing until asked.
-   */
   check?: PlaceFinding | null;
-  /** A cleaned place photo's or a product cut-out's original, which "Dùng ảnh gốc" brings back. */
   original?: DraftImage;
-  /** Products: this photo is a cut-out (background removed). */
   isCutout?: boolean;
-  /** Products: a cut-out made before (by a video) waits for this photo, free. */
   cutoutKept?: boolean;
-  /** Products: whether the cut-out shows the product alone; missing until one exists. */
   cutoutUsable?: boolean;
 }
 
@@ -92,24 +84,17 @@ const fromAsset = (asset: Asset): DraftImage[] =>
         origin: img.original.origin ?? "upload",
         angle: img.angle,
         check: img.original.placeCheck ?? null,
-        // Brought back, the original keeps the cut-out made from it.
         cutoutKept: isCutout,
         cutoutUsable: isCutout ? img.cutout?.usable : undefined,
       },
     };
   });
 
-/** The ref sent on save, carrying the image's label and origin. */
 const toRef = (image: DraftImage): ImageRef =>
   image.ref.source === "staged"
     ? { ...image.ref, origin: image.origin, angle: image.angle }
     : { ...image.ref, angle: image.angle };
 
-/**
- * Create or edit a library asset (character or product): reference images, a
- * name, an @handle for prompts and a visual description (optionally written by
- * AI from the images). Kind-specific wording and rules live in ASSET_KINDS.
- */
 export function AssetDialog({
   open,
   onOpenChange,
@@ -121,30 +106,23 @@ export function AssetDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   kind: AssetKind;
-  /** Edit this asset; omit to create a new one. */
   asset?: Asset;
-  /** Called with the new asset after a create (not after an edit). */
   onCreated?: (asset: Asset) => void;
-  /** Create only: images already staged elsewhere, shown when the dialog opens. */
   initialImages?: StagedImage[];
 }) {
-  // The form reports whether closing must wait (work in flight) or needs a
-  // confirmation (unsaved AI images, which cost money). X and Escape go through here.
   const [guard, setGuard] = useState<CloseGuard>(null);
   const [closeRequests, setCloseRequests] = useState(0);
 
   const requestClose = (next: boolean) => {
     if (next) return onOpenChange(true);
-    if (guard === "busy") return;
+    if (guard === "work-in-flight") return;
     if (guard === "unsaved-ai") return setCloseRequests((n) => n + 1);
     onOpenChange(false);
   };
 
   return (
-    // Clicking outside never closes it: a stray click must not lose edits.
     <Dialog open={open} onOpenChange={requestClose} disablePointerDismissal>
-      <DialogPopup className="max-w-4xl" showCloseButton={guard !== "busy"}>
-        {/* Remount per open so every opening starts from the saved state. */}
+      <DialogPopup className="max-w-4xl" showCloseButton={guard !== "work-in-flight"}>
         {open && (
           <CharacterForm
             kind={asset?.kind ?? kind}
@@ -164,15 +142,13 @@ export function AssetDialog({
   );
 }
 
-type CloseGuard = "busy" | "unsaved-ai" | null;
+type CloseGuard = "work-in-flight" | "unsaved-ai" | null;
 
-/** A cleaned place photo or a product cut-out waiting for "Dùng ảnh này" or "Bỏ". */
 type CleanReview = {
   key: string;
   image: StagedImage;
   check: PlaceFinding | null;
   note: string | null;
-  /** Products: a cut-out, and whether the product stands alone in it. */
   cutout?: { usable: boolean };
 };
 
@@ -189,7 +165,6 @@ function CharacterForm({
   character?: Asset;
   onCreated?: (asset: Asset) => void;
   initialImages?: StagedImage[];
-  /** Increments when the user tries to close while unsaved AI images exist. */
   closeRequests: number;
   onGuardChange: (guard: CloseGuard) => void;
   onDone: () => void;
@@ -206,7 +181,6 @@ function CharacterForm({
   const [handleTouched, setHandleTouched] = useState(Boolean(character));
   const [description, setDescription] = useState(character?.description ?? "");
   const [previousDescription, setPreviousDescription] = useState<string | null>(null);
-  // The text as last rendered, read after the describe call returns.
   const latestDescription = useRef(description);
   latestDescription.current = description;
   const [describing, setDescribing] = useState(false);
@@ -221,18 +195,13 @@ function CharacterForm({
   const [angleNote, setAngleNote] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  // Places: photos being checked, those being cleaned (several at once), and
-  // cleaned versions waiting for "Dùng ảnh này" or "Bỏ". Products: the same
-  // for cut-outs (background removed).
   const isPlace = kind === "environment";
   const isProduct = kind === "product";
-  const asked = useRef(new Set<string>());
+  const placeChecksRequested = useRef(new Set<string>());
   const [checking, setChecking] = useState<Set<string>>(new Set());
   const [cleaning, setCleaning] = useState<Set<string>>(new Set());
   const [reviews, setReviews] = useState<CleanReview[]>([]);
-  // The full-size viewer: the photos it steps through and the one shown.
   const [viewer, setViewer] = useState<{ images: ViewerImage[]; index: number } | null>(null);
-  // Thumbnails the viewer grows from and returns to, by "grid:url" or "review:url".
   const thumbs = useRef(new Map<string, HTMLImageElement>());
   const thumbRef = (id: string) => (el: HTMLImageElement | null) => {
     if (el) thumbs.current.set(id, el);
@@ -240,7 +209,6 @@ function CharacterForm({
   };
   const fromThumb = (id: string) => () => thumbs.current.get(id) ?? null;
   const [cleanPrice, setCleanPrice] = useState<number | null>(null);
-  // Products only: the set this product is (members) and the set it belongs to.
   const [contains, setContains] = useState<string[]>(character?.contains ?? []);
   const members = contains
     .map((id) => workspace.assets.find((a) => a.id === id))
@@ -248,8 +216,6 @@ function CharacterForm({
   const memberOf = character
     ? workspace.assets.find((a) => a.contains?.includes(character.id))
     : undefined;
-  // Characters only: a voice picked by hand (or saved) is kept; until then the
-  // rule suggests one from the name and description, avoiding voices in use.
   const [pickedVoice, setPickedVoice] = useState<VoiceId | null>(
     voiceById(character?.voiceId)?.id ?? null,
   );
@@ -260,12 +226,9 @@ function CharacterForm({
       takenVoiceIds(workspace.assets, character?.id),
     );
 
-  // How the dialog's actions interact: only one change to the image list at a
-  // time, and nothing that would lose in-flight (possibly paid) work.
   const generating = pendingAngles.length > 0;
   const inFlight = describing || generating || saving || cleaning.size > 0;
   const busy = inFlight || adding || reviews.length > 0;
-  // Cleaning one photo never blocks cleaning another.
   const cleanBlocked = describing || generating || saving || adding;
   const reviewFor = (key: string) => reviews.find((r) => r.key === key);
   const unsavedAi =
@@ -273,12 +236,13 @@ function CharacterForm({
     images.some((i) => (i.origin === "ai" || i.isCutout) && i.ref.source === "staged");
   const anyFlagged = isPlace && images.some((i) => isFlagged(i.check));
 
-  // Places: every photo not checked yet is looked at once (free; nothing waits for it).
   useEffect(() => {
     if (!isPlace) return;
-    const todo = images.filter((i) => i.check === undefined && !asked.current.has(i.key));
+    const todo = images.filter(
+      (i) => i.check === undefined && !placeChecksRequested.current.has(i.key),
+    );
     if (!todo.length) return;
-    for (const image of todo) asked.current.add(image.key);
+    for (const image of todo) placeChecksRequested.current.add(image.key);
     const keys = todo.map((i) => i.key);
     setChecking((current) => new Set([...current, ...keys]));
     api
@@ -307,7 +271,6 @@ function CharacterForm({
       .catch(() => undefined);
   }, [anyFlagged, cleanPrice]);
 
-  /** Runs one photo's clean or cut-out; several photos can run at once. */
   const replaceWith = async (
     key: string,
     make: (target: DraftImage) => Promise<Omit<CleanReview, "key">> | null,
@@ -372,11 +335,6 @@ function CharacterForm({
       "Không tách được nền",
     );
 
-  /**
-   * The cleaned photo or cut-out takes the original's place; the original can
-   * come back until and after saving. A cut-out keeps the photo's origin: its
-   * pixels are the photo's own.
-   */
   const acceptCleaned = (review: CleanReview) => {
     setImages((current) =>
       current.map((image): DraftImage => {
@@ -416,14 +374,13 @@ function CharacterForm({
       current.map((image) => (image.key === key && image.original ? image.original : image)),
     );
 
-  // Each cleaned version beside its original, in the order they finished.
   const reviewed = reviews.flatMap((review) => {
     const original = images.find((i) => i.key === review.key);
     return original ? [{ review, original }] : [];
   });
 
   useEffect(() => {
-    onGuardChange(inFlight ? "busy" : unsavedAi ? "unsaved-ai" : null);
+    onGuardChange(inFlight ? "work-in-flight" : unsavedAi ? "unsaved-ai" : null);
   }, [inFlight, unsavedAi, onGuardChange]);
 
   useEffect(() => {
@@ -478,12 +435,10 @@ function CharacterForm({
         : null;
   const canSave = name.trim().length > 0 && handle.length > 0 && !handleError && !busy;
 
-  // Slots left under the per-character limit, counting images still generating.
   const freeSlots = Math.max(0, MAX_CHARACTER_IMAGES - images.length - pendingAngles.length);
 
   const canAdd = !adding && !saving && freeSlots > 0;
 
-  /** Adds staged images up to the limit and explains anything left out. */
   const addStaged = (staged: StagedImage[], offered: number) => {
     const accepted = staged.slice(0, freeSlots);
     const notes = [
@@ -543,8 +498,8 @@ function CharacterForm({
         name,
         images: images.map((i) => i.ref),
       });
-      // Text typed while the call ran wins over the generated one.
-      if (latestDescription.current === before) {
+      const typedWhileDescribing = latestDescription.current !== before;
+      if (!typedWhileDescribing) {
         setPreviousDescription(before);
         setDescription(result.description);
       }
@@ -616,7 +571,6 @@ function CharacterForm({
       </DialogHeader>
 
       <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_340px] overflow-y-auto">
-        {/* Reference images: drop anywhere in this panel. */}
         <section
           aria-label="Ảnh tham chiếu"
           className={cn(

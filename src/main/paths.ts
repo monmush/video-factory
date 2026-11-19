@@ -4,17 +4,6 @@ import { dirname, join } from "node:path";
 import { app } from "electron";
 import { childPath } from "./safe-path";
 
-/**
- * Everything the app persists lives under one folder:
- *
- *   <userData>/
- *     workspace.json   series and sessions
- *     settings.json    window/theme preferences
- *     secrets.json     provider keys, encrypted with the OS keychain (safeStorage)
- *     media/<seriesId>/<sessionId>/   board.json (scripts and chat), later audio, clips and exports
- *
- * Set HYAN_DATA_DIR to point development at a disposable folder.
- */
 export function dataDir(): string {
   return process.env.HYAN_DATA_DIR ?? app.getPath("userData");
 }
@@ -26,13 +15,6 @@ export const mediaDir = (seriesId: string, sessionId?: string) =>
     ? childPath(join(dataDir(), "media"), seriesId, sessionId)
     : childPath(join(dataDir(), "media"), seriesId);
 
-/**
- * Write-then-rename so a crash mid-write never leaves a truncated JSON file:
- * the file is either the old one or the new one, whole. The temporary file is
- * flushed to disk before the rename (so even a power cut cannot swap in an
- * empty file) and named per write, so two writes of one file never share it.
- * A write cut off leaves only `<file>.<pid>-<id>.tmp`, removed by `removeStaleTmp`.
- */
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}-${randomBytes(4).toString("hex")}.tmp`;
@@ -51,10 +33,8 @@ export async function writeJsonAtomic(path: string, value: unknown): Promise<voi
   }
 }
 
-/** `writeJsonAtomic`'s temporary files (also the older `<file>.<pid>.tmp`), with the writer's pid. */
 const TMP = /\.(\d+)(?:-[0-9a-f]+)?\.tmp$/;
 
-/** Removes temporary files that writes of an earlier run left in `dir` (never this run's). */
 export async function removeStaleTmp(dir: string): Promise<void> {
   const names = await readdir(dir).catch(() => [] as string[]);
   for (const name of names) {

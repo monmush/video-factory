@@ -11,15 +11,19 @@
   },
   "scripts": {
     "dev": "electron-vite dev --watch",
+    "dev:fresh": "HYAN_DATA_DIR=$(mktemp -d -t hyan-fresh) electron-vite dev --watch",
     "build": "electron-vite build",
+    "build:package": "electron-vite build --outDir out-package",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
-    "package:mac": "pnpm build && electron-builder --mac",
-    "package:mac:dir": "pnpm build && electron-builder --mac --dir",
-    "package:win": "pnpm build && electron-builder --win",
+    "check": "pnpm typecheck && pnpm lint && pnpm check:comments && pnpm test && pnpm build",
+    "check:comments": "node scripts/check-comments.mjs",
+    "package:mac": "node scripts/fetch-ffmpeg.mjs && HYAN_BUNDLE_KEYS=1 pnpm build:package && electron-builder --mac",
+    "package:mac:dir": "node scripts/fetch-ffmpeg.mjs && HYAN_BUNDLE_KEYS=1 pnpm build:package && electron-builder --mac --dir",
+    "package:mac:nokeys": "node scripts/fetch-ffmpeg.mjs && pnpm build:package && electron-builder --mac",
+    "package:win": "pnpm build:package && electron-builder --win",
     "test": "vitest run"
   },
   "dependencies": {

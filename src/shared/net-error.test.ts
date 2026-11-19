@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { isNetworkError, isNetworkMessage, providerBusy, retryDelayMs } from "./net-error";
 
-// Network trouble versus a real failure: only the second counts toward a
-// fallback (docs/LIVE_DIRECTOR_EXPERIMENT.md, "Network failures").
-
 const cause = (code: string) =>
   Object.assign(new Error(`getaddrinfo ${code} v3b.fal.media`), { code });
 
 describe("telling network trouble from a failed request", () => {
   it("reads fetch's own wrapper and its cause", () => {
-    // As logged in the first live run.
     expect(isNetworkError(new TypeError("fetch failed", { cause: cause("ENOTFOUND") }))).toBe(true);
     expect(isNetworkError(new TypeError("fetch failed"))).toBe(true);
     for (const code of ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNREFUSED", "UND_ERR_SOCKET"]) {

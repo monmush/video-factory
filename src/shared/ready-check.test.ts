@@ -207,7 +207,6 @@ describe("needsAttention", () => {
     expect(flagged.places.map((p) => p.id)).toEqual(["yard"]);
     expect(flagged.toMake).toHaveLength(1);
     expect(needsAttention(flagged)).toBe(true);
-    // Only the series' own places count.
     const other = readyCheck([fine], ["1"], assets, null, { placeIds: ["hall"] });
     expect(other.places).toEqual([]);
     expect(needsAttention(other)).toBe(false);

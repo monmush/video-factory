@@ -1,7 +1,6 @@
 import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 
-/** Multi-line counterpart of Input, using the same border, focus and dark treatment. */
 function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return (
     <textarea

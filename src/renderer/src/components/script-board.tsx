@@ -48,6 +48,7 @@ import {
   useBoardView,
 } from "@/lib/board";
 import { useLiveWriting } from "@/lib/chat";
+import { withOccurrenceKeys } from "@/lib/occurrence-keys";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -64,29 +65,7 @@ import {
 import { Input } from "./ui/input";
 import { MenuItem } from "./ui/menu";
 
-// The script board of a session (docs/SCRIPT_BOARD_DECISIONS.md):
-//   - up to FULL_CARDS_MAX scripts open as full cards side by side; more open
-//     in the list/detail reader (the toggle can override either way);
-//   - no selection: a compact card opens on click, a list row reads;
-//     "Nhắc trong chat" (or `#` in the composer) adds a script as a chat
-//     reference, marked on its card;
-//   - several scripts are selected by dragging a box over empty board space,
-//     or with Cmd/Shift-click; Esc or a click on empty space clears;
-//   - cards and rows drag onto the chat to reference them (the whole
-//     selection when the dragged card is in it); right-click offers the
-//     card's actions, for the whole selection where that makes sense;
-//   - card buttons make a new card beside the original; chat edits in place;
-//   - scripts sent to video are read-only with a mark linking to the video;
-//     "Sửa" (and any chat edit) makes a new version after them
-//     (docs/VIDEO_COMMIT_DECISIONS.md, "Moving between Kịch bản and Video");
-//   - a series' first batch dims every card but the test video (one video
-//     first, docs/VIDEO_COMMIT_DECISIONS.md); a click on a dimmed gallery card
-//     makes it the test, the list view and right-click menu offer it;
-//   - no warnings on cards: the writer fixes its own output before it lands.
-//     The estimated length is neutral information, never coloured.
-
 const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
-/** Not the test video: quieter but readable, and brighter under the pointer. */
 const DIMMED = "opacity-50 hover:opacity-80 focus-within:opacity-80";
 
 interface CardActions {
@@ -94,42 +73,33 @@ interface CardActions {
   pin: (id: string, pinned: boolean) => void;
   remove: (id: string) => void;
   retry: (id: string) => void;
-  /** Adds or removes the script from the chat references. */
   toggleRef: (id: string) => void;
   open: (id: string) => void;
-  /** Several scripts at once (right-click on a selection). */
   removeMany: (ids: string[]) => void;
   pinMany: (ids: string[], pinned: boolean) => void;
   refMany: (ids: string[]) => void;
-  /** Opens the card's "Tùy chỉnh" prompt. */
   customise: (id: string) => void;
-  /** A script sent to video: makes its new version and opens it in the chat. */
   edit: (id: string) => void;
-  /** One product for the script (null: none); only what is about the product is rewritten. */
   setProduct: (id: string, productId: string | null) => void;
-  /** Takes back the card's last product change. */
   undoProduct: (id: string) => void;
   stage: (id: string) => void;
 }
 
 interface Notice {
   text: string;
-  /** Deleted scripts the notice can bring back. */
   restore?: string[];
-  /**
-   * A product change the notice can take back. It stays while the change can
-   * be undone (until the next request clears it), not on a timer.
-   */
   productOf?: string;
 }
 
-/** Clicks on controls, or while text is selected, are not card clicks. */
 function isCardClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  // The Dàn dựng list is content to act on, not the card.
   if (target.closest("button, a, input, textarea, form, [data-shot-brief]")) return false;
   return !window.getSelection()?.toString();
 }
+
+const SELECTABLE_TEXT_OR_CONTROL =
+  "dl, [data-staging], [data-shot-brief], button, input, textarea, form";
+const NOT_EMPTY_BOARD_SPACE = "[data-card], [data-reader], button, a, input, textarea, form";
 
 export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
@@ -140,7 +110,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const [selection, setSelection] = useState<string[]>([]);
   const [customiseId, setCustomiseId] = useState<string | null>(null);
   const [box, setBox] = useState<Box | null>(null);
-  const root = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLElement>(null);
   const videoJobs = useVideoJobs(sessionId);
   const action = useAction();
 
@@ -158,8 +128,6 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const refs = view.refs.filter((id) => scripts.some((s) => s.id === id));
   const selected = selection.filter((id) => scripts.some((s) => s.id === id));
   const layout = boardLayout(view, scripts.length);
-  // One video first: every finished card but the test is dimmed, until the
-  // pointer or focus is on "Tạo cả N video".
   const finished = finishedScripts(board.scripts);
   const nudge = !session.approvedAt && isFirstBatch(session, sessions) && finished.length > 1;
   const testId = nudge
@@ -229,7 +197,6 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     open: (id) => setView({ layout: "list", activeId: id }),
   };
 
-  // A product change's notice goes once the change can no longer be undone.
   const productNotice = notice?.productOf
     ? scripts.findIndex((s) => s.id === notice.productOf && s.productUndo)
     : -1;
@@ -249,9 +216,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       setNotice(null);
     });
 
-  /** Keyboard on a focused card or row: Enter opens, Delete removes that card. */
   const onCardKey = (e: KeyboardEvent<HTMLElement>, id: string) => {
     if (e.target !== e.currentTarget) return;
+    if (moveFocusInGallery(e)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       actions.open(id);
@@ -261,7 +228,6 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // Cmd/Ctrl/Shift-click adds a card to the selection or takes it out.
   const onSelectClick = (e: MouseEvent, id: string) => {
     if (!(e.metaKey || e.ctrlKey || e.shiftKey) || !isCardClick(e)) return false;
     e.preventDefault();
@@ -271,13 +237,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     return true;
   };
 
-  // Dragging a card or row: the whole selection when the card is in it.
   const dragProps = (script: Script, number: number) => ({
     onPointerDown: (e: PointerEvent<HTMLElement>) => {
-      // Dialogue and staging stay selectable as text; controls stay clickable.
-      e.currentTarget.draggable = !(e.target as HTMLElement).closest(
-        "dl, [data-staging], [data-shot-brief], button, input, textarea, form",
-      );
+      e.currentTarget.draggable = !(e.target as HTMLElement).closest(SELECTABLE_TEXT_OR_CONTROL);
     },
     onDragStart: (e: DragEvent<HTMLElement>) => {
       const ids = selected.includes(script.id)
@@ -289,12 +251,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     },
   });
 
-  // A box dragged over empty board space selects the cards it touches.
-  const onBoardPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+  const onBoardPointerDown = (e: PointerEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
-    // The list view's open script ([data-reader]) is content, not empty space.
-    const content = "[data-card], [data-reader], button, a, input, textarea, form";
-    if (e.button !== 0 || target.closest(content)) return;
+    if (e.button !== 0 || target.closest(NOT_EMPTY_BOARD_SPACE)) return;
     const el = root.current;
     if (!el) return;
     const start = { x: e.clientX, y: e.clientY };
@@ -329,12 +288,10 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       setBox(null);
-      // A plain click on empty space clears the selection.
       if (!moved) setSelection(base);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp, { once: true });
-    // No text selection while drawing the box.
     e.preventDefault();
   };
 
@@ -357,9 +314,9 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only box selection; cards stay keyboard-reachable
-    <div
+    <section
       ref={root}
+      aria-label="Bảng kịch bản"
       className="relative min-h-full px-6 pt-2 pb-8"
       onPointerDown={onBoardPointerDown}
       onKeyDown={(e) => {
@@ -443,7 +400,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -456,19 +413,13 @@ interface Box {
 
 interface SharedProps {
   sessionId: string;
-  /** The series' products: offered first in the product picker. */
   seriesProductIds: readonly string[];
-  /** Any script on the board by id, deleted ones included (a new version's source). */
   sourceOf: (id: string) => Script | undefined;
-  /** Sent to video: its job, or null before the job exists. Undefined when not sent. */
   jobOf: (id: string) => VideoJob | null | undefined;
-  /** Scripts referenced in the chat composer. */
   refs: string[];
   actions: CardActions;
   onCardKey: (e: KeyboardEvent<HTMLElement>, id: string) => void;
-  /** Scripts selected on the board (box or Cmd/Shift-click). */
   selected: string[];
-  /** Handles a modifier click as selection; returns true if it did. */
   onSelectClick: (e: MouseEvent, id: string) => boolean;
   dragProps: (
     script: Script,
@@ -477,42 +428,49 @@ interface SharedProps {
     onPointerDown: (e: PointerEvent<HTMLElement>) => void;
     onDragStart: (e: DragEvent<HTMLElement>) => void;
   };
-  /** A card whose "Tùy chỉnh" prompt the right-click menu asked to open. */
   customiseId: string | null;
   clearCustomise: () => void;
-  /** One video first: cards other than the test are dimmed (never disabled). */
   isDimmed: (id: string) => boolean;
-  /** Present while the nudge shows: which card is the test, and choosing another. */
   testChoice: { isTest: (id: string) => boolean; pick: (id: string) => void } | null;
 }
 
-/** Arrow keys move focus between the [data-card] elements in a container. */
-function moveFocus(e: KeyboardEvent<HTMLElement>, keys: { prev: string[]; next: string[] }) {
+function moveFocus(
+  e: KeyboardEvent<HTMLElement>,
+  container: Element,
+  keys: { prev: string[]; next: string[] },
+): boolean {
   const step = keys.next.includes(e.key) ? 1 : keys.prev.includes(e.key) ? -1 : 0;
-  if (!step) return;
-  const cards = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-card]")];
+  if (!step) return false;
+  const cards = [...container.querySelectorAll<HTMLElement>("[data-card]")];
   const current = cards.indexOf(document.activeElement as HTMLElement);
-  if (current < 0) return;
+  if (current < 0) return false;
   e.preventDefault();
   cards[current + step]?.focus();
+  return true;
+}
+
+function moveFocusInGallery(e: KeyboardEvent<HTMLElement>): boolean {
+  const gallery = e.currentTarget.closest("[data-gallery]");
+  if (!gallery) return false;
+  return moveFocus(e, gallery, {
+    prev: ["ArrowLeft", "ArrowUp"],
+    next: ["ArrowRight", "ArrowDown"],
+  });
 }
 
 function Gallery({ scripts, full, ...shared }: SharedProps & { scripts: Script[]; full: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   useFlip(ref, scripts);
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: arrow keys move between the focusable cards inside
     <div
       ref={ref}
+      data-gallery
       className={cn(
         "relative grid gap-4",
         full
           ? "grid-cols-[repeat(auto-fill,minmax(min(100%,400px),1fr))]"
           : "grid-cols-[repeat(auto-fill,minmax(min(100%,260px),1fr))]",
       )}
-      onKeyDown={(e) =>
-        moveFocus(e, { prev: ["ArrowLeft", "ArrowUp"], next: ["ArrowRight", "ArrowDown"] })
-      }
     >
       {scripts.map((script, i) =>
         full ? (
@@ -547,7 +505,7 @@ function ListView({
         role="listbox"
         aria-label="Kịch bản"
         className="relative sticky top-2 flex max-h-[calc(100vh-8rem)] flex-col gap-0.5 overflow-y-auto"
-        onKeyDown={(e) => moveFocus(e, { prev: ["ArrowUp"], next: ["ArrowDown"] })}
+        onKeyDown={(e) => moveFocus(e, e.currentTarget, { prev: ["ArrowUp"], next: ["ArrowDown"] })}
       >
         {scripts.map((script, i) => {
           const isActive = script.id === active?.id;
@@ -624,7 +582,6 @@ function ListView({
   );
 }
 
-/** A full, readable script with its actions at the bottom right. */
 function ScriptCard({
   script,
   number,
@@ -636,17 +593,13 @@ function ScriptCard({
   const isSent = job !== undefined;
   const assets = useWorkspace().assets;
   const [prompting, setPrompting] = useState(false);
-  /** "Lời thoại" or "Dàn dựng", per card. */
   const [tab, setTab] = useState<CardTab>("lines");
-  // Staging makes itself, also for a script not sent yet: the card is in progress until it exists.
   const staging = useStaging(shared.sessionId, script);
-  // "Tùy chỉnh" chosen from the right-click menu opens this card's prompt.
   useEffect(() => {
     if (customiseId !== script.id) return;
     setPrompting(true);
     clearCustomise();
   }, [customiseId, script.id, clearCustomise]);
-  // Text writes in when it arrives or changes, not when the board is reopened.
   const firstVersion = useRef(script.updatedAt);
   const reveal = script.updatedAt !== firstVersion.current;
 
@@ -655,7 +608,6 @@ function ScriptCard({
   const isRef = refs.includes(script.id);
   const dimmed = shared.isDimmed(script.id);
   const seconds = script.lines.length ? estimateSeconds(script.lines) : 0;
-  // After a product change: the lines it rewrote, against the script before it.
   const undo = script.productUndo;
   const earlier =
     undo && !undo.copy
@@ -673,7 +625,6 @@ function ScriptCard({
     assets.find((a) => a.id === line.characterId)?.name ?? line.speaker;
 
   return (
-    // Focusable in the gallery for the arrow keys, Enter and Delete.
     <CardMenu script={script} shared={shared}>
       <article
         data-flip={inGallery ? script.id : undefined}
@@ -691,15 +642,11 @@ function ScriptCard({
         onKeyDown={(e) => inGallery && onCardKey(e, script.id)}
         onClick={(e) => {
           if (!inGallery || shared.onSelectClick(e, script.id)) return;
-          // Full cards have no click action of their own, so a click on a dimmed one picks it.
           if (dimmed && isCardClick(e)) shared.testChoice?.pick(script.id);
         }}
         {...shared.dragProps(script, number)}
       >
-        {/* Centred on the top row: 16px padding + half its 20px height − half the 14px icon. */}
         <DragHandle className="top-[19px] left-0.5" />
-        {/* Which script and where its video stands; the title below gets the full width.
-            The hook is not repeated: on a full card it is the first line of dialogue. */}
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
             {script.status === "ready" && script.lines.length > 0 && (
@@ -740,28 +687,32 @@ function ScriptCard({
               )}
               data-selectable
             >
-              {script.lines.map((line, i) => {
-                const style: CSSProperties | undefined = reveal
-                  ? { animationDelay: `${i * 70}ms` }
-                  : undefined;
-                return (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: lines have no identity; the list is replaced as a whole
-                  <Fragment key={i}>
-                    <dt className={cn("text-muted-foreground", reveal && "line-in")} style={style}>
-                      {speaker(line)}
-                    </dt>
-                    <dd
-                      className={cn(
-                        reveal && "line-in",
-                        rewrote(i) && "-mx-1 rounded-sm bg-accent px-1",
-                      )}
-                      style={style}
-                    >
-                      {line.text}
-                    </dd>
-                  </Fragment>
-                );
-              })}
+              {withOccurrenceKeys(script.lines, (line) => line.text).map(
+                ({ item: line, key }, i) => {
+                  const style: CSSProperties | undefined = reveal
+                    ? { animationDelay: `${i * 70}ms` }
+                    : undefined;
+                  return (
+                    <Fragment key={key}>
+                      <dt
+                        className={cn("text-muted-foreground", reveal && "line-in")}
+                        style={style}
+                      >
+                        {speaker(line)}
+                      </dt>
+                      <dd
+                        className={cn(
+                          reveal && "line-in",
+                          rewrote(i) && "-mx-1 rounded-sm bg-accent px-1",
+                        )}
+                        style={style}
+                      >
+                        {line.text}
+                      </dd>
+                    </Fragment>
+                  );
+                },
+              )}
             </dl>
             {writing && <div className="shimmer pointer-events-none absolute inset-0 rounded-md" />}
           </div>
@@ -840,7 +791,6 @@ function ScriptCard({
   );
 }
 
-/** Title and hook only. A click (or Enter) opens the reader. */
 function CompactCard({
   script,
   number,
@@ -877,7 +827,6 @@ function CompactCard({
         title={dimmed ? "Chọn làm video thử" : undefined}
         onClick={(e) => {
           if (shared.onSelectClick(e, script.id) || !isCardClick(e)) return;
-          // A dimmed card's first click picks it as the test; "Mở" still opens it.
           if (dimmed) shared.testChoice?.pick(script.id);
           else actions.open(script.id);
         }}
@@ -963,12 +912,6 @@ function CompactCard({
   );
 }
 
-// ---------------------------------------------------------------- right-click
-
-/**
- * Right-click on a card or row: the same actions as its buttons. On a card
- * that is part of a selection, the menu acts on the whole selection.
- */
 function CardMenu({
   script,
   shared,
@@ -977,7 +920,6 @@ function CardMenu({
 }: {
   script: Script;
   shared: SharedProps;
-  /** Compact cards also offer "Mở". */
   canOpen?: boolean;
   children: ReactElement;
 }) {
@@ -1063,7 +1005,6 @@ function CardMenu({
   );
 }
 
-/** Pins the whole selection, or unpins it when every script is already pinned. */
 function GroupPinItem({ ids, shared }: { ids: string[]; shared: SharedProps }) {
   const board = useBoard(shared.sessionId);
   const allPinned = ids.every((id) => board?.scripts.find((s) => s.id === id)?.pinned);
@@ -1075,9 +1016,6 @@ function GroupPinItem({ ids, shared }: { ids: string[]; shared: SharedProps }) {
   );
 }
 
-// ---------------------------------------------------------------- small parts
-
-/** Shows on hover where a card can be grabbed to drag it onto the chat. */
 function DragHandle({ className }: { className?: string }) {
   return (
     <GripVertical
@@ -1090,7 +1028,6 @@ function DragHandle({ className }: { className?: string }) {
   );
 }
 
-/** The card's prompt for a guided variant. Enter creates, Esc closes. */
 function VariantForm({
   onSubmit,
   onCancel,
@@ -1128,30 +1065,22 @@ function VariantForm({
   );
 }
 
-/** Marks a script that is referenced in the chat composer. */
 function RefMark() {
   return (
     <MessageSquare className="size-3 shrink-0 text-foreground" aria-label="Đang nhắc trong chat" />
   );
 }
 
-/** "bản 2" on a new version of a script sent to video. */
 function VersionTag({ script }: { script: Script }) {
   if (!script.version) return null;
   return <span className="whitespace-nowrap">· bản {script.version}</span>;
 }
 
-/** Where a written script's Dàn dựng stands; "none" while the jobs load. */
 function useStaging(sessionId: string, script: Script): StagingState {
   const jobs = useVideoJobs(sessionId);
   return jobs ? stagingState(script, jobs.jobs.get(script.id)) : "none";
 }
 
-/**
- * On a compact card not sent to video: its staging still being made (the
- * script is not done yet), or the way to try again after it failed. Full
- * cards say it on their "Dàn dựng" tab.
- */
 function StagingMark({
   scriptId,
   state,
@@ -1171,7 +1100,6 @@ function StagingMark({
       size="xs"
       className="h-5 px-1.5 text-2xs"
       onClick={(e) => {
-        // The card opens on a click; this one only retries.
         e.stopPropagation();
         actions.stage(scriptId);
       }}
@@ -1181,7 +1109,6 @@ function StagingMark({
   );
 }
 
-/** On a script sent to video: where its video stands; opens the Video tab. */
 function SentBadge({
   sessionId,
   job,
@@ -1226,7 +1153,6 @@ const CARD_TABS: { id: CardTab; label: string }[] = [
   { id: "staging", label: "Dàn dựng" },
 ];
 
-/** The full card's two views: its dialogue, or how it will be filmed. */
 function CardTabs({
   value,
   onChange,
@@ -1234,7 +1160,6 @@ function CardTabs({
 }: {
   value: CardTab;
   onChange: (tab: CardTab) => void;
-  /** Being made: its tab shimmers (the script is not done yet); failed: marked. */
   staging: StagingState;
 }) {
   return (
@@ -1266,10 +1191,6 @@ function CardTabs({
   );
 }
 
-/**
- * The card's top row: number, version, what the last request did, chat and
- * pin marks on the left; `children` (the video's status) on the right.
- */
 function CardMeta({
   script,
   number,
@@ -1294,7 +1215,6 @@ function CardMeta({
   );
 }
 
-/** What the latest request did to this card, in words, until the next request. */
 function ChangeMark({ mark }: { mark: Script["mark"] }) {
   if (!mark) return null;
   return <span className="whitespace-nowrap">· {mark === "new" ? "Mới" : "Vừa sửa"}</span>;
@@ -1358,28 +1278,18 @@ function PinAction({ script, actions }: { script: Script; actions: CardActions }
   );
 }
 
-/** Placeholder bars while text is being written. */
-function Bars({ count, className }: { count: number; className?: string }) {
-  const widths = ["w-2/3", "w-full", "w-5/6", "w-11/12", "w-3/4", "w-4/5"];
+const PLACEHOLDER_BAR_WIDTHS = ["w-2/3", "w-full", "w-5/6", "w-11/12", "w-3/4", "w-4/5"] as const;
+
+function Bars({ count, className }: { count: 1 | 2 | 3 | 4 | 5 | 6; className?: string }) {
   return (
     <div className={cn("flex flex-col gap-2", className)} role="status" aria-label="Đang viết">
-      {Array.from({ length: count }, (_, i) => (
-        <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: static placeholders
-          key={i}
-          className={cn("shimmer h-3 rounded bg-muted", widths[i % widths.length])}
-        />
+      {PLACEHOLDER_BAR_WIDTHS.slice(0, count).map((width) => (
+        <div key={width} className={cn("shimmer h-3 rounded bg-muted", width)} />
       ))}
     </div>
   );
 }
 
-/**
- * FLIP animation for the cards in `container` ([data-flip] children): cards
- * that moved slide to their new place, a variant grows out of its source, and
- * other new cards fade in. Runs after every render; positions are relative to
- * the container, so scrolling does not count as movement.
- */
 function useFlip(container: RefObject<HTMLElement | null>, scripts: Script[]) {
   const positions = useRef<Map<string, { x: number; y: number }> | null>(null);
   useLayoutEffect(() => {

@@ -12,8 +12,8 @@ import {
   toneGains,
   usableCutout,
 } from "./product-shot";
+import { SUBTITLE_BOTTOM_MARGIN_SHARE } from "./subtitles";
 
-/** A w×h RGBA bitmap, opaque inside `box`. */
 function bitmap(w: number, h: number, box: { x: number; y: number; w: number; h: number }) {
   const data = new Uint8Array(w * h * 4);
   for (let y = box.y; y < box.y + box.h; y++) {
@@ -33,12 +33,10 @@ describe("cut-outs", () => {
     expect(alphaBox(new Uint8Array(40), 10, 1)).toBeNull();
   });
 
-  it("is usable only when the product stands free of every edge (a holding hand reaches one)", () => {
+  it("is usable only when the product stands free of every edge (a holding hand reaches one) and is more than a speck", () => {
     expect(usableCutout({ x: 30, y: 40, w: 40, h: 100 }, 100, 200)).toBe(true);
-    // Hand and arm entering from the bottom edge.
     expect(usableCutout({ x: 20, y: 30, w: 50, h: 170 }, 100, 200)).toBe(false);
     expect(usableCutout(null, 100, 200)).toBe(false);
-    // A speck is not a product.
     expect(usableCutout({ x: 50, y: 50, w: 3, h: 3 }, 100, 200)).toBe(false);
   });
 
@@ -58,7 +56,6 @@ describe("cut-outs", () => {
     ).toBe(0);
     const assets = [{ id: "p", images: [photo("a")] }];
     expect(cutoutUsd(["p", "gone"], assets)).toBeCloseTo(CUTOUT_USD);
-    // Only with a place: without one the product's own photo is used.
     const lines = [{ text: "Một hai ba bốn", characterId: "c" }];
     expect(estimateUsd(lines, { frames: true, cutoutUsd: CUTOUT_USD })).toBeCloseTo(
       estimateUsd(lines, { frames: true }) + CUTOUT_USD,
@@ -80,9 +77,12 @@ describe("placing the product", () => {
       expect(place.w % 2).toBe(0);
       expect(place.h % 2).toBe(0);
     }
-    // A wide product is capped by width instead.
     const wide = placement({ width: 720, height: 1280 }, { w: 1000, h: 500 });
     expect(wide.w).toBeLessThanOrEqual(720 * PLACE.maxWidthShare + 2);
+  });
+
+  it("keeps the product's base above the subtitles, so they never cover its label", () => {
+    expect(PLACE.baseY).toBeLessThan(1 - SUBTITLE_BOTTOM_MARGIN_SHARE);
   });
 
   it("tone match is one mild gain per channel, capped, and can be switched off", () => {

@@ -28,10 +28,6 @@ import {
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
-/**
- * Whether the series needs new start frames (it has an environment with
- * photos), so estimates include them.
- */
 export function useNeedsFrames(sessionId: string): boolean {
   const { sessions, series, assets } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
@@ -39,7 +35,6 @@ export function useNeedsFrames(sessionId: string): boolean {
   return Boolean(own?.environmentIds.some((id) => assets.find((a) => a.id === id)?.images.length));
 }
 
-/** The series' places, for the warning about photos showing people or packaging. */
 export function useSeriesPlaceIds(sessionId: string): string[] {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
@@ -83,11 +78,6 @@ export interface Spend {
   run: (ids: string[]) => Promise<unknown>;
 }
 
-/**
- * Making videos from a set of scripts. `needsCheck` says whether the ready
- * check must open first; otherwise the caller shows a hold button whose hold
- * calls `make`.
- */
 export function useMakeVideos({
   sessionId,
   waiting,
@@ -95,10 +85,8 @@ export function useMakeVideos({
   approveOnly,
 }: {
   sessionId: string;
-  /** Writing or a chat turn is still running: the scripts may change. */
   waiting?: boolean;
   onStarted?: () => void | Promise<void>;
-  /** The board's use: the dialog only approves scripts and sends them to the Video tab. */
   approveOnly?: boolean;
 }) {
   const board = useBoard(sessionId);
@@ -168,11 +156,6 @@ export function useMakeVideos({
   };
 }
 
-/**
- * `remaining`: some scripts on the board already have videos, so the label
- * says which this makes ("video #2", "2 video còn lại"); `number` is the
- * board number of the one script a single make uses.
- */
 export function makeLabel(
   count: number,
   opts: { test?: boolean; hold?: boolean; remaining?: boolean; number?: number } = {},
@@ -196,14 +179,11 @@ export function ReadyCheckDialog({
   spend,
 }: {
   sessionId: string;
-  /** Script ids this click would make. */
   scope: string[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onApproved?: () => void | Promise<void>;
-  /** Writing or a chat turn is still running: the scripts may change. */
   waiting?: boolean;
-  /** Reads "Duyệt N kịch bản": the click only sends scripts to the Video tab. */
   approveOnly?: boolean;
   spend?: Spend;
 }) {

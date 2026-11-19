@@ -16,33 +16,18 @@ import * as writer from "../script-writer";
 import { getWorkspace, removeNote, saveNote, updateSession } from "../store";
 import * as video from "../video/runner";
 
-// The agent's only way to change anything: typed tools over the session's
-// script board. Scripts are numbered #1, #2… in board order (pinned first),
-// exactly as the operator sees them. Every change goes through board.ts, so it
-// is saved, pushed to the screen and recorded for the turn's one-step undo.
-
-/** What a tool can do besides changing the board. */
 export interface ToolHost {
   sessionId: string;
   log: board.TurnLog;
-  /** Replaces the label of the tool call being run, e.g. "Sửa #3". */
   label(text: string): void;
-  /** Shows buttons in the chat; a click sends the option as the next message. */
   offerChoices(question: string, options: string[]): void;
-  /** Shows a priced video fix in the chat; the operator holds its button to accept. */
   proposeFix(fix: Omit<Extract<ChatPart, { type: "fix" }>, "type" | "id">): void;
-  /** What the operator wrote this turn, for the feedback log. */
   request: string;
-  /** Settles when the operator stops the turn. */
   stopped: Promise<void>;
 }
 
 const STOPPED = Symbol("stopped");
 
-/**
- * Long writing work keeps going after a stop (cards finish on their own, and
- * the turn's undo already covers them), but the turn stops waiting for it.
- */
 const unlessStopped = <T>(host: ToolHost, work: Promise<T>) =>
   Promise.race([work, host.stopped.then((): typeof STOPPED => STOPPED)]);
 
@@ -50,12 +35,29 @@ interface ToolDef<S extends z.ZodRawShape> {
   name: string;
   description: string;
   shape: S;
-  /** Shown while the call is still being written by the model. */
   pending: string;
   run(args: z.infer<z.ZodObject<S>>, host: ToolHost): Promise<string>;
 }
 
-const define = <S extends z.ZodRawShape>(def: ToolDef<S>) => def;
+interface Tool {
+  name: string;
+  description: string;
+  shape: z.ZodRawShape;
+  pending: string;
+  execute(args: unknown, host: ToolHost): Promise<string>;
+}
+
+const define = <S extends z.ZodRawShape>(def: ToolDef<S>): Tool => ({
+  name: def.name,
+  description: def.description,
+  shape: def.shape,
+  pending: def.pending,
+  async execute(args, host) {
+    const parsed = z.object(def.shape).safeParse(args ?? {});
+    if (!parsed.success) throw new Error(parsed.error.message);
+    return def.run(parsed.data, host);
+  },
+});
 
 const seconds = (s: Pick<Script, "lines">) => Math.round(estimateSeconds(s.lines));
 const target = (s: Script) => s.brief.targetSec ?? DEFAULT_TARGET_SEC;
@@ -72,13 +74,10 @@ async function pick(sessionId: string, numbers: number[]) {
 
 const numberOf = (ordered: Script[], id: string) => ordered.findIndex((s) => s.id === id) + 1;
 
-// ---------------------------------------------------------------- video
-
 const key = (s: string) => s.replace(/^@/, "").replace(/\s+/g, " ").trim().toLowerCase();
 const named = (assets: Asset[], name: string) =>
   assets.find((a) => key(a.name) === key(name) || key(a.handle) === key(name));
 
-/** "@handle" or name of a library product; "không" (or empty) for no product. */
 function productArg(assets: Asset[], value: string): Asset | null {
   if (/^(không|khong|none|-)?$/i.test(key(value))) return null;
   const product = named(
@@ -105,7 +104,6 @@ const STATUS: Record<VideoJob["status"], string> = {
   done: "xong",
 };
 
-/** A video as the agent reads it: no file names, providers or models. */
 function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
   const name = (id: string | null | undefined) => assets.find((a) => a.id === id)?.name ?? "?";
   const stills = job.frames.map((f) => {
@@ -156,7 +154,6 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
     .join("\n\n");
 }
 
-/** A script's plan as read_scripts shows it: numbered briefs with their words, and the wishes. */
 function describePlan(job: VideoJob | null): string {
   if (!job) return "";
   if (job.planning) return "Dàn dựng: đang lên.";
@@ -207,7 +204,6 @@ const changeShape = z.discriminatedUnion("op", [
   z.object({ op: z.literal("redo_voice") }),
 ]);
 
-/** The agent's changes (names, 1-based numbers) as the job's own (ids, 0-based). */
 function toChanges(
   input: z.infer<typeof changeShape>[],
   job: VideoJob,
@@ -263,8 +259,6 @@ const lineShape = z.object({
   text: z.string().min(1),
 });
 
-// ---------------------------------------------------------------- notes
-
 async function seriesOf(sessionId: string) {
   const { ws, session } = await board.findSession(sessionId);
   const series = ws.series.find((s) => s.id === session.seriesId);
@@ -274,10 +268,6 @@ async function seriesOf(sessionId: string) {
 
 const FEEDBACK_LINES = 8;
 
-/**
- * The series' latest video-fix requests from feedback.jsonl, newest last, so
- * the chat can notice a complaint that came up before and offer to remember it.
- */
 export async function recentFeedback(seriesId: string, skipLatest = false): Promise<string> {
   const text = await readFile(dataFile("feedback.jsonl"), "utf8").catch(() => "");
   if (!text) return "";
@@ -381,8 +371,6 @@ export const TOOLS = [
       const current = scripts[0] as Script;
       host.label(`Sửa #${number}`);
       const ctx = await board.writerContext(host.sessionId);
-      // Merge onto the script as the writer sees it, then normalise like any
-      // written script so speakers and products resolve to library assets.
       const base = JSON.parse(writer.asJson(ctx, current)) as writer.RawScript;
       const written = writer.normalise(ctx, {
         ...base,
@@ -458,7 +446,6 @@ export const TOOLS = [
       const given = topics.map((t) =>
         t.product === undefined ? undefined : (productArg(ws.assets, t.product)?.id ?? null),
       );
-      // A library product named for a topic joins the series, so the writer knows it.
       await board.joinSeries(series, given);
       host.label(`Viết ${topics.length} kịch bản mới`);
       const outcome = await unlessStopped(
@@ -748,7 +735,6 @@ export const TOOLS = [
         voice: price.voice,
         rev: price.rev,
       });
-      // The local record of what operators ask for, to grow the built-in rules from.
       await appendFile(
         dataFile("feedback.jsonl"),
         `${JSON.stringify({
@@ -877,13 +863,11 @@ export const TOOLS = [
 
 export type ToolName = (typeof TOOLS)[number]["name"];
 
-/** Tools that show as buttons rather than as an activity row. */
 export const SILENT_TOOLS = new Set<string>(["offer_choices"]);
 
 export const pendingLabel = (name: string) =>
   TOOLS.find((t) => t.name === name)?.pending || "Đang làm";
 
-/** Runs a tool by name; errors come back as text for the model to read and correct. */
 export async function runTool(
   name: string,
   args: unknown,
@@ -891,11 +875,8 @@ export async function runTool(
 ): Promise<{ text: string; isError: boolean }> {
   const def = TOOLS.find((t) => t.name === name);
   if (!def) return { text: `Không có công cụ ${name}`, isError: true };
-  const parsed = z.object(def.shape).safeParse(args ?? {});
-  if (!parsed.success) return { text: parsed.error.message, isError: true };
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: each def checks its own parsed args
-    return { text: await def.run(parsed.data as any, host), isError: false };
+    return { text: await def.execute(args, host), isError: false };
   } catch (error) {
     return { text: error instanceof Error ? error.message : String(error), isError: true };
   }

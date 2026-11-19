@@ -82,19 +82,12 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { VideoModelMenu } from "./video-model-menu";
 
-// The Video tab (prototypes/video-generation, third version): a card per
-// finished script. Committed scripts show their job: one status line, the
-// dialogue once it exists, a tile per shot, and the finished video. Every
-// action that spends money is held. Jobs run in the main process; this only
-// shows them (docs/VIDEO_GENERATION_DECISIONS.md).
-
 const STOP_HOLD_MS = 1200;
 
-/**
- * Sent videos the batch button also takes to the end: not started, waiting at
- * "Nghe và xem cảnh chính", stopped or failed, or a test video that would still stop.
- */
-function stalledScripts(sent: Script[], jobs: ReadonlyMap<string, VideoJob>): Script[] {
+function sentVideosBatchAlsoFinishes(
+  sent: Script[],
+  jobs: ReadonlyMap<string, VideoJob>,
+): Script[] {
   return sent.filter((s) => {
     const job = jobs.get(s.id);
     if (!job) return true;
@@ -129,6 +122,9 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   const sent = finished.filter((s) => committed.includes(s.id));
   const rest = finished.filter((s) => !committed.includes(s.id));
 
+  const batchButtonMakesOnlyThisVideo =
+    rest.length <= 1 && sentVideosBatchAlsoFinishes(sent, state.jobs).length === 0;
+
   const card = (script: Script) => (
     <VideoCard
       key={script.id}
@@ -139,13 +135,10 @@ export function VideosList({ sessionId }: { sessionId: string }) {
       job={state.jobs.get(script.id) ?? null}
       averages={state.averages}
       make={make}
-      // Its own button unless the batch button makes exactly this one video.
-      ownMake={rest.length > 1 || stalledScripts(sent, state.jobs).length > 0}
+      hasOwnMakeButton={!batchButtonMakesOnlyThisVideo}
     />
   );
 
-  // Made videos first; scripts still waiting follow as one group. The batch
-  // button sits in the session header (VideosToolbar).
   return (
     <Page className="pt-0">
       <SettingsBar sessionId={sessionId} />
@@ -165,11 +158,6 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   );
 }
 
-/**
- * The Video tab's batch action, in the session header: one button makes every
- * video on the tab that is not finished, end to end
- * (docs/VIDEO_COMMIT_DECISIONS.md, "Auto mode").
- */
 export function VideosToolbar({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
@@ -186,13 +174,12 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
   const estimate = makeAll.estimate;
   const restUsd = rest.reduce((n, s) => n + estimate(s), 0);
 
-  const stalled = stalledScripts(sent, state.jobs);
+  const stalled = sentVideosBatchAlsoFinishes(sent, state.jobs);
   const stalledUsd = stalled.reduce((n, s) => {
     const job = state.jobs.get(s.id);
     return n + (job ? costToFinishUsd(job) : estimate(s));
   }, 0);
   const count = rest.length + stalled.length;
-  // One unsent script uses the group's own wording; a lone sent one has its card's button.
   const showAll = count > 1 || rest.length === 1;
 
   const label = (hold: boolean) => {
@@ -241,12 +228,6 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
   );
 }
 
-/**
- * The batch's settings, always in view while videos are made. Experiment
- * branch: the Media level ("Chất lượng") applies to videos not yet planned; a
- * planned one keeps its level and offers "Lập lại". Further settings are one
- * more chip in the row.
- */
 function SettingsBar({ sessionId }: { sessionId: string }) {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
@@ -272,11 +253,6 @@ function SettingsBar({ sessionId }: { sessionId: string }) {
   );
 }
 
-/**
- * The level a video is made at: the batch's until it is planned or started.
- * A video with anything paid keeps its own level, and says why when the
- * batch's is now another.
- */
 function LevelLabel({ job, batchLevel }: { job: VideoJob | null; batchLevel?: string | null }) {
   const own = job && (job.plan || job.status !== "idle") ? job.level : batchLevel;
   const label = mediaLevel(own).label;
@@ -292,20 +268,17 @@ function LevelLabel({ job, batchLevel }: { job: VideoJob | null; batchLevel?: st
   );
 }
 
-/**
- * What this hold spends: up to "Nghe và xem cảnh chính" when it stops there, else the
- * rest of the video; "+?" when a planned step has no known price.
- */
-function holdPrice(job: VideoJob): string {
+function priceOfThisHold(job: VideoJob): string {
   const unknown = liveCostTable(job)?.unknownSteps ?? 0;
   const usd = stopsForPreview(job) ? costToPreviewUsd(job) : costToFinishUsd(job);
   return `~${formatCost(usd)}${unknown ? " +?" : ""}`;
 }
 
+const hasPlanTable = (job: VideoJob) => Boolean(job.live);
+
 const minutes = (seconds: number) => `còn ~${Math.max(1, Math.round(seconds / 60))} phút`;
 
 function statusLine(job: VideoJob | null, script: Script, averages: StepAverages, now: number) {
-  // Staging follows by itself: being made, or about to be.
   if (stagingState(script, job) === "staging") return "Đang lên dàn dựng";
   if (!job || job.status === "idle") return formatSeconds(estimateSeconds(script.lines));
   if (job.offline && (job.status === "running" || job.status === "waiting")) return OFFLINE_MESSAGE;
@@ -323,7 +296,6 @@ function statusLine(job: VideoJob | null, script: Script, averages: StepAverages
     case "failed": {
       const failed = job.shots.filter((s) => s.state === "failed").length;
       if (failed) return `Lỗi ${failed} cảnh · ${done}/${total} cảnh`;
-      // Failed on a lost connection before that was told apart: continuing is safe.
       return isNetworkMessage(job.error) ? "Mất kết nối" : `Lỗi · ${job.error ?? ""}`;
     }
   }
@@ -344,7 +316,6 @@ function statusLine(job: VideoJob | null, script: Script, averages: StepAverages
 
 type Stage = { label: string; state: "done" | "now" | "next"; count?: string };
 
-/** The stages of making a video, from its state: what is done, what runs now, what follows. */
 function stages(job: VideoJob): Stage[] {
   const phase = jobPhase(job);
   const order = ["voice", "frames", "shots", "assemble"] as const;
@@ -375,7 +346,6 @@ function stages(job: VideoJob): Stage[] {
         : {}),
     },
   ];
-  // A video that stops for a preview ends, for now, after its stills.
   return stopsAfterStills(job) ? list.slice(0, 2) : list;
 }
 
@@ -386,10 +356,6 @@ const stopsAfterStills = (job: VideoJob) =>
       job.shots.every((s) => s.state === "queued" || s.state === "planned"),
   );
 
-/**
- * While a video is made: every stage in order, done ones checked, the current
- * one shining with its count, the rest faint. The same look as the planning log.
- */
 function MakingSteps({ job }: { job: VideoJob }) {
   return (
     <ol className="mt-2 ml-7.5 flex flex-col gap-1 border-l border-border pl-3 text-xs tabular-nums">
@@ -427,7 +393,7 @@ function VideoCard({
   job: saved,
   averages,
   make,
-  ownMake,
+  hasOwnMakeButton,
 }: {
   sessionId: string;
   script: Script;
@@ -436,34 +402,28 @@ function VideoCard({
   job: VideoJob | null;
   averages: StepAverages;
   make: ReturnType<typeof useMakeVideos>;
-  /** A waiting script's own make button; outline, since the group's is primary. */
-  ownMake: boolean;
+  hasOwnMakeButton: boolean;
 }) {
   const { error, run } = useAction();
   const navigate = useNavigate();
-  // Until its first shot is sent, a video uses the batch's model and size as they are now.
   const job = saved && followBatch(saved, make.batch);
   const active = job?.status === "running" || job?.status === "waiting";
   const now = useNow(job?.status === "running");
   const ids = { sessionId, scriptId: script.id };
-  const restage = Boolean(
+  const stagingFailedBeforeSpending = Boolean(
     job && job.status === "failed" && !job.plan && !job.dialogue && spentUsd(job) === 0,
   );
 
-  // Takes with other models: tabs; the selected one is shown and acted on.
   const [tab, setTab] = useState<string | null>(null);
   const [trying, setTrying] = useState<string | null>(null);
-  // Playback time carried across tabs.
-  const playhead = useRef(0);
+  const playheadAcrossTakes = useRef(0);
   const takes = job ? takeModels(job) : [];
   const selectedModel = job ? (tab && takes.includes(tab) ? tab : chosenModel(job)) : null;
   const view = job && selectedModel ? viewTake(job, selectedModel) : job;
   const working = Boolean(job && selectedModel === workingModel(job));
   const chosen = Boolean(job && selectedModel === chosenModel(job));
-  /** Fixes and "Bản trước" on another take make it the one worked on first. */
   const takeArg = working ? {} : { take: selectedModel ?? undefined };
   const switchable = Boolean(job && (working || canSwitch(job)));
-  /** The take a new take starts from: the selected one, worked on. */
   const base = (() => {
     if (!job || !selectedModel || !view?.final || view.status !== "done" || !canSwitch(job)) {
       return null;
@@ -490,18 +450,15 @@ function VideoCard({
     setTab(model);
   };
 
-  // Experiment branch: takes with another model are hidden; the plan picks models.
   const showTabs = false;
   const several = takes.length > 1;
-  /** What a whole video with the selected take's model cost; null when unknown. */
   const ownCost = job && selectedModel ? takeCostUsd(job, selectedModel) : null;
   const shownCost = several ? ownCost : job ? spentUsd(job) : null;
 
   let cost: string | null = null;
   let action: ReactNode = null;
   if (!committed) {
-    // Experiment branch: sending only puts it on this tab; planning shows the price.
-    if (ownMake)
+    if (hasOwnMakeButton)
       action = (
         <Button
           variant="outline"
@@ -513,7 +470,6 @@ function VideoCard({
         </Button>
       );
   } else if (job?.planning) {
-    // Planning is free; what the director is doing shows under the title (PlanningSteps).
     action = (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <LoaderCircle className="size-3.5 animate-spin" />
@@ -521,17 +477,13 @@ function VideoCard({
       </span>
     );
   } else if (!job || job.status === "idle") {
-    // The plan first: made after approval, read and changed on the Kịch bản tab (Dàn dựng).
-    // The hold makes exactly that plan.
     action = job?.plan ? (
       <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
-        {/* Says what this hold makes: the preview (voice and stills, then a stop) or the video. */}
         {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo video"}
-        <ButtonPrice>{holdPrice(job)}</ButtonPrice>
+        <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
       </HoldButton>
     ) : null;
   } else if (active && working) {
-    // This take so far, and all-in when finished.
     const left = totalEstimateUsd(job) - spentUsd(job);
     cost = shownCost === null ? null : `${formatCost(shownCost)} · còn ~${formatCost(left)}`;
     action = (
@@ -545,20 +497,17 @@ function VideoCard({
       </HoldButton>
     );
   } else if (view?.status === "review") {
-    // Test video: voice and stills are ready; the expensive step waits for this hold.
-    // With the plan table on the card, its "Đã chi" says it; the status line does not repeat it.
-    cost = shownCost === null || view.live ? null : formatCost(shownCost);
+    cost = shownCost === null || hasPlanTable(view) ? null : formatCost(shownCost);
     action = (
       <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
         Giữ để tạo video
-        <ButtonPrice>{holdPrice(job)}</ButtonPrice>
+        <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
       </HoldButton>
     );
   } else if (view?.status === "done" || active) {
     cost = shownCost === null ? null : formatCost(shownCost);
     action =
       chosen || !view?.final ? (
-        // Download is always "the video".
         <Button variant="outline" onClick={() => run(() => api.invoke("video:save", ids))}>
           Tải xuống
         </Button>
@@ -575,24 +524,28 @@ function VideoCard({
           Dùng bản này
         </Button>
       );
-  } else if (restage) {
+  } else if (stagingFailedBeforeSpending) {
     action = (
       <Button variant="outline" onClick={() => run(() => api.invoke("video:plan", ids))}>
         Lên dàn dựng
       </Button>
     );
   } else {
-    // Stopped or failed: continue, paying only for what is missing.
     cost = shownCost === null ? null : formatCost(shownCost);
     action = (
       <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
         {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo tiếp"}
-        <ButtonPrice>{holdPrice(job)}</ButtonPrice>
+        <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
       </HoldButton>
     );
   }
 
-  // Secondary actions, in the "⋯" menu.
+  const plannedAtAnotherLevelThanBatch = Boolean(
+    view?.status === "idle" &&
+      view.plan &&
+      !view.planning &&
+      mediaLevel(view.level).id !== mediaLevel(make.level).id,
+  );
   const fixOrTalk = Boolean(
     view && view.status !== "idle" && view.status !== "waiting" && switchable,
   );
@@ -607,7 +560,6 @@ function VideoCard({
         !committed && "opacity-55 focus-within:opacity-100 hover:opacity-100",
       )}
     >
-      {/* Row 1: what it is; the one main action and the rest in "⋯". */}
       <div className="flex min-h-9 items-center gap-2.5">
         <span className="w-5 text-xs text-muted-foreground tabular-nums">#{number}</span>
         <h3 className="min-w-0 flex-1 truncate font-semibold">
@@ -626,7 +578,6 @@ function VideoCard({
             </MenuTrigger>
             <MenuPopup align="end">
               {committed && (
-                // A script with a video never changes: editing makes a new version on the board.
                 <MenuItem
                   onClick={() =>
                     run(async () => {
@@ -646,7 +597,6 @@ function VideoCard({
                 <MenuItem
                   onClick={() =>
                     run(async () => {
-                      // The chat fixes the take worked on: this one.
                       if (!working && selectedModel) {
                         await api.invoke("video:take", {
                           ...ids,
@@ -699,7 +649,6 @@ function VideoCard({
         )}
       </div>
 
-      {/* Row 2: the takes, by model. */}
       {showTabs && job && (
         <div
           role="tablist"
@@ -769,20 +718,17 @@ function VideoCard({
         </div>
       )}
 
-      {/* Row 3: the selected take's status and cost; the dialogue once it exists. */}
       <div className="mt-1 flex min-h-6 flex-wrap items-center gap-x-2.5 gap-y-1 pl-7.5">
         <span className="text-xs text-muted-foreground tabular-nums">
           <span className={cn(view?.status === "failed" && "text-destructive-foreground")}>
             {statusLine(view, script, averages, now)}
           </span>
-          {/* The Media level, not a model; videos made before levels existed keep their model's name. */}
           {(!job || job.level) && (
             <>
               {" · "}
               <LevelLabel job={job} batchLevel={make.level} />
             </>
           )}
-          {/* Charged so far, never an estimate (an estimate always carries "~"). */}
           {cost && shownCost ? ` · Đã chi ${cost}` : ""}
         </span>
         {job?.offline && active && working && (
@@ -798,31 +744,25 @@ function VideoCard({
         {view?.dialogue && <DialogueButton key={view.dialogue} job={view} />}
         {error && <span className="text-xs text-destructive-foreground">{error}</span>}
       </div>
-      {/* Planned at another level than the batch's now: re-planning is free but slow, so only on request. */}
-      {view?.status === "idle" &&
-        view.plan &&
-        !view.planning &&
-        mediaLevel(view.level).id !== mediaLevel(make.level).id && (
-          <div className="mt-1 flex items-center gap-2 pl-7.5 text-xs text-muted-foreground">
-            Kế hoạch theo {mediaLevel(view.level).label}
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => run(() => api.invoke("video:replan", ids))}
-            >
-              Lập lại
-            </Button>
-          </div>
-        )}
-      {/* How it will be filmed is read and changed on the Kịch bản tab (Dàn dựng); here only its planning shows. */}
+      {plannedAtAnotherLevelThanBatch && view && (
+        <div className="mt-1 flex items-center gap-2 pl-7.5 text-xs text-muted-foreground">
+          Kế hoạch theo {mediaLevel(view.level).label}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => run(() => api.invoke("video:replan", ids))}
+          >
+            Lập lại
+          </Button>
+        </div>
+      )}
       {view?.planningSteps && (view.planning || jobPhase(view) === "plan") && (
         <PlanningSteps steps={view.planningSteps} className="mt-2 ml-7.5" />
       )}
       {view &&
         (view.status === "running" || view.status === "waiting") &&
         jobPhase(view) !== "plan" && <MakingSteps job={view} />}
-      {/* What it costs, row by row, at every stage: planned, being made and finished. */}
-      {view?.live && <LivePlanFold job={view} />}
+      {view && hasPlanTable(view) && <LivePlanFold job={view} />}
       {view && view.status !== "idle" && (
         <JobBody
           key={selectedModel ?? ""}
@@ -831,14 +771,13 @@ function VideoCard({
           run={run}
           take={working ? undefined : (selectedModel ?? undefined)}
           canAct={switchable}
-          playhead={playhead}
+          playhead={playheadAcrossTakes}
         />
       )}
     </li>
   );
 }
 
-/** Plays the whole dialogue; pulses until played once. */
 function DialogueButton({ job }: { job: VideoJob }) {
   const key = `${job.sessionId}/${job.scriptId}`;
   const heard = useHeard(key);
@@ -871,10 +810,6 @@ function DialogueButton({ job }: { job: VideoJob }) {
   );
 }
 
-/**
- * What "Làm lại" on a shot means: the shot itself (always with its video's
- * model), or at the pause the still behind it.
- */
 function redoChange(job: VideoJob, shot: JobShot): FixChange {
   const frame = frameFor(job, shot);
   if (job.status === "review" && frame && madeByProvider(shot)) {
@@ -883,7 +818,6 @@ function redoChange(job: VideoJob, shot: JobShot): FixChange {
   return { op: "redo_shot", shot: shot.index };
 }
 
-/** What a fix costs, or null when it cannot be made (a product's own photo). */
 function priceOf(job: VideoJob, change: FixChange): number | null {
   try {
     return fixPriceUsd(job, [change], new Date().toISOString());
@@ -901,14 +835,10 @@ function JobBody({
   playhead,
 }: {
   job: VideoJob;
-  /** The video's number in the list; a shot is named within it ("Video #2 · Cảnh 3"). */
   number: number;
   run: (action: () => Promise<unknown>) => Promise<boolean>;
-  /** A parked take shown: fixes make it the one worked on first. */
   take?: string;
-  /** Nothing blocks acting on this take (another take is not rendering). */
   canAct: boolean;
-  /** Playback time, kept when switching takes. */
   playhead: { current: number };
 }) {
   const phase = jobPhase(job);
@@ -926,13 +856,11 @@ function JobBody({
     />
   ));
 
-  // One shot picked on a finished video (or at the pause): make it again, or talk about it.
   let bar: ReactNode = null;
   if (selected) {
     const change = redoChange(job, selected);
     const price = priceOf(job, change);
     bar = (
-      // Stays in view under a tall grid, so the actions are never a scroll away.
       <div className="sticky bottom-2 z-10 mt-2.5 flex w-fit max-w-full flex-wrap items-center gap-2 rounded-lg border bg-popover py-1.5 pr-1.5 pl-2.5 shadow-sm">
         <span className="text-xs whitespace-nowrap text-muted-foreground tabular-nums">
           Video #{number} · Cảnh {selected.index + 1}
@@ -973,8 +901,8 @@ function JobBody({
     );
   }
 
-  // While a fix runs, the video from before it stays playable.
-  const playable = job.final ?? (job.status !== "done" ? job.previous?.final : undefined);
+  const previousVideoWhileFixRuns = job.status !== "done" ? job.previous?.final : undefined;
+  const playable = job.final ?? previousVideoWhileFixRuns;
   if (playable) {
     return (
       <div className="mt-3.5 grid grid-cols-[minmax(0,320px)_1fr] items-start gap-4 max-md:grid-cols-1">
@@ -993,7 +921,6 @@ function JobBody({
           controls
           playsInline
           preload="metadata"
-          // Contain, not cover: in full screen a 9:16 video keeps its whole picture (black bars at the sides).
           className="aspect-[9/16] w-full rounded-xl bg-black object-contain"
         />
         <div>
@@ -1009,7 +936,6 @@ function JobBody({
       <div
         className={cn(
           "mt-3.5 grid gap-2",
-          // At the pause the stills are what is being judged: show them larger.
           job.status === "review"
             ? "grid-cols-[repeat(auto-fill,minmax(132px,1fr))]"
             : "grid-cols-[repeat(auto-fill,minmax(96px,1fr))]",
@@ -1043,7 +969,6 @@ function ShotTile({
   job: VideoJob;
   shot: JobShot;
   selected?: boolean;
-  /** Picks the shot for "Làm lại" and "Nhắc trong chat"; absent while the video is being made. */
   onPick?: () => void;
 }) {
   const video = useRef<HTMLVideoElement>(null);
@@ -1075,7 +1000,6 @@ function ShotTile({
       )}
     />
   );
-  // Shows that a click opens "Giữ để làm lại" before the click is made.
   const redoMark = onPick && !selected && (
     <span
       aria-hidden
@@ -1124,7 +1048,6 @@ function ShotTile({
   }
 
   if (!image) {
-    // Before the frame exists: the line itself.
     return (
       <div className={cn(base, !shot.audio && "border-dashed", drawing && "shimmer")}>
         {number}
@@ -1135,7 +1058,6 @@ function ShotTile({
     );
   }
 
-  // At the pause the stills are what is judged: full colour, and each can be picked.
   if (job.status === "review" && onPick) {
     return (
       <button

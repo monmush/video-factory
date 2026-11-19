@@ -8,29 +8,24 @@ import {
   useRef,
   useState,
 } from "react";
+import { isImeComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
 import { AssetThumb, thumbShape } from "./asset-picker";
 
-/**
- * A picker opened by a token typed right before the caret (`#` scripts, `@`
- * products). Keys come from the prompt box, so focus stays in the textarea:
- * ↑/↓ move, Enter or Tab choose, Esc dismisses it for that token.
- */
 export function usePicker<T>(token: Token | null, items: T[], onChoose: (item: T) => void) {
   const [dismissed, setDismissed] = useState<number | null>(null);
   const candidates = token && token.start !== dismissed ? items : [];
-  // The highlighted row starts at the top again whenever the query changes.
-  const key = token ? `${token.start}:${token.query}` : "";
-  const [highlight, setHighlight] = useState({ key: "", index: 0 });
-  const active = highlight.key === key ? Math.min(highlight.index, candidates.length - 1) : 0;
+  const query = token ? `${token.start}:${token.query}` : "";
+  const [highlight, setHighlight] = useState({ query: "", index: 0 });
+  const active = highlight.query === query ? Math.min(highlight.index, candidates.length - 1) : 0;
   const open = candidates.length > 0;
   const keys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!open || !token || e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (!open || !token || isImeComposing(e)) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const step = e.key === "ArrowDown" ? 1 : -1;
-      setHighlight({ key, index: (active + step + candidates.length) % candidates.length });
+      setHighlight({ query, index: (active + step + candidates.length) % candidates.length });
     } else if (e.key === "Enter" || e.key === "Tab") {
       e.preventDefault();
       const item = candidates[active];
@@ -45,11 +40,10 @@ export function usePicker<T>(token: Token | null, items: T[], onChoose: (item: T
     candidates,
     active,
     keys,
-    highlight: (index: number) => setHighlight({ key, index }),
+    highlight: (index: number) => setHighlight({ query, index }),
   };
 }
 
-/** The rows of an open picker, above (or below) the prompt box. */
 export function PickerList<T>({
   label,
   candidates,
@@ -68,7 +62,6 @@ export function PickerList<T>({
   onChoose: (item: T) => void;
   itemKey: (item: T) => string;
   children: (item: T) => ReactNode;
-  /** Opens under the box, for one near the top of a page. */
   below?: boolean;
   className?: string;
 }) {
@@ -91,7 +84,6 @@ export function PickerList<T>({
       )}
     >
       {candidates.map((item, i) => (
-        // Picked with the mouse or the composer's keys; focus stays in the composer.
         // biome-ignore lint/a11y/useKeyWithClickEvents: keys are handled by the composer
         <div
           key={itemKey(item)}
@@ -114,10 +106,6 @@ export function PickerList<T>({
   );
 }
 
-/**
- * `@` in a prompt box picks a library product (the series' own first) and
- * writes its `@handle` into the text. `off`: another picker owns the caret.
- */
 export function useProductMention({
   text,
   caret,
@@ -128,7 +116,6 @@ export function useProductMention({
 }: {
   text: string;
   caret: number;
-  /** The new text and where the caret goes. */
   onText: (text: string, caret: number) => void;
   input: RefObject<HTMLTextAreaElement | null>;
   seriesProductIds: readonly string[];
@@ -162,7 +149,6 @@ export function useProductMention({
         {(product) => (
           <>
             <AssetThumb asset={product} className={cn("border-0", thumbShape("product", "sm"))} />
-            {/* In a narrow box the name stays whole; the handle gives way. */}
             <span className="max-w-full shrink-0 truncate">{product.name}</span>
             <span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">
               @{product.handle}

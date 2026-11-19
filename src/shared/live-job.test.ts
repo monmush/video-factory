@@ -34,10 +34,6 @@ import {
   waitingForNetwork,
 } from "./video-job";
 
-// The live plan inside a job (experiment branch): keyframes as stills made in
-// dependency order, routes on shots, prices from the session's rates, and the
-// fallback after two failures.
-
 const NOW = "2026-11-13T10:00:00.000Z";
 const level = mediaLevel("balanced");
 const LINES = [
@@ -217,7 +213,6 @@ describe("minimum lengths from what the tools said", () => {
     const record = session();
     const { plan } = readLivePlan(answer(), ctx, record);
     const [warning] = cheaperAlternatives(plan, record);
-    // Two short lines: 2 × 5 s × $0.08 = $0.80 against about 4.4 s × $0.10/s.
     expect(warning).toMatch(
       /^Khẩu hình: lips\/free would cost ~\$0\.\d\d for these shots instead of ~\$0\.80/,
     );
@@ -259,7 +254,6 @@ describe("a planned job", () => {
     ]);
     const an = job.frames[1];
     expect(an && frameDeps(job, an)).toEqual(["kf:master"]);
-    // Voice done: only the master can start.
     const voiced = {
       ...job,
       dialogue: "d.mp3",
@@ -287,7 +281,6 @@ describe("a planned job", () => {
     const job = plannedJob();
     const table = liveCostTable(job);
     expect(table?.knownUsd).toBeCloseTo(costToFinishUsd(job));
-    // Planned: 3 keyframes at $0.08, 2 lip-sync shots billed at the 5 s minimum.
     expect(table?.knownUsd).toBeCloseTo((job.live?.costs.rows[0]?.usd ?? 0) + 0.24 + 0.8);
     expect(table?.knownUsd).toBeCloseTo(job.live?.costs.knownUsd ?? 0);
     const voiced = {
@@ -297,7 +290,6 @@ describe("a planned job", () => {
       shots: job.shots.map((s) => ({ ...s, start: 0, end: 6, audioSec: 6 })),
     };
     expect(liveCostTable(voiced)?.knownUsd).toBeCloseTo(0.01 + costToFinishUsd(voiced));
-    // Longer than the minimum: billed for what is sent.
     expect(liveCostTable(voiced)?.rows.at(-1)).toMatchObject({ quantity: "6 giây" });
   });
 
@@ -310,7 +302,6 @@ describe("a planned job", () => {
     const twice = shotAttemptFailed(job, once, "x");
     expect(twice).toMatchObject({ state: "queued", fallback: true, retried: false });
     expect(madeByProvider(twice)).toBe(true);
-    // A motion shot that falls back is moved locally, for free.
     expect(madeByProvider({ kind: "wide", route: "motion", fallback: true })).toBe(false);
     expect(madeByProvider({ kind: "wide", route: "motion" })).toBe(true);
   });
@@ -388,7 +379,6 @@ describe("network trouble", () => {
 
   it("waits before trying again, longer each round; failures side by side are one round", () => {
     let job = stepThrew(plannedJob(), { frame: "kf:master" }, offlineError(), T0);
-    // A second step failing in the same round adds nothing.
     job = stepThrew(job, { frame: "kf:an" }, offlineError(), T0 + 100);
     expect(job.offline?.tries).toBe(1);
     expect(waitingForNetwork(job, T0 + 4_000)).toBe(true);

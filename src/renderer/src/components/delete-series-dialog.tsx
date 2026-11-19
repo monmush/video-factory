@@ -7,10 +7,6 @@ import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { Button } from "./ui/button";
 import { Dialog, DialogClose, DialogFooter, DialogPopup, DialogTitle } from "./ui/dialog";
 
-/**
- * Confirms and deletes a series with its sessions. Used from the series page
- * and the sidebar. Only leaves the current screen when it belongs to that series.
- */
 export function DeleteSeriesDialog({
   series,
   open,
@@ -33,7 +29,6 @@ export function DeleteSeriesDialog({
     try {
       await api.invoke("series:delete", series.id);
       onOpenChange(false);
-      // Leave first when the open screen belongs to this series: it has nothing left to show.
       if (viewing) {
         if (next) {
           await navigate({ to: "/series/$seriesId", params: { seriesId: next.id }, replace: true });

@@ -20,7 +20,6 @@ const line = (characterId: string, text: string): ScriptLine => ({
 });
 const LINES = [line("a", "Con chào ông ạ"), line("b", "Ừ, ngồi xuống uống chén trà đã")];
 
-/** A planned job, running: voice done, stills to make, shots queued. */
 function job(): VideoJob {
   const base = applyPlan(
     newJob({
@@ -95,7 +94,6 @@ describe("reconcile on start", () => {
     const frame = next.frames.find((f) => f.id === id);
     expect(frame).toMatchObject({ requestId: "r1", submittedAt: "2026-11-19T07:01:00.000Z" });
     expect(frame?.sending).toBeUndefined();
-    // Not planned: polled at the fixed model's endpoint, so none is saved.
     expect(frame?.endpoint).toBeUndefined();
     expect(attached).toHaveLength(1);
   });
@@ -124,7 +122,6 @@ describe("reconcile on start", () => {
       rec({ purpose: "video-frame", frame: id, attempt: "b", endpoint: undefined }),
     ]);
     expect(next.shots[0]).toMatchObject({ state: "rendering", endpoint: "fal-ai/avatar" });
-    // No endpoint on record: cannot tell where to poll, so it is sent again.
     expect(next.frames[0]?.requestId).toBeUndefined();
     expect(next.frames[0]?.sending).toBeUndefined();
   });
@@ -153,7 +150,6 @@ describe("reconcile on start", () => {
     expect(attached).toEqual([]);
     expect(next.shots[0]?.state).toBe("queued");
     expect(next.shots[0]?.requestId).toBeUndefined();
-    // The mark goes: the shot is simply sent again.
     expect(next.shots[0]?.sending).toBeUndefined();
   });
 

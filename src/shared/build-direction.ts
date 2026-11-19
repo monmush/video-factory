@@ -33,42 +33,27 @@ import {
 } from "./recipe";
 import type { Picture, ShotList } from "./shot-list";
 
-// The build (docs/PLAN_PHASE_PROPOSAL.md, part 3): a checked shot list and a
-// recipe become the live direction a job keeps, so the executor, the prices
-// and the plan table read it as they read a live director's plan. Code
-// chooses the reference photos, writes the still prompts and fits lengths.
-// Pure and deterministic: the same list and recipe give the same requests.
-
-/** Photos of one person a picture is sent with: the main person, then everyone else. */
 const MAIN_PERSON_PHOTOS = 3;
 const OTHER_PERSON_PHOTOS = 2;
-/** Place photos the master is made from. */
 const MASTER_PLACE_PHOTOS = 2;
-/** Photos per cast member in the master. */
 const MASTER_PERSON_PHOTOS = 3;
-/** Photos per person the files offer (as `liveFiles` in src/main/video/director.ts). */
-const PHOTOS_PER_PERSON = 3;
+export const PHOTOS_OFFERED_PER_PERSON = 3;
 
 export interface BuildInput {
   list: ShotList;
   recipe: Recipe;
   lines: Pick<ScriptLine, "text">[];
   level: MediaLevel;
-  /** In order of first speaking (cast1, cast2…), with how many photos each has. */
   cast: { id: string; name: string; photos: number }[];
-  /** Photos of the place (place-1, place-2…). */
   placePhotos: number;
-  /** The directing call that made the list, when there was one. */
   run?: { model: string | null; ms: number };
 }
 
 interface Ref {
   placeholder: string;
-  /** What the legend calls it: "the place", "the master scene", a name. */
   what: string;
 }
 
-/** "Images 1-2 are the place. Image 3 is An." */
 export function legend(refs: Ref[]): string {
   const groups: { what: string; from: number; to: number }[] = [];
   refs.forEach((r, i) => {
@@ -90,7 +75,6 @@ const sentence = (s: string) => {
   return /[.!?]$/.test(up) ? up : `${up}.`;
 };
 
-/** A template with its slots filled: whole-string slots replaced, the references slot expanded. */
 function fill(template: unknown, slots: { prompt?: string; references?: string[] }): unknown {
   if (Array.isArray(template)) {
     return template.flatMap((v) =>
@@ -104,7 +88,6 @@ function fill(template: unknown, slots: { prompt?: string; references?: string[]
   return template;
 }
 
-/** The schema a role is checked and priced by: its own, under its endpoint and display name. */
 const schemaOf = (role: RoleModel): ModelSchema => ({
   ...role.schema,
   endpoint: role.endpoint,
@@ -129,7 +112,6 @@ function shareReferences(groups: Ref[][], budget: number): Ref[] {
   return groups.flatMap((g, i) => g.slice(0, taken[i]));
 }
 
-/** The live direction for a shot list and a recipe. Throws when a built request breaks its schema. */
 export function buildDirection(input: BuildInput): LiveDirection {
   const { list, recipe, cast } = input;
   const names = new Map(cast.map((c) => [c.id, c.name]));
@@ -137,7 +119,7 @@ export function buildDirection(input: BuildInput): LiveDirection {
     const at = cast.findIndex((c) => c.id === id);
     const person = cast[at];
     if (!person) return [];
-    const n = Math.min(most, person.photos, PHOTOS_PER_PERSON);
+    const n = Math.min(most, person.photos, PHOTOS_OFFERED_PER_PERSON);
     return Array.from({ length: n }, (_, i) => ({
       placeholder: `cast${at + 1}-${i + 1}`,
       what: person.name,
@@ -169,8 +151,7 @@ export function buildDirection(input: BuildInput): LiveDirection {
     return shareReferences(groups, max);
   };
 
-  // Pictures a speaking shot starts from: their people keep the mouth closed.
-  const speaking = new Set(
+  const picturesASpeakingShotStartsFrom = new Set(
     list.routes.flatMap((r) => (r.route === "lip-sync" && r.picture ? [r.picture] : [])),
   );
   const schemas: Record<string, ModelSchema> = {};
@@ -192,11 +173,9 @@ export function buildDirection(input: BuildInput): LiveDirection {
     const prompt = [
       legend(refs),
       STILL_FORMAT,
-      // The description starts with the shot size and angle (shot-list-prompt.md);
-      // the framing field repeats it, so it is not sent twice.
       sentence(p.description),
       p.people.length ? STILL_IDENTITY : "",
-      speaking.has(p.id)
+      picturesASpeakingShotStartsFrom.has(p.id)
         ? p.people.length > 1
           ? stillBeforeSpeakingWith(names.get(p.people[0] as string) ?? "The main person")
           : STILL_BEFORE_SPEAKING
@@ -294,7 +273,6 @@ export function buildDirection(input: BuildInput): LiveDirection {
   return {
     plan,
     costs,
-    // Budget is not a limit for now (19 Nov 2026): only steps without a price are noted.
     warnings: unknownPriceWarnings(costs),
     rates,
     schemas,

@@ -5,29 +5,14 @@ import { type Note, type NoteArea, notesBlock, WRITER_AREAS } from "../shared/no
 import { FIXTURE_STORIES } from "./script-fixtures";
 import { askText, parseJsonObject, textAiMode } from "./text-ai";
 
-// Writes the scripts on a session's board. Three kinds of call:
-//   - route: reads a chat request and decides to add scripts (planning their
-//     topics in the same pass, so cards appear before dialogue is written),
-//     edit existing scripts in place, or simply answer;
-//   - write: dialogue for one planned topic, or a variant of an existing script;
-//   - revise: an in-place edit of one script, which may report "unchanged".
-// The writer corrects its own output before a card appears; the operator is
-// never shown warnings (docs/SCRIPT_BOARD_DECISIONS.md). Length aims at the
-// request's target (about 45 s by default) and is corrected once in either
-// direction; product facts and variety are prompt rules.
-
-/** Everything the writer knows about the series. */
 export interface WriterContext {
   sessionId: string;
   guidance: string;
-  /** Learned preferences: for every series, then this series' own. */
   notes: { every: Note[]; series: Note[] };
   characters: Asset[];
   products: Asset[];
   environments: Asset[];
-  /** Titles already used in this series and session, for variety. */
   avoid: string[];
-  /** Claude: the session's chosen model and effort, so writing matches the chat. */
   model?: string;
   effort?: string;
 }
@@ -45,17 +30,14 @@ export interface Topic {
   hook: string;
 }
 
-/** `targetSec` is null when the request names no length. */
 export type Route =
   | { action: "add"; topics: Topic[]; direction: string; targetSec: number | null }
   | { action: "edit"; targets: number[] | "all"; instruction: string; targetSec: number | null }
   | { action: "reply"; text: string };
 
-/** Requests that name no count get this many scripts (open question; pilot batches are 3–5). */
 export const DEFAULT_COUNT = 5;
 export const MAX_COUNT = 30;
 
-/** Lengths a request may ask for, in seconds. */
 const MIN_TARGET_SEC = 10;
 const MAX_TARGET_SEC = 180;
 
@@ -72,10 +54,6 @@ function assetList(assets: Asset[], empty: string) {
     .join("\n");
 }
 
-/**
- * The series as a prompt section. Writers get the script and voice notes;
- * the chat, which also stages fixes, passes every area.
- */
 export function seriesBlock(ctx: WriterContext, areas: NoteArea[] = WRITER_AREAS) {
   const notes = notesBlock(ctx.notes.every, ctx.notes.series, areas);
   return `## Định hướng series
@@ -115,8 +93,6 @@ export const writingRules = (targetSec: number) => `## Quy tắc viết
   .join(", ")}. Tiếng này nghe được nhưng không có phụ đề. Nhiều nhất hai lần mỗi kịch bản.
 - Ngoài tiếng đó, không lời thoại trong ngoặc, không chỉ dẫn diễn xuất trong lời thoại.`;
 
-// Title and hook are what the operator scans on the board: keep them short,
-// never a story summary.
 export const TITLE_RULE = "ý chính của video, tối đa 8 chữ";
 export const HOOK_RULE =
   "câu hỏi hoặc điều bất ngờ mở đầu video, tối đa 14 chữ; không tóm tắt câu chuyện";
@@ -141,7 +117,6 @@ function avoidBlock(ctx: WriterContext) {
     : "";
 }
 
-/** Matches the writer's "@handle" (or name) to a series asset. */
 function findAsset(assets: Asset[], ref: string) {
   const key = ref.trim().replace(/^@/, "").toLowerCase();
   return assets.find((a) => a.handle === key || a.name.toLowerCase() === key);
@@ -164,7 +139,6 @@ export function normalise(ctx: WriterContext, raw: RawScript): WrittenScript {
       return {
         characterId: character?.id ?? null,
         speaker: character?.name ?? speaker.replace(/^@/, ""),
-        // Only a known sound at the very end survives; other bracketed text goes.
         text: cleanCues(String(line.text ?? "")),
       };
     })
@@ -182,7 +156,6 @@ export function normalise(ctx: WriterContext, raw: RawScript): WrittenScript {
   };
 }
 
-/** The script as the writer sees it when revising or varying it. */
 export function asJson(
   ctx: WriterContext,
   script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
@@ -200,10 +173,6 @@ export function asJson(
   });
 }
 
-/**
- * Silent self-correction: one pass when the estimated length is well off the
- * target. If it still misses, the card shows the honest estimate.
- */
 async function withinLength(
   ctx: WriterContext,
   script: WrittenScript,
@@ -221,8 +190,6 @@ async function withinLength(
   const fixed = await revise(ctx, script, instruction, targetSec, false);
   return fixed ?? script;
 }
-
-// ---------------------------------------------------------------- AI calls
 
 const ROUTER_SYSTEM = (
   ctx: WriterContext,
@@ -300,7 +267,6 @@ export async function route(
   return { action: "reply", text: String(raw.text ?? "").trim() || "Mình chưa hiểu yêu cầu." };
 }
 
-/** Dialogue for a planned topic. */
 export async function writeTopic(
   ctx: WriterContext,
   topic: Topic,
@@ -322,7 +288,6 @@ Hook: ${topic.hook}${direction ? `\nYêu cầu chung: ${direction}` : ""}${avoid
   return withinLength(ctx, { ...written, title: written.title || topic.title }, targetSec);
 }
 
-/** A new, independent take on an existing script. */
 export async function writeVariant(
   ctx: WriterContext,
   source: Script,
@@ -346,10 +311,6 @@ ${asJson(ctx, source)}${avoidBlock(ctx)}`,
   return withinLength(ctx, normalise(ctx, parseJsonObject(answer)), targetSec);
 }
 
-/**
- * Edits a script in place. Returns null when the instruction does not apply
- * to this script, so it stays unmarked.
- */
 export async function revise(
   ctx: WriterContext,
   script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
@@ -379,13 +340,6 @@ ${asJson(ctx, script)}`,
   return checkLength ? withinLength(ctx, written, targetSec) : written;
 }
 
-// ---------------------------------------------------------------- product per video
-
-/**
- * The context with one product given (docs/SCRIPT_BOARD_DECISIONS.md,
- * "Product per video"): the writer then names only that one, or none for
- * null. Undefined leaves the series' products for the writer to choose from.
- */
 export function withProduct(
   ctx: WriterContext,
   productId: string | null | undefined,
@@ -400,16 +354,9 @@ export function withProduct(
   return { ...ctx, products: product ? [product] : [] };
 }
 
-/** Exactly the one product given, whatever the writer listed. */
 export const oneProduct = (written: WrittenScript, productId: string | null | undefined) =>
   productId === undefined ? written : { ...written, productIds: productId ? [productId] : [] };
 
-/**
- * A narrow revision for a new product: only the lines that name or describe
- * the product, and the product's part of the staging, are rewritten (taste and
- * features checked against the new product's description); every other line,
- * the title and the hook stay word for word.
- */
 export async function reviseProduct(
   ctx: WriterContext,
   script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
@@ -451,8 +398,6 @@ ${asJson(both, script)}`,
   const written = normalise(target, parseJsonObject<RawScript>(answer));
   return { ...written, title: script.title, hook: script.hook, productIds: to ? [to.id] : [] };
 }
-
-// ---------------------------------------------------------------- fixture mode
 
 const pause = (min: number, max: number) =>
   new Promise((r) => setTimeout(r, min + Math.random() * (max - min)));
@@ -540,7 +485,6 @@ async function fixtureRevise(
   return { ...script, staging: `${script.staging} (Đã áp dụng: ${instruction})`.trim() };
 }
 
-/** Fixture mode: the product's name swapped in the lines and staging, deterministically. */
 async function fixtureProductSwap(
   script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
   from: Asset | null,

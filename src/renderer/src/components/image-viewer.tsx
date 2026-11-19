@@ -15,14 +15,11 @@ import { Button } from "./ui/button";
 export type ViewerImage = {
   url: string;
   label?: string;
-  /** A cut-out: drawn on a checkerboard so its transparent edges show. */
   transparent?: boolean;
-  /** The thumbnail the photo grows from on open and shrinks back to on close. */
   origin?: () => HTMLElement | null;
 };
 
 type Size = { w: number; h: number };
-/** Zoom relative to "fits the window" (1), and pan in CSS pixels from the centre. */
 type View = { s: number; x: number; y: number };
 type Phase = "opening" | "open" | "closing";
 
@@ -31,15 +28,9 @@ const DURATION = 240;
 const EASE = "cubic-bezier(0.2, 0, 0, 1)";
 const PAD_Y = 24;
 const PAD_X_SINGLE = 24;
-const PAD_X_MANY = 72; // room for the side arrows
+const PAD_X_WITH_SIDE_ARROWS = 72;
 const CLICK_SLOP = 4;
 
-/**
- * Full-window photo viewer. Follows the app theme (a frosted scrim over the
- * app, not a black void), grows from the thumbnail that opened it, and
- * zooms: click or pinch to zoom, drag or scroll to pan, click again to fit.
- * ← → (or a two-finger swipe) move between photos; Esc closes.
- */
 export function ImageViewer({
   images,
   index,
@@ -62,12 +53,10 @@ export function ImageViewer({
   const [phase, setPhase] = useState<Phase>("opening");
   const [view, setView] = useState<View>(FIT);
   const [animate, setAnimate] = useState(true);
-  /** A transform that overrides the view: the thumbnail's place on open and close. */
   const [flip, setFlip] = useState<{ transform: string; opacity: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const reducedMotion = useRef(false);
 
-  // Every open starts fitted, from the thumbnail.
   useLayoutEffect(() => {
     if (!open) return;
     reducedMotion.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -76,7 +65,6 @@ export function ImageViewer({
     setFlip(null);
   }, [open]);
 
-  // Natural size of each photo, in CSS pixels (one image pixel per screen pixel).
   useEffect(() => {
     if (!open) return;
     for (const { url } of images) {
@@ -93,7 +81,6 @@ export function ImageViewer({
     }
   }, [open, images, sizes]);
 
-  // Stage size, kept up to date as the window resizes.
   const observe = useCallback((node: HTMLDivElement | null) => {
     stageRef.current = node;
     if (!node) return;
@@ -105,17 +92,15 @@ export function ImageViewer({
   }, []);
 
   const natural = current ? sizes[current.url] : undefined;
-  const padX = many ? PAD_X_MANY : PAD_X_SINGLE;
+  const padX = many ? PAD_X_WITH_SIDE_ARROWS : PAD_X_SINGLE;
   const fit =
     natural && stage
       ? Math.min((stage.w - padX * 2) / natural.w, (stage.h - PAD_Y * 2) / natural.h)
       : 1;
-  // Memoised: the open animation's effect depends on it.
   const box = useMemo(
     () => (natural && stage ? { w: natural.w * fit, h: natural.h * fit } : null),
     [natural, stage, fit],
   );
-  // Click zooms to actual pixels, or to twice the fitted size for small photos.
   const maxZoom = Math.max(4, 2 / fit);
   const clickZoom = Math.min(Math.max(2, 1 / fit), maxZoom);
   const zoomed = view.s > 1.01;
@@ -134,7 +119,6 @@ export function ImageViewer({
     [box, stage],
   );
 
-  /** Zooms to `s`, keeping the point (px, py) from the stage centre still. */
   const zoomTo = useCallback(
     (s: number, px = 0, py = 0, smooth = true) => {
       setAnimate(smooth);
@@ -147,7 +131,6 @@ export function ImageViewer({
     [clamp, maxZoom],
   );
 
-  /** Where the thumbnail's photo sits, as a transform of the fitted box. */
   const originTransform = useCallback(
     (image: ViewerImage | undefined) => {
       const el = image?.origin?.();
@@ -155,7 +138,6 @@ export function ImageViewer({
       if (!el || !stageEl || !box || !natural) return null;
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) return null;
-      // Thumbnails show the whole photo (object-contain): find its drawn rect.
       const scale = Math.min(r.width / natural.w, r.height / natural.h);
       const s = stageEl.getBoundingClientRect();
       const dx = r.left + r.width / 2 - (s.left + s.width / 2);
@@ -165,7 +147,6 @@ export function ImageViewer({
     [box, natural],
   );
 
-  // Opening: start on the thumbnail, then glide to the fitted place.
   useLayoutEffect(() => {
     if (!open || phase !== "opening" || !box) return;
     const from = reducedMotion.current ? null : originTransform(current);
@@ -204,7 +185,6 @@ export function ImageViewer({
     [images.length, at, onIndexChange],
   );
 
-  // Keyboard: ← → between photos, + − 0 for zoom. Esc belongs to the dialog.
   useEffect(() => {
     if (!open || phase === "closing") return;
     const onKey = (e: KeyboardEvent) => {
@@ -218,13 +198,11 @@ export function ImageViewer({
       e.preventDefault();
       e.stopPropagation();
     };
-    // Capture phase: the dialog library stops arrow keys before they bubble.
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    const beforeDialogStopsArrowKeys = true;
+    window.addEventListener("keydown", onKey, beforeDialogStopsArrowKeys);
+    return () => window.removeEventListener("keydown", onKey, beforeDialogStopsArrowKeys);
   }, [open, phase, at, go, zoomTo, view.s]);
 
-  // Trackpad: pinch zooms at the cursor; scrolling pans a zoomed photo, and a
-  // horizontal swipe on a fitted one moves to the next photo.
   const swipe = useRef({ dx: 0, locked: false, timer: 0 });
   useEffect(() => {
     const node = stageRef.current;
@@ -265,7 +243,6 @@ export function ImageViewer({
     return () => node.removeEventListener("wheel", onWheel);
   }, [open, clamp, maxZoom, view.s, go, at]);
 
-  // Pointer on the photo: a click toggles zoom at that point; a drag pans.
   const press = useRef<{ x: number; y: number; view: View; moved: boolean } | null>(null);
   const onPointerDown = (e: ReactPointerEvent<HTMLImageElement>) => {
     if (e.button !== 0 || phase !== "open") return;
@@ -311,14 +288,12 @@ export function ImageViewer({
           aria-label={current?.label ?? "Xem ảnh"}
           className="fixed inset-0 z-50 flex flex-col overflow-hidden outline-none select-none"
         >
-          {/* Frosted scrim in the app's own colours, light or dark. */}
           <div
             aria-hidden
             className="absolute inset-0 bg-background/88 backdrop-blur-2xl backdrop-saturate-150"
             style={fade}
           />
 
-          {/* The top bar sits in the window's title bar: it drags the window, its controls do not. */}
           <header
             className="relative grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center px-3 app-drag"
             style={fade}
@@ -343,13 +318,18 @@ export function ImageViewer({
             </div>
           </header>
 
-          {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: clicking around the photo is a mouse shortcut for Esc */}
           <div
             ref={observe}
             tabIndex={-1}
             className="relative min-h-0 flex-1 outline-none app-no-drag"
-            onClick={(e) => e.target === e.currentTarget && close()}
           >
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-hidden
+              className="absolute inset-0 cursor-default"
+              onClick={close}
+            />
             {current && box && (
               <img
                 key={current.url}

@@ -40,15 +40,17 @@ describe("speaking-shot requests", () => {
     expect(input("minimax-h3-lipsync", "720p").resolution).toBe("768P");
     expect(input("minimax-h3-lipsync", "1080p").resolution).toBe("1080P");
     expect(input("fabric-1-720p", "1080p").resolution).toBe("720p");
-    // Ids saved before the merge are asked like the merged model.
-    expect(input("minimax-h3-lipsync-1080p", "1080p")).toEqual(
-      input("minimax-h3-lipsync", "1080p"),
-    );
     for (const m of VIDEO_MODELS) {
       for (const r of ["720p", "1080p"] as const) {
         expect(String(input(m.id, r).resolution ?? "")).not.toMatch(/480/);
       }
     }
+  });
+
+  it("ids saved before the MiniMax merge are asked like the merged model", () => {
+    expect(input("minimax-h3-lipsync-1080p", "1080p")).toEqual(
+      input("minimax-h3-lipsync", "1080p"),
+    );
   });
 
   it("reads the video and its billed seconds; none when the provider reports none", () => {

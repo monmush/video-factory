@@ -1,8 +1,3 @@
-// Learned preferences ("Ghi nhớ", docs/VIDEO_REVIEW_DECISIONS.md, "Learned
-// preferences"): short sentences the operator asked the app to keep. Series
-// notes live on the Series, all-series notes on the workspace. Each prompt
-// receives only the areas it can act on, all-series notes first.
-
 export type NoteArea = "script" | "picture" | "voice" | "editing";
 
 export const NOTE_AREAS: NoteArea[] = ["script", "picture", "voice", "editing"];
@@ -16,23 +11,18 @@ export const NOTE_AREA_LABEL: Record<NoteArea, string> = {
 
 export interface Note {
   id: string;
-  /** One short sentence in the operator's language. */
   text: string;
   area: NoteArea;
   at: string;
-  /** Where it was saved from. */
   from?: { sessionId: string; scriptId?: string; words?: string };
 }
 
-/** Active notes per scope. At the cap a save is refused until one is removed or replaced. */
 export const MAX_NOTES = 30;
 export const MAX_NOTE_LENGTH = 200;
 
-/** Which prompt reads which areas. */
 export const WRITER_AREAS: NoteArea[] = ["script", "voice"];
 export const DIRECTOR_AREAS: NoteArea[] = ["picture", "editing"];
 
-/** Lists a note into a scope: replaces `replaceId` (or an identical text), else appends. */
 export function putNote(
   list: Note[],
   note: Note,
@@ -56,7 +46,6 @@ export function putNote(
   return { list: [...list, note], replaced: false };
 }
 
-/** The notes one prompt follows, all-series first, as plain lines; "" when none. */
 export function notesBlock(
   everySeries: Note[] | undefined,
   series: Note[] | undefined,

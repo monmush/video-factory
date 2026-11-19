@@ -10,15 +10,8 @@ import {
   withoutProducts,
 } from "./shot-plan";
 
-// The shot list (docs/PLAN_PHASE_PROPOSAL.md, part 2): the director's answer
-// without any model knowledge. The shot plan as today, plus the pictures the
-// video needs and, per shot, the picture it starts from and a route by name.
-// The answer format is in src/main/video/shot-list-prompt.md ("Output"). Pure,
-// so the checks and the rules-only fallback are tested.
-
 export type ShotListRoute = "speak" | "motion" | "still-move" | "product";
 const LIST_ROUTES: ShotListRoute[] = ["speak", "motion", "still-move", "product"];
-/** The route's name downstream: everything after the shot list keeps the plan's names. */
 const AS_ROUTE: Record<ShotListRoute, Route> = {
   speak: "lip-sync",
   motion: "motion",
@@ -31,27 +24,21 @@ const PICTURE_KINDS: KeyframeKind[] = ["master", "character", "action", "plate"]
 export interface Picture {
   id: string;
   kind: KeyframeKind;
-  /** For a character picture: who it is of. */
   characterId: string | null;
-  /** Everyone visible, the main person first (ids). */
   people: string[];
   framing: string;
   description: string;
 }
 
-/** Per shot: where it starts and how it comes alive. */
 export interface ListedRoute {
   route: Route;
-  /** Picture id; null only for a product shot without a plate. */
   picture: string | null;
-  /** What moves (motion), or how the person behaves (speak, listener); "" when none. */
   motion: string;
 }
 
 export interface ShotList {
   shots: ShotPlan;
   pictures: Picture[];
-  /** In the order of `shots.shots`. */
   routes: ListedRoute[];
 }
 
@@ -73,7 +60,6 @@ export interface ShotListAnswer extends DirectorAnswer {
   })[];
 }
 
-/** What the recipe can do, as far as the director is concerned. */
 export interface ShotListCaps {
   motion: boolean;
 }
@@ -84,13 +70,6 @@ const norm = (s: unknown) =>
     .trim();
 const key = (s: unknown) => norm(s).toLowerCase();
 
-/**
- * Rules on the pictures and routes of a list, names already resolved: a
- * master first when there is a place, one per id, every shot from a picture
- * that exists, speaking shots from a character picture of the speaker,
- * product shots on the product route, motion only when the recipe has it,
- * and no product in any text.
- */
 export function shotListErrors(list: ShotList, ctx: PlanContext, caps: ShotListCaps): string[] {
   const errors: string[] = [];
   const productNames = ctx.products.map((p) => p.name);
@@ -162,7 +141,6 @@ export function shotListErrors(list: ShotList, ctx: PlanContext, caps: ShotListC
     const named = namedInRequest(r.motion, productNames);
     if (named) errors.push(`${where}: never name "${named}" in the motion text.`);
   });
-  // A picture no shot starts from is a mistake in the list: none may be listed unused.
   const started = new Set(list.routes.map((r) => r.picture));
   for (const p of list.pictures) {
     if (p.kind !== "master" && !started.has(p.id)) {
@@ -172,10 +150,6 @@ export function shotListErrors(list: ShotList, ctx: PlanContext, caps: ShotListC
   return errors;
 }
 
-/**
- * The director's shot list: the shot plan's own rules (readDirectorAnswer),
- * then pictures and routes (shotListErrors). An empty list means it can be built.
- */
 export function readShotList(
   answer: ShotListAnswer,
   ctx: PlanContext,
@@ -200,7 +174,6 @@ export function readShotList(
       const people = (Array.isArray(raw.people) ? raw.people : [])
         .map((name) => person(where, name))
         .filter((p): p is string => Boolean(p));
-      // A character picture always shows its person, first.
       const all = characterId
         ? [characterId, ...people.filter((p) => p !== characterId)]
         : [...new Set(people)];
@@ -231,12 +204,6 @@ export function readShotList(
   return { list, errors: [...new Set(errors)] };
 }
 
-// ---------------------------------------------------------------------------
-// Rules-only shot list: when the director fails twice, without text AI, or
-// from a plan made without pictures. One master, one medium close-up per
-// person, an action or plate picture per detail shot.
-// ---------------------------------------------------------------------------
-
 const SIDE: Record<string, string> = {
   left: "on the left of the frame",
   right: "on the right of the frame",
@@ -255,12 +222,6 @@ const sentence = (s: string) => {
   return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}.` : "";
 };
 
-/**
- * A shot list from a plan with no pictures (by default the rules-only plan):
- * speaker shots speak from their person's picture, listener and wide shots
- * are still-moves, detail shots start from their own picture, product shots
- * from a plate.
- */
 export function rulesShotList(ctx: PlanContext, plan: ShotPlan = rulesPlan(ctx)): ShotList {
   const productNames = ctx.products.map((p) => p.name);
   const name = (id: string) => ctx.cast.find((c) => c.id === id)?.name ?? "";
@@ -341,7 +302,6 @@ export function rulesShotList(ctx: PlanContext, plan: ShotPlan = rulesPlan(ctx))
     });
     return { route: shot.productId ? "product" : "still-move", picture: id, motion: "" };
   });
-  // Only pictures a shot starts from are made; the master always is.
   const started = new Set(routes.map((r) => r.picture));
   return {
     shots: plan,

@@ -5,7 +5,6 @@ import { builtinRecipe, readRecipe, recipeFromDirection } from "./recipe";
 
 const level = mediaLevel("balanced");
 
-/** A small live plan as the live director left it. */
 const direction = (): LiveDirection =>
   ({
     plan: {
@@ -67,7 +66,7 @@ const direction = (): LiveDirection =>
   }) as LiveDirection;
 
 describe("builtinRecipe", () => {
-  it("uses the default image and speaking models, and a motion model from Cân bằng up", () => {
+  it("uses the default models, a motion model from Cân bằng up, no middleman in names and only schema fields", () => {
     const r = builtinRecipe(level);
     expect(r).toMatchObject({ version: 1, id: "builtin", source: "builtin", level: "balanced" });
     expect(r.stills.input).toMatchObject({ prompt: "{{prompt}}", image_urls: ["{{references}}"] });
@@ -77,11 +76,8 @@ describe("builtinRecipe", () => {
       prompt: "{{prompt}}",
     });
     expect(r.motion?.input).toMatchObject({ start_image_url: "{{keyframe}}", audio: false });
-    // Faster levels keep the free still with a slow push-in.
     expect(builtinRecipe(mediaLevel("fast")).motion).toBeNull();
-    // Display names never name the middleman.
     expect(`${r.stills.name} ${r.speak.name} ${r.motion?.name}`).not.toMatch(/fal/i);
-    // Every field the templates set is in the schema.
     for (const role of [r.stills, r.speak, r.motion as NonNullable<typeof r.motion>]) {
       const names = role.schema.params.map((p) => p.name);
       expect(Object.keys(role.input).every((k) => names.includes(k))).toBe(true);
@@ -110,7 +106,6 @@ describe("recipeFromDirection", () => {
       input: { image_url: "{{keyframe}}", audio_url: "{{audio}}", resolution: "768P" },
       rate: { minSeconds: 5 },
     });
-    // The length is fitted per shot, not kept from the plan's first motion shot.
     expect(r.motion?.input).toEqual({ image_url: "{{keyframe}}", prompt: "{{prompt}}" });
   });
 

@@ -1,9 +1,6 @@
 import type { MediaLevel } from "../../shared/media-level";
 import ADDENDUM from "./shot-list-prompt.md?raw";
 
-// The shot list's prompt: the director's rules (filled, without their Output
-// section) followed by the pictures-and-routes part. Electron-free.
-
 const MOTION_ON =
   "The `motion` route is available: use it for every `wide` shot, every `listener` shot and every `detail` that shows an action; use `still-move` only for a detail of a still object. In a `motion` shot people are alive and may act: one clear action per shot (a gesture, leaning in, pouring, handing something over, sitting down or standing up), with the background stirring and the camera moving as the moment needs (a slow push-in, a drift, a pan from one person to the other). Nobody is seen speaking in it.";
 const MOTION_OFF =
@@ -11,7 +8,6 @@ const MOTION_OFF =
 
 export function shotListPrompt(
   base: string,
-  /** `direction`: the operator's wishes, filled by directionSlot (src/shared/direction.ts). */
   v: { level: MediaLevel; motion: boolean; direction: string },
 ): string {
   const rules = base.split(/\n## Output\b/)[0]?.trimEnd() ?? base;

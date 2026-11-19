@@ -102,7 +102,6 @@ describe("cleaning a place photo", () => {
     expect(cleanSize(4000, 3000)).toEqual({ width: 1536, height: 1152 });
     expect(cleanSize(1080, 1920)).toEqual({ width: 864, height: 1536 });
     expect(cleanSize(1000, 1000)).toEqual({ width: 1536, height: 1536 });
-    // Very wide panoramas are held to 3:1.
     expect(cleanSize(9000, 1000)).toEqual({ width: 1536, height: 512 });
     for (const [w, h] of [
       [1234, 987],

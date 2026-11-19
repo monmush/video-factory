@@ -1,9 +1,5 @@
 import type { Asset } from "../shared/ipc";
 
-/**
- * Product sets are one level deep: a set contains products, never sets, and a
- * contained product cannot contain others. Checked on the would-be state.
- */
 export function checkSets(assets: Pick<Asset, "id" | "kind" | "contains">[]) {
   const byId = new Map(assets.map((a) => [a.id, a]));
   const children = new Set<string>();

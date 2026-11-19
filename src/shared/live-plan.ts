@@ -10,27 +10,14 @@ import {
   type ShotPlan,
 } from "./shot-plan";
 
-// The live director's plan (experiment branch, docs/LIVE_DIRECTOR_EXPERIMENT.md):
-// the user's own AI picks a model for every paid step with the media
-// provider's read-only planning tools, and returns keyframes and a production
-// route per shot. The director plans, code spends: everything here is pure so
-// the checks and the prices are tested. Prices come only from tool results
-// recorded in the session (`ToolRecord`), never from the director's own sums.
-
 export type Route = "lip-sync" | "motion" | "still-move" | "product";
 const ROUTES: Route[] = ["lip-sync", "motion", "still-move", "product"];
-/** Routes that send a paid request. */
 const PAID_ROUTES: Route[] = ["lip-sync", "motion"];
 
 export type KeyframeKind = "master" | "character" | "action" | "plate";
 const KEYFRAME_KINDS: KeyframeKind[] = ["master", "character", "action", "plate"];
 
-/** Shortest audio a speaking shot is given (as `MIN_SHOT_SEC` in video-job). */
-const MIN_AUDIO_SEC = 2;
-
-// ---------------------------------------------------------------------------
-// What the session's tools returned
-// ---------------------------------------------------------------------------
+export const SHORTEST_AUDIO_A_SPEAKING_SHOT_IS_GIVEN_SEC = 2;
 
 export interface SchemaParam {
   name: string;
@@ -48,10 +35,6 @@ export interface ModelSchema {
   category: string;
   params: SchemaParam[];
   outputs: string[];
-  /**
-   * Shortest audio the model takes, when its schema says so ("at least 5 s"
-   * on an audio field): shorter audio is padded with silence before sending.
-   */
   minAudioSec?: number;
 }
 
@@ -63,32 +46,16 @@ export interface UnitPrice {
 export type Retrieval = "complete" | "partial" | "unavailable" | "not-asked";
 
 export interface ToolRecord {
-  /** Every call, in order: tool name without its server prefix. */
   calls: { tool: string; ok: boolean }[];
-  /** By endpoint: schemas read with get_model_schema. */
   schemas: Record<string, ModelSchema>;
-  /** By endpoint: unit prices from get_pricing or estimate_cost. */
   prices: Record<string, UnitPrice>;
-  /** estimate_cost results that had a total. */
   estimates: { endpoint: string; usd: number; quantity?: number; unit?: string }[];
-  /** recommend_model decisions: id → endpoints it selected or offered. */
   decisions: Record<string, string[]>;
-  /**
-   * Endpoints recommend_model found fit for an operation ("lip-sync"),
-   * selected or passing its fit checks: the alternatives a plan is compared with.
-   */
   candidates?: Record<string, string[]>;
-  /** How the published routing and guides answered, at best. */
   guidance: Retrieval;
-  /**
-   * Text of the guides, schemas and catalogue answers read, so a billing rule
-   * the director reports from them (a resolution tier, a minimum length) can
-   * be checked against what the tools actually said.
-   */
   evidence?: string;
 }
 
-/** Most evidence text kept per session. */
 const EVIDENCE_MAX = 1_000_000;
 const EVIDENCE_TOOLS = [
   "read_guidance",
@@ -108,7 +75,6 @@ export const emptyRecord = (): ToolRecord => ({
   guidance: "not-asked",
 });
 
-/** "mcp__fal__get_pricing" → "get_pricing". */
 export const bareToolName = (name: string) => name.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, "");
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
@@ -124,7 +90,6 @@ function parseJson(text: string): unknown {
   }
 }
 
-/** "at least 5 s", "minimum 2 seconds", "min. 3s" → seconds. */
 export function statedMinimumSec(text: string): number | undefined {
   const m =
     /(?:at least|minimum(?: of)?|min\.?)\s*(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds?)\b/i.exec(text);
@@ -150,7 +115,6 @@ function readSchema(raw: Record<string, unknown>): ModelSchema | null {
       ...("default" in param ? { default: param.default } : {}),
     };
   });
-  // An audio input's stated minimum, from its description.
   const minAudio = (raw.input_params as unknown[])
     .map(obj)
     .filter((p) => /audio/i.test(str(p.name)))
@@ -174,10 +138,6 @@ const retrievalOf = (data: Record<string, unknown>): Retrieval => {
 };
 const RANK: Record<Retrieval, number> = { "not-asked": 0, unavailable: 1, partial: 2, complete: 3 };
 
-/**
- * Adds one tool result to the record. Results that are errors, or not the
- * JSON the tool documents, only count as a failed call.
- */
 export function recordResult(
   record: ToolRecord,
   name: string,
@@ -241,7 +201,6 @@ export function recordResult(
         }
       }
       record.decisions[id] = [...endpoints];
-      // Fit candidates by operation, and the price recommend_model quoted.
       const operation = str(obj(data.interpreted_task).operation_id);
       const fit = new Set<string>();
       for (const r of Array.isArray(data.results) ? data.results : []) {
@@ -273,10 +232,6 @@ export function recordResult(
   return record;
 }
 
-// ---------------------------------------------------------------------------
-// The answer and the plan
-// ---------------------------------------------------------------------------
-
 type Input = Record<string, unknown>;
 
 interface RawKeyframe {
@@ -307,7 +262,6 @@ export interface LiveAnswer extends DirectorAnswer {
     decision_id?: string | null;
     billing?: RawBilling | null;
   }[];
-  /** The director's own note, e.g. that routing guidance was unavailable. */
   guidance_note?: string;
 }
 
@@ -318,11 +272,6 @@ interface RawBilling {
   source?: string | null;
 }
 
-/**
- * A billing rule the director found in what the tools returned (the price of
- * the configuration it chose, a minimum billed length), accepted only when
- * its numbers appear in the session's recorded results.
- */
 export interface Billing {
   usd?: number;
   unit?: string;
@@ -335,12 +284,7 @@ export interface PlannedKeyframe {
   kind: KeyframeKind;
   characterId: string | null;
   framing: string;
-  /**
-   * How many cast members the picture shows (a shot list's `people`), for the
-   * still check. Missing on live-director plans and jobs saved before 19 Nov.
-   */
   people?: number;
-  /** Placeholders of the files it is made from. */
   references: string[];
   endpoint: string;
   input: Input;
@@ -355,10 +299,8 @@ export interface PlannedRoute {
 }
 
 export interface LivePlan {
-  /** What the viewer sees and hears: the same plan the fixed pipeline uses. */
   shots: ShotPlan;
   keyframes: PlannedKeyframe[];
-  /** Production of each shot, in the order of `shots.shots`. */
   routes: PlannedRoute[];
   models: {
     endpoint: string;
@@ -373,17 +315,14 @@ export interface LivePlan {
 }
 
 export interface LiveContext extends PlanContext {
-  /** File placeholders the director may use as references ("place-1", "cast1-2"). */
   refs: string[];
   level: MediaLevel;
 }
 
-/** A whole value written as `{{name}}`. */
 const PLACEHOLDER = /^\{\{\s*([^{}]+?)\s*\}\}$/;
 export const placeholderOf = (v: unknown) =>
   typeof v === "string" ? (PLACEHOLDER.exec(v)?.[1] ?? null) : null;
 
-/** Every placeholder in an input, top level and inside arrays and objects. */
 export function placeholdersIn(value: unknown): string[] {
   const found: string[] = [];
   const walk = (v: unknown) => {
@@ -396,7 +335,6 @@ export function placeholdersIn(value: unknown): string[] {
   return found;
 }
 
-/** Text written into an input (prompts and the like), placeholders left out. */
 function textsIn(value: unknown): string[] {
   if (typeof value === "string") return placeholderOf(value) ? [] : [value];
   if (Array.isArray(value)) return value.flatMap(textsIn);
@@ -404,10 +342,8 @@ function textsIn(value: unknown): string[] {
   return [];
 }
 
-/** Fields a model takes its clip length in. */
 export const DURATION_FIELDS = ["duration", "duration_seconds", "seconds", "num_seconds"];
 
-/** The input's requested length in seconds, else the schema's default; undefined when it has none. */
 function requestedSeconds(schema: ModelSchema, input: Input): number | undefined {
   for (const name of DURATION_FIELDS) {
     const param = schema.params.find((p) => p.name === name);
@@ -418,7 +354,6 @@ function requestedSeconds(schema: ModelSchema, input: Input): number | undefined
   return undefined;
 }
 
-/** Problems with an input against the schema read in this session. */
 export function inputErrors(
   where: string,
   endpoint: string,
@@ -480,11 +415,9 @@ const norm = (s: unknown) =>
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** The number appears as such in what the tools returned ("0.08" in "$0.08/s", not in "0.085"). */
 const numberCited = (evidence: string, n: number) =>
   new RegExp(`(^|[^0-9.])${escapeRe(String(n))}(?![0-9])`).test(evidence);
 
-/** A minimum length stated as one ("minimum 5 s", "at least 5 seconds", "5s minimum"). */
 function minimumCited(evidence: string, n: number): boolean {
   const sec = `${escapeRe(String(n))}\\s*(?:-\\s*)?(?:s|sec|secs|seconds?)\\b`;
   return new RegExp(
@@ -530,15 +463,9 @@ function readBilling(
   };
 }
 
-/** Seconds a planned shot lasts on screen: its words, plus its hold. */
 export const plannedShotSec = (shot: { text: string; hold?: number }) =>
   estimatePartSec(shot.text) + (shot.hold ?? 0);
 
-/**
- * Turns the live director's JSON into a plan and lists every rule it breaks
- * that a machine can check: the dialogue rules of the fixed pipeline, then
- * keyframes, routes, schemas, durations, placeholders and products.
- */
 export function readLivePlan(
   answer: LiveAnswer,
   ctx: LiveContext,
@@ -549,7 +476,6 @@ export function readLivePlan(
   const productNames = ctx.products.map((p) => p.name);
   const productText = (text: string) => namedInRequest(text, productNames);
 
-  // Keyframes, in the order they are made: each may use earlier ones.
   const keyframes: PlannedKeyframe[] = [];
   const ids = new Set<string>();
   for (const [i, raw] of (Array.isArray(answer.keyframes) ? answer.keyframes : []).entries()) {
@@ -697,11 +623,6 @@ export function readLivePlan(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Prices, from recorded tool results only
-// ---------------------------------------------------------------------------
-
-/** A model's display name, never the middleman's: the schema's name without "fal". */
 export function modelName(schemas: Record<string, ModelSchema>, endpoint: string): string {
   const name = schemas[endpoint]?.name || endpoint.split("/").slice(1).join(" ");
   return (
@@ -712,17 +633,10 @@ export function modelName(schemas: Record<string, ModelSchema>, endpoint: string
   );
 }
 
-/**
- * What one model costs and takes, as the session recorded it: its rate (the
- * recorded one, raised by a verified billing rule), a per-request estimate
- * when the rate's unit cannot be counted, and its shortest billed length.
- */
 export interface Rate {
   usd: number | null;
   unit: string;
-  /** From estimate_cost, for one typical request, when `unit` cannot be counted. */
   perRequestUsd?: number;
-  /** Shortest audio or clip billed (and accepted), from the schema or a verified rule. */
   minSeconds?: number;
 }
 
@@ -735,10 +649,6 @@ const unitKind = (unit = "") =>
         ? "images"
         : unit.toLowerCase();
 
-/**
- * A shortest audio length stated for this endpoint in what the tools returned:
- * an audio field's "at least N s" within a short stretch after its id.
- */
 export function evidenceMinimumSec(evidence: string, endpoint: string): number | undefined {
   let found: number | undefined;
   for (let i = evidence.indexOf(endpoint); i >= 0; i = evidence.indexOf(endpoint, i + 1)) {
@@ -752,7 +662,6 @@ export function evidenceMinimumSec(evidence: string, endpoint: string): number |
   return found;
 }
 
-/** The rate of one endpoint, from the record and the plan's verified billing rule. */
 function rateOf(record: ToolRecord, endpoint: string, billing?: Billing): Rate {
   const recorded = record.prices[endpoint];
   const schema = record.schemas[endpoint];
@@ -783,7 +692,6 @@ function rateOf(record: ToolRecord, endpoint: string, billing?: Billing): Rate {
   };
 }
 
-/** Billable units of one request, by the price's unit; null when it cannot be known here. */
 export function unitsFor(
   unit: string,
   input: Input,
@@ -807,11 +715,6 @@ export function unitsFor(
   return null;
 }
 
-/**
- * The input with its length field set so the clip covers `seconds`: the
- * smallest allowed value at least that long (whole seconds for an integer
- * field), within the schema's limits. Unchanged when the model has no such field.
- */
 export function fitDuration(
   schema: ModelSchema | undefined,
   input: Input,
@@ -840,14 +743,9 @@ export function fitDuration(
   return { input: { ...input, [param.name]: want }, seconds: want };
 }
 
-/**
- * Seconds a lip-sync request is sent and billed: its audio, never under the
- * model's minimum (shorter audio is padded with silence and trimmed later).
- */
 const lipSyncSeconds = (rate: Rate | undefined, audioSec: number) =>
-  Math.max(MIN_AUDIO_SEC, audioSec, rate?.minSeconds ?? 0);
+  Math.max(SHORTEST_AUDIO_A_SPEAKING_SHOT_IS_GIVEN_SEC, audioSec, rate?.minSeconds ?? 0);
 
-/** One paid request's price and quantity. */
 export function requestCost(
   rate: Rate | undefined,
   schema: ModelSchema | undefined,
@@ -878,15 +776,10 @@ export function requestCost(
 }
 
 export interface CostRow {
-  /** Vietnamese label of the step. */
   step: string;
-  /** Model display name; null for our own or local steps. */
   model: string | null;
-  /** "5 giây", "1 ảnh"; empty when free. */
   quantity: string;
-  /** null: no recorded price fits this step. */
   usd: number | null;
-  /** Already made and charged: `usd` is what it cost, not an estimate. */
   paid?: boolean;
 }
 
@@ -895,7 +788,6 @@ export interface CostTable {
   knownUsd: number;
   unknownSteps: number;
   budgetUsd: number;
-  /** Seconds the plan lasts, holds included. */
   seconds: number;
 }
 
@@ -906,7 +798,6 @@ export const ROUTE_LABEL: Record<Route, string> = {
   product: "Sản phẩm",
 };
 
-/** Rates and schemas of the endpoints a plan uses: all a job needs to price and send it. */
 function planRates(
   plan: LivePlan,
   record: ToolRecord,
@@ -926,18 +817,15 @@ function planRates(
   return { rates, schemas };
 }
 
-/** A step of the plan with the seconds it lasts (planned, or once known, actual). */
 export interface PricedStep {
   step: string;
   endpoint: string | null;
   input: Input | null;
   route: Route | "keyframe" | "voice" | "local";
   seconds: number;
-  /** Already known (charged, or ours): used as is. */
   usd?: number;
 }
 
-/** A cost table from steps; every price from the rates, unknown when none fits. */
 export function costTable(
   steps: PricedStep[],
   rates: Record<string, Rate>,
@@ -972,7 +860,6 @@ export function costTable(
   };
 }
 
-/** The plan's steps before anything is made: planned seconds. */
 export function planSteps(plan: LivePlan, lines: Pick<ScriptLine, "text">[]): PricedStep[] {
   const steps: PricedStep[] = [
     {
@@ -1008,11 +895,6 @@ export function planSteps(plan: LivePlan, lines: Pick<ScriptLine, "text">[]): Pr
   return steps;
 }
 
-/**
- * The plan's cost table: our voice, every keyframe, every shot. Each paid
- * step is priced from the session's recorded prices; a step with none is
- * unknown and counted as such, never guessed.
- */
 export function priceLivePlan(
   plan: LivePlan,
   record: ToolRecord,
@@ -1025,30 +907,22 @@ export function priceLivePlan(
     steps,
     rates,
     schemas,
-    // The same length the app shows everywhere else for this script (holds included).
     levelEstimateUsd(level, estimateSeconds(lines)),
     steps.reduce((n, s) => n + s.seconds, 0),
   );
 }
 
-/** Operations recommend_model answers for each paid route. */
 const ROUTE_OPERATIONS: Record<"lip-sync" | "motion", string[]> = {
   "lip-sync": ["lip-sync", "talking-avatar"],
   motion: ["image-to-video"],
 };
 
-/** The model takes what the route sends: an image, and audio for lip-sync. */
 function takesRoute(schema: ModelSchema, route: "lip-sync" | "motion") {
   const names = schema.params.map((p) => p.name);
   const image = names.some((n) => /image/i.test(n) && !/end|last|tail/i.test(n));
   return route === "lip-sync" ? image && names.some((n) => /audio/i.test(n)) : image;
 }
 
-/**
- * Cheaper models the session itself found fit for a route, priced on this
- * plan's own shots (minimum lengths and per-second rates included). Each
- * becomes a warning that names it; the director's choice is not changed.
- */
 export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[] {
   const { rates, schemas } = planRates(plan, record);
   const warnings: string[] = [];
@@ -1091,18 +965,14 @@ export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[
   return warnings;
 }
 
-/**
- * The guide is the typical price of a video of this length, so a plan near it
- * is normal: only one clearly above it (a quarter more) is called out.
- */
-const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
-  table.knownUsd > table.budgetUsd * 1.25;
+const GUIDE_BUDGET_SHARE_CALLED_OUT = 1.25;
 
-/** Steps the table could not price. */
+const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
+  table.knownUsd > table.budgetUsd * GUIDE_BUDGET_SHARE_CALLED_OUT;
+
 export const unknownPriceWarnings = (table: Pick<CostTable, "unknownSteps">): string[] =>
   table.unknownSteps ? [`${table.unknownSteps} step(s) have no recorded price.`] : [];
 
-/** Warnings kept with a live director's plan (legacy): over the guide budget, unknown prices. */
 export function costWarnings(table: CostTable): string[] {
   return [
     ...(overBudget(table)
@@ -1112,29 +982,20 @@ export function costWarnings(table: CostTable): string[] {
   ];
 }
 
-/** What a job keeps of its live direction: the plan, its prices and how it was made. */
 export interface LiveDirection {
   plan: LivePlan;
-  /** The table as planned, before anything was made. */
   costs: CostTable;
   warnings: string[];
-  /** Rates and schemas of the endpoints used: what the job prices and sends by. */
   rates: Record<string, Rate>;
   schemas: Record<string, ModelSchema>;
-  /** "recipe": built in code from a shot list and a recipe (no tools, src/shared/build-direction.ts). */
   connection: "signed-in" | "key" | "recipe";
-  /** The recipe a built direction was made from. */
   recipe?: { id: string; source: "builtin" | "plan" | "session" };
-  /** Tools called, in order, without their server prefix. */
   tools: string[];
   guidance: Retrieval;
-  /** The Claude model that directed. */
   model: string | null;
-  /** Seconds the session took. */
   seconds: number;
 }
 
-/** The live direction a job keeps, from an accepted plan and the session's record. */
 export function liveDirection(
   plan: LivePlan,
   record: ToolRecord,
@@ -1156,23 +1017,17 @@ export function liveDirection(
   };
 }
 
-/** Earlier keyframes a keyframe is made from (its `{{keyframe:<id>}}` references). */
 export const keyframeDeps = (live: LiveDirection, id: string): string[] =>
   placeholdersIn(live.plan.keyframes.find((k) => k.id === id)?.input ?? {})
     .map((p) => /^keyframe:(.+)$/.exec(p)?.[1])
     .filter((d): d is string => Boolean(d));
 
-/** One keyframe's price; null when no recorded price fits. */
 export function liveFrameUsd(live: LiveDirection, id: string): number | null {
   const k = live.plan.keyframes.find((x) => x.id === id);
   if (!k) return null;
   return requestCost(live.rates[k.endpoint], live.schemas[k.endpoint], k.input, "keyframe", 0).usd;
 }
 
-/**
- * One planned shot's price for `seconds` (its audio for lip-sync, its length
- * for motion); 0 for a shot made locally, null when no recorded price fits.
- */
 export function liveShotUsd(live: LiveDirection, index: number, seconds: number): number | null {
   const r = live.plan.routes[index];
   if (!r?.endpoint || !r.input || !PAID_ROUTES.includes(r.route)) return 0;
@@ -1180,7 +1035,6 @@ export function liveShotUsd(live: LiveDirection, index: number, seconds: number)
     .usd;
 }
 
-/** The first media URL in a result: `images[0]`, `image`, `video`, `videos[0]`, else any. */
 export function readMediaUrl(data: unknown, kind: "image" | "video"): string | undefined {
   const d = (data ?? {}) as Record<string, unknown>;
   const pick = (v: unknown) =>

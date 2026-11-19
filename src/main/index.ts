@@ -1,48 +1,35 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, nativeTheme, shell } from "electron";
-import { closeAll as closeChats } from "./chat/runtime";
-import { stopClaudeProcesses } from "./claude-code";
 import { registerIpc } from "./ipc";
-import { clearStaging, handleMediaProtocol, registerMediaScheme } from "./media";
+import { clearStaging, handleMediaProtocol, registerMediaSchemeBeforeAppReady } from "./media";
+import { chooseDataFolder, superviseDevelopmentRestarts } from "./profiles";
 import { readSettings } from "./settings";
-import { startRunner, stopRunner } from "./video/runner";
+import { shutDownServices } from "./shutdown";
+import { startRunner } from "./video/runner";
 
-// Development never touches the packaged app's data: it gets its own folder,
-// and HYAN_DATA_DIR points either at a disposable one. Electron's own storage
-// and the single-instance lock follow, so each data folder is fully separate.
-// Must run before anything reads paths.
-if (process.env.HYAN_DATA_DIR) {
-  app.setPath("userData", process.env.HYAN_DATA_DIR);
-} else if (!app.isPackaged) {
-  app.setPath("userData", `${app.getPath("userData")} (dev)`);
-}
-
-// One running copy per data folder: two would each cache workspace.json and
-// overwrite each other's changes. A second launch focuses the first window.
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-  process.exit(0);
-}
-app.on("second-instance", () => {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (!win) return;
-  if (win.isMinimized()) win.restore();
-  win.focus();
-});
-
-// Development keys live in the ignored `.env.local` at the project root.
-if (!app.isPackaged) {
-  try {
-    process.loadEnvFile(join(app.getAppPath(), ".env.local"));
-  } catch {
-    // No local keys: the app still runs, providers report as not configured.
+function allowOneRunningCopyPerDataFolder() {
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+    process.exit(0);
   }
+  app.on("second-instance", () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  });
 }
 
-registerMediaScheme();
+function loadOptionalDevelopmentKeys() {
+  if (app.isPackaged) return;
+  const keysFile = join(app.getAppPath(), ".env.local");
+  if (existsSync(keysFile)) process.loadEnvFile(keysFile);
+}
 
 const isMac = process.platform === "darwin";
 const devServerUrl = process.env.ELECTRON_RENDERER_URL;
+const SIDEBAR_COLOR_BEHIND_CONTENT = { dark: "#000000", light: "#f4f4f5" };
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -52,9 +39,9 @@ function createWindow() {
     minHeight: 600,
     show: false,
     title: "Hy An Video Factory",
-    // Window chrome colour (--sidebar in styles.css); the content card sits on top.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#000000" : "#f4f4f5",
-    // macOS: content runs under the title bar; the app's top bar is the drag region.
+    backgroundColor: nativeTheme.shouldUseDarkColors
+      ? SIDEBAR_COLOR_BEHIND_CONTENT.dark
+      : SIDEBAR_COLOR_BEHIND_CONTENT.light,
     ...(isMac
       ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 14, y: 13 } }
       : {}),
@@ -69,8 +56,6 @@ function createWindow() {
 
   win.once("ready-to-show", () => win.show());
 
-  // The renderer is a single page: never navigate away from it, and open
-  // external links in the user's browser instead of a new Electron window.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -87,27 +72,30 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  nativeTheme.themeSource = readSettings().theme;
-  handleMediaProtocol();
-  registerIpc();
-  void clearStaging();
-  createWindow();
-  // Unfinished video jobs continue; paid requests are polled, never resent.
-  void startRunner().catch((error) => console.error("[video] could not start", error));
+function startApp() {
+  chooseDataFolder();
+  allowOneRunningCopyPerDataFolder();
+  loadOptionalDevelopmentKeys();
+  registerMediaSchemeBeforeAppReady();
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  app.whenReady().then(() => {
+    nativeTheme.themeSource = readSettings().theme;
+    handleMediaProtocol();
+    registerIpc();
+    void clearStaging();
+    createWindow();
+    void startRunner().catch((error) => console.error("[video] could not start", error));
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
-});
 
-// Stop the users' Claude processes with the app.
-app.on("before-quit", () => {
-  closeChats();
-  stopClaudeProcesses();
-  stopRunner();
-});
+  app.on("before-quit", shutDownServices);
 
-app.on("window-all-closed", () => {
-  if (!isMac) app.quit();
-});
+  app.on("window-all-closed", () => {
+    if (!isMac) app.quit();
+  });
+}
+
+if (!superviseDevelopmentRestarts()) startApp();

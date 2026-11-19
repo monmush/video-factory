@@ -2,16 +2,9 @@ import type { Balances } from "../shared/ipc";
 import { getKey } from "./providers";
 import { readClaudeLimits } from "./usage";
 
-// Live balances from each provider's official API. Reading a balance is free.
-//   fal:        GET https://api.fal.ai/v1/account/billing?expand=credits
-//               (needs a key with billing:usage:read, e.g. the READONLY preset)
-//   ElevenLabs: GET https://api.elevenlabs.io/v1/user/subscription
-//   Claude:     no balance API; plan limits arrive with each Claude Code call.
-
 const TIMEOUT_MS = 10_000;
 
 async function falBalance(): Promise<Balances["fal"]> {
-  // Prefer the read-only billing key; fall back to the main key in case it has access.
   const keys = [await getKey("fal-billing"), await getKey("fal")].filter((k): k is string =>
     Boolean(k),
   );

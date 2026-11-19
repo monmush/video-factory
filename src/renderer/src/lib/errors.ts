@@ -1,5 +1,6 @@
-/** Electron prefixes IPC errors with "Error invoking remote method '…': Error: ". Show only the message. */
+const ELECTRON_IPC_ERROR_PREFIX = /^Error invoking remote method '[^']+': (?:\w*Error: )?/;
+
 export function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, "");
+  return raw.replace(ELECTRON_IPC_ERROR_PREFIX, "");
 }

@@ -34,12 +34,10 @@ import {
 } from "./video-job";
 import { modelOutput, videoModel } from "./video-models";
 
-/** The default model's rate: every job here is made by it. */
 const VIDEO_USD_PER_SEC = modelOutput(videoModel()).usdPerSec;
 
 const NOW = "2026-11-12T10:00:00.000Z";
 
-/** Replaces fields of one item in place (shots or frames). */
 function patch<T>(list: T[], i: number, fields: Partial<T>) {
   list[i] = { ...(list[i] as T), ...fields };
 }
@@ -76,13 +74,11 @@ const CTX = {
   hasPlace: true,
 };
 
-/** A planned job: one speaker shot per line (the rules plan). */
 const job = (patch: Partial<VideoJob> = {}, plan: ShotPlan = rulesPlan(CTX)): VideoJob => ({
   ...applyPlan(fresh(patch.useEnvironment ?? true), plan),
   ...patch,
 });
 
-/** A job whose voice and frames are done, all shots queued. */
 const readyForShots = (patch: Partial<VideoJob> = {}) => {
   const j = withShotAudio(
     job({ status: "running", dialogue: "dialogue.mp3", voiceCostUsd: 0.01 }),
@@ -95,7 +91,6 @@ const readyForShots = (patch: Partial<VideoJob> = {}) => {
   };
 };
 
-/** A director's plan with every kind of shot: wide, listener, detail, product. */
 const MIXED: ShotPlan = {
   source: "ai",
   seats: [],
@@ -223,8 +218,6 @@ describe("costs", () => {
       job({ status: "running", dialogue: "d.mp3" }, MIXED),
       LINES.map((_, i) => ({ start: i * 3, end: i * 3 + 3, audio: `l${i}`, audioSec: 3 })),
     );
-    // Stills: wide, two characters, one generated detail, the product's plate.
-    // Shots: only speaker and listener.
     expect(costToFinishUsd(j)).toBeCloseTo(5 * FRAME_USD + 2 * 3 * VIDEO_USD_PER_SEC);
     patch(
       j.frames,
@@ -234,7 +227,6 @@ describe("costs", () => {
     expect(costToFinishUsd(j)).toBeCloseTo(
       5 * FRAME_USD + 2 * CUTOUT_USD + 2 * 3 * VIDEO_USD_PER_SEC,
     );
-    // No usable cut-out: the product's own photo, free; so are old jobs' photos.
     patch(
       j.frames,
       j.frames.findIndex((f) => f.kind === "product"),
@@ -289,9 +281,7 @@ describe("speaking-shot model", () => {
 
   it("prices unsent shots at the job's model, sent ones at the model that made them", () => {
     const j = readyForShots({ model: "kling-avatar-v2-pro" });
-    // Five queued shots of 3 seconds at the Pro rate.
     expect(costToFinishUsd(j)).toBeCloseTo(5 * 3 * 0.115);
-    // Sent before models were recorded: the default, polled at the default endpoint.
     patch(j.shots, 0, { state: "rendering", requestId: "r0" });
     expect(shotModel(j, j.shots[0] as JobShot).id).toBe(videoModel().id);
     patch(j.shots, 1, { state: "rendering", requestId: "r1", model: "omnihuman-v2" });
@@ -330,9 +320,7 @@ describe("following the batch until the first shot is sent", () => {
     expect(modelLocked(paused)).toBe(false);
     const now = followBatch(paused, batch);
     expect(now).toMatchObject({ model: "fabric-1-720p", resolution: "720p" });
-    // The hold price follows: five shots of 3 seconds at Fabric's rate.
     expect(costToFinishUsd(now)).toBeCloseTo(5 * 3 * 0.15);
-    // Its own model wins over the batch.
     expect(followBatch({ ...paused, ownModel: "kling-avatar-v2-pro" }, batch)).toMatchObject({
       model: "kling-avatar-v2-pro",
       resolution: "1080p",
@@ -346,7 +334,6 @@ describe("following the batch until the first shot is sent", () => {
     expect(followBatch(j, batch)).toBe(j);
     const snap = { ...readyForShots(), modelLocked: true };
     expect(followBatch(snap, batch)).toBe(snap);
-    // Finished videos saved before the rule: locked by their made shots.
     const old = readyForShots();
     patch(old.shots, 0, { state: "done", clip: "c.mp4" });
     expect(modelLocked(old)).toBe(true);
@@ -390,7 +377,6 @@ describe("transitions", () => {
     expect(paused.status).toBe("review");
     const resumed = settle(runThrough(paused, NOW));
     expect([resumed.status, resumed.reviewed]).toEqual(["waiting", true]);
-    // A test video still making its voice will not stop at the pause either.
     const early = runThrough(job({ status: "running", pause: true }), NOW);
     expect([early.status, early.reviewed]).toEqual(["running", true]);
     const stopped = runThrough(stopJob(readyForShots(), NOW), NOW);
@@ -456,7 +442,6 @@ describe("next actions and resume", () => {
       LINES.map((_, i) => ({ start: i * 2, end: i * 2 + 2, audio: `l${i}`, audioSec: 2 })),
     );
     expect(jobPhase(voiced)).toBe("frames");
-    // The wide still first: the others, a product's plate too, are drawn from it.
     expect(nextActions(voiced, new Set())).toEqual([{ kind: "frame", frame: "wide" }]);
     patch(voiced.frames, 0, { file: "wide.png" });
     expect(nextActions(voiced, new Set()).map((a) => a.kind === "frame" && a.frame)).toEqual([
@@ -475,7 +460,6 @@ describe("next actions and resume", () => {
     j.frames = j.frames.map((f) => ({ ...f, file: `${f.id}.png` }));
     patch(j.shots, 0, { state: "rendering", requestId: "r0" });
     patch(j.shots, 2, { state: "rendering", requestId: "r2" });
-    // Two with the provider; one local at a time alongside.
     expect(nextActions(j, new Set(["shot:0", "shot:2"]))).toEqual([
       { kind: "submit-shot", index: 1 },
     ]);
@@ -486,7 +470,6 @@ describe("next actions and resume", () => {
     expect(nextActions(j, new Set())).toEqual(
       j.shots.map((s) => ({ kind: "submit-shot", index: s.index })),
     );
-    // Shots already with the provider or being sent are not sent again.
     patch(j.shots, 0, { state: "rendering", requestId: "r0" });
     expect(nextActions(j, new Set(["shot:0", "shot:1"]))).toEqual(
       j.shots.slice(2).map((s) => ({ kind: "submit-shot", index: s.index })),
@@ -546,7 +529,6 @@ describe("time left", () => {
   it("counts the shots left as one round, all sent at once", () => {
     const j = readyForShots();
     expect(remainingSec(j, avg, Date.parse(NOW))).toBe(120 + 15);
-    // Some already sent: the round ends with the longest of them.
     patch(j.shots, 0, { state: "rendering", requestId: "r0", submittedAt: NOW });
     expect(remainingSec(j, avg, Date.parse(NOW) + 30_000)).toBe(120 + 15);
     j.shots = j.shots.map((s) => ({ ...s, state: "rendering", requestId: "r", submittedAt: NOW }));
@@ -555,7 +537,6 @@ describe("time left", () => {
   it("counts down while voice runs", () => {
     const j = job({ status: "running", phaseStartedAt: NOW });
     const left = remainingSec(j, avg, Date.parse(NOW) + 10_000);
-    // Voice left, then the wide still and the rest, then one round of shots.
     expect(left).toBe(10 + 2 * 40 + 120 + 15);
   });
 });

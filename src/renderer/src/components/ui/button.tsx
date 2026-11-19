@@ -1,5 +1,3 @@
-// Adapted from T3 Code apps/web/src/components/ui/button.tsx (snapshot c6ca6056, MIT).
-// Trimmed to the variants and sizes this app uses; add more from the reference as needed.
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";

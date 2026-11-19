@@ -1,7 +1,3 @@
-/**
- * Turns a display name into a prompt tag: "Bà Chủ Quán" → "ba-chu-quan".
- * Vietnamese diacritics are removed (đ → d) so tags are easy to type after @.
- */
 export function toHandle(name: string): string {
   return name
     .normalize("NFD")
@@ -16,7 +12,6 @@ export function toHandle(name: string): string {
 
 export const HANDLE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-/** Normalises user-typed input while editing (keeps a trailing dash so typing feels natural). */
 export function cleanHandleInput(value: string): string {
   return value
     .normalize("NFD")

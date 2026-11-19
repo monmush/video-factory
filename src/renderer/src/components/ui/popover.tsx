@@ -1,9 +1,6 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { cn } from "@/lib/utils";
 
-// No popover in the T3 Code reference snapshot; built on Base UI and styled
-// like MenuPopup (components/ui/menu.tsx).
-
 const Popover = PopoverPrimitive.Root;
 const PopoverTrigger = PopoverPrimitive.Trigger;
 

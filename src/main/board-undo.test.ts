@@ -24,7 +24,6 @@ function board(...scripts: Script[]): Board {
   return { version: 1, scripts, messages: [] };
 }
 
-/** One agent turn that renames a script, recorded the way board.ts does. */
 function turn(b: Board, messageId: string, scriptId: string, title: string) {
   b.messages.push(reply(messageId));
   const log: TurnLog = { messageId, touched: new Set() };

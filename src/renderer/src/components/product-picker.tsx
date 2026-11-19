@@ -13,11 +13,6 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 
-// One product per video, picked on the script card (docs/SCRIPT_BOARD_DECISIONS.md,
-// "Product per video"): the series' products first, then the rest of the
-// library (picking one adds it to the series), then none. The change rewrites
-// only what is about the product, in the main process.
-
 const NONE = "none";
 
 export function ProductPicker({

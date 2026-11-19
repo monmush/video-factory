@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { Alignment } from "./shot-plan";
 import { assTime, buildAss, lineWords, rowBreak, shownWord, wordCues } from "./subtitles";
 
-/** Alignment for text where every character lasts 0.1 s, starting at `from`. */
 function align(text: string, from = 0): Alignment {
   const characters = [...text];
   return {
@@ -43,10 +42,8 @@ describe("phrases", () => {
     });
     expect(texts(cues)).toEqual(["Chén đầy rồi thì rót"]);
     const [cue] = cues;
-    // "Chén" starts at character 12, "đầy" at 17.
     expect(cue?.start).toBe(1.2);
     expect(cue?.words[0]).toEqual({ text: "Chén", start: 1.2, end: 1.7 });
-    // Words tile the phrase: each is lit until the next starts, the last until it goes.
     cue?.words.slice(1).forEach((w, i) => {
       expect(w.start).toBe(cue.words[i]?.end);
     });
@@ -118,7 +115,6 @@ describe("ass", () => {
     expect(ass).toContain("WrapStyle: 2");
     const events = ass.split("\n").filter((l) => l.startsWith("Dialogue"));
     expect(events).toHaveLength(4);
-    // While "Chào" is spoken, the still layer hides it and the top layer shows only it.
     expect(events[0]).toBe(
       "Dialogue: 0,0:00:00.00,0:00:00.40,Word,,0,0,0,,{\\alpha&HFF&}Chào {\\alpha&H00&}ông",
     );

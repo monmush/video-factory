@@ -34,7 +34,6 @@ const IMAGE = "img/edit";
 const LIPS = "lips/sync";
 const MOTION = "move/i2v";
 
-/** A session that read three schemas and their prices. */
 function session(): ToolRecord {
   const record = emptyRecord();
   const schema = (endpoint: string, name: string, params: unknown[], props = {}) =>
@@ -98,11 +97,9 @@ const shot = (n: number, extra: Record<string, unknown>) => ({
   ...extra,
 });
 
-/** The master keyframe's input, to change it. */
 const masterInput = (answer: LiveAnswer) =>
   (answer.keyframes ?? [])[0]?.input as Record<string, unknown>;
 
-/** A plan that passes every check. */
 function goodAnswer(): LiveAnswer {
   return {
     seats: [],
@@ -198,7 +195,6 @@ describe("recording tool results", () => {
     expect(record.prices[LIPS]).toEqual({ usd: 0.1, unit: "seconds" });
     expect(record.estimates).toEqual([{ endpoint: "x/y", usd: 0.3, quantity: 1, unit: "units" }]);
     expect(record.decisions.d1).toEqual([LIPS, "z"]);
-    // The best answer counts; a later failure does not lower it.
     expect(record.guidance).toBe("partial");
     expect(record.calls.at(-1)).toEqual({ tool: "search_guidance", ok: false });
   });
@@ -211,12 +207,12 @@ describe("recording tool results", () => {
 });
 
 describe("checking a live plan", () => {
-  it("accepts a plan that keeps every rule", () => {
+  it("accepts a plan that keeps every rule, naming models without the middleman", () => {
     const { plan, errors } = readLivePlan(goodAnswer(), ctx, session());
     expect(errors).toEqual([]);
     expect(plan.keyframes.map((k) => k.id)).toEqual(["master", "an", "ba"]);
     expect(plan.routes.map((r) => r.route)).toEqual(["lip-sync", "lip-sync"]);
-    expect(plan.models[0]?.name).toBe("Image Edit by"); // the middleman's name never shows
+    expect(plan.models[0]?.name).toBe("Image Edit by");
   });
 
   it("refuses an endpoint whose schema was not read, and unknown or missing fields", () => {
@@ -255,7 +251,6 @@ describe("checking a live plan", () => {
   it("asks for motion clips that last the whole shot, within the model's limits", () => {
     const answer = goodAnswer();
     const shots = answer.shots as Record<string, unknown>[];
-    // Line 2 on the listener, moved by an image-to-video model.
     shots.splice(1, 1, {
       n: 2,
       line: 2,
@@ -299,7 +294,6 @@ describe("pricing a live plan", () => {
     ]);
     expect(table.unknownSteps).toBe(3);
     const lips = table.rows.slice(4);
-    // Seconds × rate: never under 2 s of audio.
     for (const row of lips) {
       const billed = (row.usd as number) / 0.1;
       expect(billed).toBeGreaterThanOrEqual(2);

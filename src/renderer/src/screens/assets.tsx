@@ -16,7 +16,6 @@ import { NotFound } from "./not-found";
 
 const CARD = "x-hyan/asset";
 
-/** The update input for an asset unchanged except for its set contents. */
 export const withContains = (asset: Asset, contains: string[]): AssetInput => ({
   kind: asset.kind,
   name: asset.name,
@@ -31,7 +30,6 @@ export const withContains = (asset: Asset, contains: string[]): AssetInput => ({
   contains,
 });
 
-/** Shared asset library. Reference: references/ui-patterns/fal-assets. */
 export function AssetsPage() {
   const { category } = useParams({ strict: false }) as { category?: string };
   const found = findCategory(category);
@@ -43,20 +41,16 @@ export function AssetsPage() {
 
   if (category && !found) return <NotFound />;
 
-  // "Tất cả" shows every asset; implemented categories show their own kind;
-  // the rest stay placeholders until built.
   const kind: AssetKind | undefined = found ? CATEGORY_KIND[found.id] : undefined;
   const implemented = !found || kind !== undefined;
   const assets = kind ? workspace.assets.filter((a) => a.kind === kind) : workspace.assets;
   const copy = kind ? ASSET_KINDS[kind] : null;
   const isProducts = kind === "product";
 
-  /** Library drag and drop: dropping a product card onto another puts it in that set. */
   const groupInto = async (childId: string, targetId: string) => {
     const child = workspace.assets.find((a) => a.id === childId);
     const target = workspace.assets.find((a) => a.id === targetId);
     if (!child || !target || child.id === target.id) return;
-    // Dropping onto a member of a set adds to that member's set.
     const parent = workspace.assets.find((a) => a.contains?.includes(target.id)) ?? target;
     if (parent.id === child.id || parent.contains?.includes(child.id)) return;
     setNote(null);

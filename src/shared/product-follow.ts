@@ -4,15 +4,6 @@ import { costTable, fitDuration, type LiveDirection, plannedShotSec, planSteps }
 import { coverageErrors, type ShotPlan } from "./shot-plan";
 import { applyLivePlan, applyPlan, spokenLines, type VideoJob } from "./video-job";
 
-// A script's product changed while its video has a plan and nothing is made
-// (docs/SCRIPT_BOARD_DECISIONS.md, "Product per video"): only the product's
-// part of the plan follows, in code, with no new directing call. Product
-// shots show the new product (their plate picture, the empty spot, is kept;
-// its cut-out and price follow the product). Lines that only swapped the
-// product's name keep their shots, with the new name in the words. Anything
-// else (other words changed, no product left, no product shot to carry the
-// new one, several products) is staged again by the director. Pure, so tested.
-
 export interface NamedProduct {
   id: string;
   name: string;
@@ -28,25 +19,18 @@ export type ProductFollow =
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Every occurrence of a product's name (any case) replaced by another's. */
 export function swapName(text: string, from: string, to: string): string {
   const name = norm(from);
   if (!name) return text;
   return text.replace(new RegExp(escapeRegExp(name).replace(/ /g, "\\s+"), "giu"), to);
 }
 
-/** The product ids a job's plan was made for: recorded, else its product shots'. */
 function plannedProducts(job: VideoJob): string[] {
   if (job.productIds) return job.productIds;
   const ids = (job.plan?.shots ?? []).flatMap((s) => (s.productId ? [s.productId] : []));
   return [...new Set(ids)];
 }
 
-/**
- * The job with its plan following the script's product, or why it must be
- * staged again. `product` finds a library product by id; `cutoutsFor` says
- * how many cut-outs a product shot of it may still need (the price).
- */
 export function followProduct(
   job: VideoJob,
   script: { lines: ScriptLine[]; productIds: string[] },
@@ -66,7 +50,6 @@ export function followProduct(
   if (!to) return { kind: "replan", why: "unknown-product" };
   const swap = (text: string) => (from ? swapName(text, from.name, to.name) : text);
 
-  // The words: unchanged, or changed only by the product's name.
   const lines = spokenLines(script.lines).map((l) => ({ ...l, text: l.text.trim() }));
   if (lines.length !== job.lines.length) return { kind: "replan", why: "lines" };
   const renamed = new Set<number>();
@@ -86,7 +69,6 @@ export function followProduct(
     why: swap(s.why),
     ...(s.brief ? { brief: swap(s.brief) } : {}),
   }));
-  // The shots must still say each line exactly (a name split across two shots would not).
   if (coverageErrors(shots, lines).length) return { kind: "replan", why: "lines" };
   const nextPlan: ShotPlan = { ...plan, shots };
 
@@ -113,7 +95,6 @@ export function followProduct(
   };
 }
 
-/** The live direction with the new shots; a motion shot whose words grew gets a long enough clip. */
 function followLive(
   live: LiveDirection,
   shots: ShotPlan,

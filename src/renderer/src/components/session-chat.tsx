@@ -3,6 +3,7 @@ import { formatCost } from "@shared/credits";
 import {
   type ChatAttachment,
   type ChatEffort,
+  type ChatError,
   type ChatInfo,
   type ChatMessage,
   type ChatModelChoice,
@@ -38,6 +39,7 @@ import {
 import { useChatInfo, useChatLive } from "@/lib/chat";
 import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
+import { withOccurrenceKeys } from "@/lib/occurrence-keys";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -48,13 +50,9 @@ import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
-/**
- * The session's one chat, run by the user's own Claude as an agent that edits
- * the board through typed tools. Replies stream in; tool work shows as short
- * activity rows; a turn's changes undo in one step. Scripts are referenced
- * explicitly: "Nhắc trong chat" on a card, or `#` in the composer; the chips go
- * with the next message. Messages sent during a reply wait their turn.
- */
+const isSetupFailure = (kind: ChatError["kind"] | undefined) =>
+  kind === "signed-out" || kind === "not-installed";
+
 export function SessionChat({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const [view, setView] = useBoardView(sessionId);
@@ -70,17 +68,16 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   const error = ownError ?? action.error;
   const [adding, setAdding] = useState(false);
   const [sending, setSending] = useState(false);
-  const sendingRef = useRef(false);
+  const sendInFlight = useRef(false);
   const [dropping, setDropping] = useState(false);
-  // A drag cancelled (Esc) or dropped elsewhere never sends "dragleave" here.
   useEffect(() => {
     if (!dropping) return;
-    const end = () => setDropping(false);
-    window.addEventListener("dragend", end);
-    window.addEventListener("drop", end);
+    const endWhenDragEndsElsewhere = () => setDropping(false);
+    window.addEventListener("dragend", endWhenDragEndsElsewhere);
+    window.addEventListener("drop", endWhenDragEndsElsewhere);
     return () => {
-      window.removeEventListener("dragend", end);
-      window.removeEventListener("drop", end);
+      window.removeEventListener("dragend", endWhenDragEndsElsewhere);
+      window.removeEventListener("drop", endWhenDragEndsElsewhere);
     };
   }, [dropping]);
 
@@ -97,31 +94,26 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   const seriesId = workspace.sessions.find((s) => s.id === sessionId)?.seriesId;
   const seriesProductIds = workspace.series.find((s) => s.id === seriesId)?.productIds ?? [];
 
-  // After installing or signing in from Terminal, coming back to the app
-  // re-checks, so the banner clears without a click. A turn that failed for
-  // the same reason re-checks too, so the banner appears.
   const lastError = messages.at(-1)?.error?.kind;
   useEffect(() => {
-    if (lastError === "signed-out" || lastError === "not-installed") void refreshInfo();
+    if (isSetupFailure(lastError)) void refreshInfo();
   }, [lastError, refreshInfo]);
   useEffect(() => {
     if (!info?.problem) return;
-    const recheck = () => void refreshInfo();
-    window.addEventListener("focus", recheck);
-    return () => window.removeEventListener("focus", recheck);
+    const recheckOnReturnFromTerminal = () => void refreshInfo();
+    window.addEventListener("focus", recheckOnReturnFromTerminal);
+    return () => window.removeEventListener("focus", recheckOnReturnFromTerminal);
   }, [info?.problem, refreshInfo]);
 
-  // The draft setter changes every render; the listener below always calls the latest.
-  const insertText = useRef(setText);
-  insertText.current = setText;
-  // A card's "Nhắc trong chat" focuses the composer (after the panel opens).
+  const latestSetText = useRef(setText);
+  latestSetText.current = setText;
   useEffect(
     () =>
       onChatFocusRequest(() => {
         if (!takeChatFocus(sessionId)) return;
         const insert = takeChatInsert(sessionId);
         if (insert) {
-          insertText.current((current) =>
+          latestSetText.current((current) =>
             current.startsWith(insert) ? current : insert + current,
           );
         }
@@ -134,7 +126,6 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     [sessionId],
   );
 
-  // `#query` right before the caret opens the script picker; `@query` the product one.
   const hash = findHash(text, caret);
   const choose = (script: Script) => {
     if (!hash) return;
@@ -169,9 +160,8 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
   };
 
   const send = async () => {
-    // A second Enter or click before the first send returns would send twice.
-    if (sendingRef.current) return;
-    sendingRef.current = true;
+    if (sendInFlight.current) return;
+    sendInFlight.current = true;
     setSending(true);
     setError(null);
     action.clear();
@@ -188,7 +178,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      sendingRef.current = false;
+      sendInFlight.current = false;
       setSending(false);
     }
   };
@@ -199,7 +189,6 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     setAdding(true);
     try {
       const added = await picked;
-      // Builds on the latest list: two stagings that overlap both keep their files.
       let tooMany = false;
       setFiles((current) => {
         const next = [...current, ...added];
@@ -214,7 +203,6 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // Dropped files have a path on disk; pasted screenshots only have their bytes.
   const stage = (list: File[]) =>
     attach(
       Promise.all(
@@ -229,10 +217,15 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
 
   const act = action.run;
 
-  // Only the newest turn that can still be undone offers it: undoing an older
-  // turn would overwrite what later turns changed.
-  const undoId = messages.findLast(canUndo)?.id ?? null;
-  const ctx: MessageContext = { sessionId, scripts, running, blocked, undoId, act };
+  const onlyNewestUndoableId = messages.findLast(canUndo)?.id ?? null;
+  const ctx: MessageContext = {
+    sessionId,
+    scripts,
+    running,
+    blocked,
+    undoId: onlyNewestUndoableId,
+    act,
+  };
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: drop target for scripts dragged from the board
@@ -382,16 +375,13 @@ interface MessageContext {
   sessionId: string;
   scripts: Script[];
   running: boolean;
-  /** The setup banner is showing; messages don't repeat its actions. */
   blocked: boolean;
-  /** The one assistant message whose changes can be undone now. */
   undoId: string | null;
   act: (run: () => Promise<unknown>) => void;
 }
 
 const undoChanges = (m: ChatMessage) => (m.undo?.before.length ?? 0) + (m.undo?.added?.length ?? 0);
 
-/** An assistant turn whose changes are still on the board. Pipeline replies always record some. */
 const canUndo = (m: ChatMessage) =>
   m.role === "assistant" &&
   !m.pending &&
@@ -399,7 +389,6 @@ const canUndo = (m: ChatMessage) =>
   !m.undo?.undone &&
   (!m.parts || undoChanges(m) > 0);
 
-/** Follows new content only while the reader is already at the bottom. */
 function useStickToBottom() {
   const ref = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
@@ -412,15 +401,12 @@ function useStickToBottom() {
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
-  // After every render: new messages and streamed text both re-render the panel.
-  useLayoutEffect(() => {
+  useLayoutEffect(function followNewContentAfterEveryRender() {
     const el = ref.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
   });
   return ref;
 }
-
-// ---------------------------------------------------------------- setup
 
 function SetupBanner({
   problem,
@@ -457,8 +443,6 @@ function SetupBanner({
   );
 }
 
-// ---------------------------------------------------------------- model
-
 const EFFORT_LABEL: Record<ChatEffort, string> = {
   low: "Thấp",
   medium: "Vừa",
@@ -478,7 +462,6 @@ function ModelPicker({
   info: ChatInfo;
   current: { model: string; effort: ChatEffort };
   onError: (message: string) => void;
-  /** The choice was saved; it is also the default for new sessions. */
   onChosen: (choice: ChatModelChoice) => void;
 }) {
   const option = info.models.find((m) => m.value === current.model);
@@ -508,7 +491,6 @@ function ModelPicker({
             onClick={() =>
               choose({
                 model: m.value,
-                // Keep the effort when the new model has it.
                 effort: m.efforts.includes(current.effort) ? current.effort : "medium",
               })
             }
@@ -533,8 +515,6 @@ function ModelPicker({
     </Menu>
   );
 }
-
-// ---------------------------------------------------------------- chips
 
 function RefChip({
   script,
@@ -592,8 +572,6 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
     </button>
   );
 }
-
-// ---------------------------------------------------------------- messages
 
 function UserMessage({ message, ctx }: { message: ChatMessage; ctx: MessageContext }) {
   const refs = ctx.scripts.filter((s) => message.refs?.includes(s.id));
@@ -667,12 +645,9 @@ function AssistantMessage({
   request?: ChatMessage;
   ctx: MessageContext;
 }) {
-  // Replies from the fal pipeline: one line of text.
   if (!message.parts) return <PipelineMessage message={message} ctx={ctx} />;
 
   const parts = message.parts;
-  // Something visible always moves while a reply runs: streamed text, a
-  // running tool row, or this line (thinking, or waiting for Claude).
   const toolRunning = parts.some((p) => p.type === "tool" && p.status === "running");
   const thinking = message.pending && !liveText && !toolRunning;
   const undo = message.undo;
@@ -680,16 +655,11 @@ function AssistantMessage({
 
   return (
     <div className="flex flex-col gap-1.5 leading-relaxed">
-      {parts.map((part, i) => (
-        <Part
-          // Parts are only ever appended, so the index is stable.
-          // biome-ignore lint/suspicious/noArrayIndexKey: append-only list
-          key={i}
-          part={part}
-          message={message}
-          ctx={ctx}
-        />
-      ))}
+      {withOccurrenceKeys(parts, (part) => (part.type === "text" ? "text" : part.id)).map(
+        ({ item: part, key }) => (
+          <Part key={key} part={part} message={message} ctx={ctx} />
+        ),
+      )}
       {liveText && (
         <p className="whitespace-pre-wrap" data-selectable>
           {liveText}
@@ -806,11 +776,6 @@ function Part({
   );
 }
 
-/**
- * A video fix the agent proposes: what is made again, the price, and the one
- * button that starts it. Spending is always the operator's hold, never the
- * agent's. A proposal is spent once used and stale once the video moved on.
- */
 function FixPart({
   part,
   message,
@@ -875,7 +840,6 @@ function TurnError({
   onRetry,
 }: {
   error: NonNullable<ChatMessage["error"]>;
-  /** The turn is still running: Claude Code holds it until the limit reopens. */
   waiting?: boolean;
   showSetup: boolean;
   canRetry: boolean;
@@ -919,7 +883,6 @@ function TurnError({
   );
 }
 
-/** Seconds since the turn started, ticked in the DOM so nothing re-renders. */
 function Elapsed({ since }: { since: string }) {
   const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => {

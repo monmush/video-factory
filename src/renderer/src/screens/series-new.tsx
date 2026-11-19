@@ -11,10 +11,6 @@ import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
 import { refreshWorkspace } from "@/lib/workspace";
 
-/**
- * Create a series: one description plus the library assets it uses. Nothing is
- * saved until it is sent, so leaving this page leaves no empty series behind.
- */
 export function SeriesNewPage() {
   const navigate = useNavigate();
   const [name, setName, clearName] = useDraft("series-new:name", "");
@@ -28,12 +24,10 @@ export function SeriesNewPage() {
     "series-new:environments",
     [],
   );
-  // Experiment branch: the Media level in place of model and resolution.
   const [level, setLevel, clearLevel] = useDraft<MediaLevelId>(
     "series-new:media-level",
     DEFAULT_MEDIA_LEVEL,
   );
-  // Images dropped on the composer open as a new environment, added to this series once saved.
   const [dropped, setDropped] = useState<StagedImage[] | null>(null);
 
   const dropImages = async (files: File[]) => {

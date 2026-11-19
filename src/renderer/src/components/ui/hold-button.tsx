@@ -3,20 +3,13 @@ import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
 
-/** How long a click that spends money is held (docs/VIDEO_COMMIT_DECISIONS.md). */
-export const HOLD_MS = 3000;
+const SPENDING_HOLD_MS = 3000;
 
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/**
- * Press and hold to confirm: a fill runs left to right and the action fires
- * when it is full. Releasing early undoes it; a quick tap nudges the button
- * as a hint. Space or Enter held works the same. With reduced motion the
- * fill moves in four steps instead of gliding.
- */
 export function HoldButton({
   onHold,
-  ms = HOLD_MS,
+  ms = SPENDING_HOLD_MS,
   tone = "primary",
   hint,
   disabled,
@@ -26,9 +19,7 @@ export function HoldButton({
 }: Omit<ComponentProps<typeof Button>, "onClick" | "variant"> & {
   onHold: () => unknown;
   ms?: number;
-  /** "stop": quiet outline with a red fill. */
   tone?: "primary" | "outline" | "stop";
-  /** Shown while held or hovered, and after a tap (e.g. what stopping loses). */
   hint?: ReactNode;
   children: ReactNode;
 }) {
@@ -37,9 +28,7 @@ export function HoldButton({
   const [nudge, setNudge] = useState(false);
   const [busy, setBusy] = useState(false);
   const action = useAction();
-  // The timer decides when the hold completes; animation frames only draw the
-  // fill (they pause in a hidden window, the timer does not).
-  const state = useRef<{ start: number; frame: number; timer: number } | null>(null);
+  const state = useRef<{ start: number; fillFrame: number; completionTimer: number } | null>(null);
   const mounted = useRef(true);
   const latest = useRef({ onHold, disabled });
   latest.current = { onHold, disabled };
@@ -48,8 +37,8 @@ export function HoldButton({
     () => () => {
       mounted.current = false;
       if (state.current) {
-        cancelAnimationFrame(state.current.frame);
-        clearTimeout(state.current.timer);
+        cancelAnimationFrame(state.current.fillFrame);
+        clearTimeout(state.current.completionTimer);
       }
     },
     [],
@@ -69,17 +58,17 @@ export function HoldButton({
   const begin = () => {
     if (state.current || disabled || busy) return;
     const start = performance.now();
-    const steps = reducedMotion();
+    const fillInFourSteps = reducedMotion();
     setHolding(true);
     const tick = () => {
       if (!state.current) return;
       const raw = Math.min(1, (performance.now() - start) / ms);
-      setShare(steps ? Math.floor(raw * 4) / 4 : raw);
-      state.current.frame = requestAnimationFrame(tick);
+      setShare(fillInFourSteps ? Math.floor(raw * 4) / 4 : raw);
+      state.current.fillFrame = requestAnimationFrame(tick);
     };
-    const timer = window.setTimeout(() => {
+    const completionTimer = window.setTimeout(() => {
       if (!state.current) return;
-      cancelAnimationFrame(state.current.frame);
+      cancelAnimationFrame(state.current.fillFrame);
       state.current = null;
       setHolding(false);
       if (latest.current.disabled) {
@@ -89,14 +78,14 @@ export function HoldButton({
       setShare(1);
       void fire();
     }, ms);
-    state.current = { start, frame: requestAnimationFrame(tick), timer };
+    state.current = { start, fillFrame: requestAnimationFrame(tick), completionTimer };
   };
 
   const end = () => {
     const current = state.current;
     if (!current) return;
-    cancelAnimationFrame(current.frame);
-    clearTimeout(current.timer);
+    cancelAnimationFrame(current.fillFrame);
+    clearTimeout(current.completionTimer);
     state.current = null;
     setHolding(false);
     setShare(0);
@@ -179,7 +168,6 @@ export function HoldButton({
   );
 }
 
-/** A price inside a button, quieter than its label. */
 export function ButtonPrice({ children }: { children: ReactNode }) {
   return <span className="font-normal tabular-nums opacity-70">{children}</span>;
 }

@@ -41,7 +41,6 @@ describe("levelEstimateUsd", () => {
     const fast = mediaLevel("fast");
     const balanced = mediaLevel("balanced");
     const r = builtinRecipe(balanced);
-    // 7 pictures, 38 s speaking, 7 s motion (balanced only), plus a typical voice.
     const media = 7 * (r.stills.rate.usd ?? 0) + 38 * (r.speak.rate.usd ?? 0);
     const motion = 7 * (r.motion?.rate.usd ?? 0);
     expect(levelMediaUsd(fast, 45)).toBeCloseTo(media);
@@ -49,7 +48,6 @@ describe("levelEstimateUsd", () => {
     const voice = levelEstimateUsd(fast) - levelMediaUsd(fast, 45);
     expect(voice).toBeGreaterThan(0.02);
     expect(voice).toBeLessThan(0.1);
-    // Near what real "Cân bằng" videos cost (about $2.9–3.3 for 45–48 s).
     expect(levelEstimateUsd(balanced)).toBeGreaterThan(2.9);
     expect(levelEstimateUsd(balanced)).toBeLessThan(3.4);
     expect(levelEstimateUsd(fast)).toBeCloseTo(levelEstimateUsd(balanced) - motion);
@@ -70,7 +68,6 @@ describe("levelEstimateUsd", () => {
     expect(estimateUsd(TYPICAL_LINES, opts("balanced"))).toBeGreaterThan(
       estimateUsd(TYPICAL_LINES, opts("fast")),
     );
-    // A hidden level prices as the offered one it reads as.
     expect(estimateUsd(TYPICAL_LINES, opts("most-detailed"))).toBeCloseTo(
       estimateUsd(TYPICAL_LINES, opts("balanced")),
     );

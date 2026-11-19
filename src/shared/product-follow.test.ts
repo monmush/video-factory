@@ -14,7 +14,6 @@ const NEW: NamedProduct = { id: "q", name: "Trà Ô Long" };
 const products = new Map([OLD, NEW].map((p) => [p.id, p]));
 const product = (id: string) => products.get(id) ?? null;
 
-/** The fixture's video, planned from its shot list, its product the old one; `named` puts the name in line 3. */
 function plannedJob(named = false): VideoJob {
   const lines: ScriptLine[] = structuredClone(LINES);
   const a = answer();
@@ -75,13 +74,11 @@ describe("followProduct", () => {
     expect(productShots(next).map((s) => s.productId)).toEqual(["q"]);
     expect(next.plan?.shots.filter((s) => s.productId).map((s) => s.productId)).toEqual(["q"]);
     expect(next.live?.plan.shots.shots.filter((s) => s.productId)[0]?.productId).toBe("q");
-    // Same pictures and routes: nothing is directed again.
     expect(next.live?.plan.keyframes).toEqual(job.live?.plan.keyframes);
     expect(next.live?.plan.routes).toEqual(job.live?.plan.routes);
     const plate = next.frames.find((f) => f.kind === "product");
     expect(plate).toMatchObject({ productId: "q", cutouts: 1, keyframe: "plate" });
     expect(next.frames.map((f) => f.id)).toEqual(job.frames.map((f) => f.id));
-    // The price follows the cut-outs the new product needs.
     expect(liveCostTable(next)?.knownUsd).toBeLessThan(liveCostTable(job)?.knownUsd ?? 0);
     expect(next.status).toBe("idle");
   });

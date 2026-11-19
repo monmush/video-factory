@@ -2,11 +2,6 @@ import { MAX_HOLDS_SEC, SPEECH_RATE, syllables } from "./board";
 import { withoutCues } from "./cues";
 import type { ScriptLine } from "./ipc";
 
-// The shot plan: what the viewer sees while each word is heard
-// (docs/DIRECTING_RULES.md). The director (the user's own AI) writes it from
-// built-in rules; everything here is pure so the checks, the rules-only
-// fallback and the timing are tested.
-
 export type ShotKind = "speaker" | "listener" | "wide" | "detail";
 export type Framing = "medium_close" | "close";
 export type Side = "left" | "right" | "centre";
@@ -16,65 +11,39 @@ export interface PlanSeat {
   characterId: string;
   side: Side;
   looks: Gaze;
-  /** What is behind this character (English, for the still). */
   behind: string;
-  /**
-   * One short English clause of gentle motion behind this character
-   * ("bamboo leaves stir in a light breeze"), asked of speaking-shot models
-   * that take a prompt so the background is not frozen. Optional.
-   */
   ambient?: string;
 }
 
 export interface PlannedShot {
   kind: ShotKind;
-  /** On screen, for speaker and listener. */
   characterId: string | null;
   framing: Framing | null;
-  /** 0-based dialogue line. */
   line: number;
-  /** Exact words of that line heard during this shot. */
   text: string;
-  /** What is in frame (English). */
   visual: string;
-  /** For a detail shot of a product: shown from its own photo. */
   productId: string | null;
-  /** Rule or reason, for maintainers. */
   why: string;
-  /**
-   * Seconds of silence after this shot's words before the next line (or the
-   * end), so a line can land (C15). Only on a shot that ends its line.
-   */
   hold?: number;
-  /**
-   * What the viewer sees, in plain Vietnamese for the operator, one or two
-   * sentences with no shot size (the app shows that). From the director only.
-   */
   brief?: string;
 }
 
 export interface ShotPlan {
-  /** "ai": the director; "rules": built-in fallback; "legacy": jobs made before plans. */
   source: "ai" | "rules" | "legacy";
   seats: PlanSeat[];
   props: { name: string; where: string }[];
-  /** From a 0-based shot index on, this stays true in the scene. */
   stateChanges: { fromShot: number; change: string }[];
   shots: PlannedShot[];
-  /** Why the director's plan was not used (rules fallback only). */
   problems?: string[];
 }
 
 export interface PlanContext {
   lines: ScriptLine[];
-  /** Characters with a line, in order of first speaking. */
   cast: { id: string; name: string }[];
   products: { id: string; name: string }[];
-  /** A place exists, so wide and generated detail shots can be made. */
   hasPlace: boolean;
 }
 
-/** Characters with a line, in order of first speaking. */
 export function castOf(lines: ScriptLine[]): string[] {
   const ids: string[] = [];
   for (const line of lines) {
@@ -83,11 +52,6 @@ export function castOf(lines: ScriptLine[]): string[] {
   return ids;
 }
 
-/**
- * S1/S2, decided by code rather than the AI: the first speaker sits on the
- * left and looks toward frame right, the second sits on the right and looks
- * toward frame left. A single character faces the camera.
- */
 export function seatsFor(cast: string[]): Omit<PlanSeat, "behind">[] {
   if (cast.length === 1)
     return [{ characterId: cast[0] as string, side: "centre", looks: "camera" }];
@@ -98,11 +62,6 @@ export function seatsFor(cast: string[]): Omit<PlanSeat, "behind">[] {
     return { characterId, side, looks };
   });
 }
-
-// ---------------------------------------------------------------------------
-// Rules-only plan: used without a place, without text AI, or when the
-// director fails twice. Every line is its speaker; eyelines still hold.
-// ---------------------------------------------------------------------------
 
 export function rulesPlan(ctx: PlanContext, problems?: string[]): ShotPlan {
   const spoken = ctx.lines
@@ -122,21 +81,14 @@ export function rulesPlan(ctx: PlanContext, problems?: string[]): ShotPlan {
       visual: "",
       productId: null,
       why: "rules fallback",
-      // The ending never cuts off at once (C15).
-      ...(i === spoken.length - 1 ? { hold: LAST_HOLD_SEC } : {}),
+      ...(i === spoken.length - 1 ? { hold: LAST_SHOT_MIN_HOLD_SEC } : {}),
     })),
     ...(problems?.length ? { problems } : {}),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Briefs: what the viewer sees, in the operator's words.
-// ---------------------------------------------------------------------------
-
-/** Longest brief kept (the director is asked for 10 to 30 words). */
 export const BRIEF_MAX = 300;
 
-/** The director's brief, one line and capped; "" when none. */
 export function cleanBrief(raw: unknown): string {
   const text = String(raw ?? "")
     .replace(/\s+/g, " ")
@@ -146,10 +98,6 @@ export function cleanBrief(raw: unknown): string {
   const space = cut.lastIndexOf(" ");
   return `${(space > BRIEF_MAX / 2 ? cut.slice(0, space) : cut).trim()}…`;
 }
-
-// ---------------------------------------------------------------------------
-// The director's answer → a plan, with mechanical checks.
-// ---------------------------------------------------------------------------
 
 interface RawShot {
   n?: number;
@@ -173,27 +121,17 @@ export interface DirectorAnswer {
 
 const KINDS: ShotKind[] = ["speaker", "listener", "wide", "detail"];
 const FRAMINGS: Framing[] = ["medium_close", "close"];
-/** A line may only be split right after one of these. */
-const SPLIT_AFTER = /[,.!?…;:]["”']?$/;
-/** Shortest part of a split line, in spoken syllables. */
+const LINE_SPLITS_ONLY_AFTER_PUNCTUATION = /[,.!?…;:]["”']?$/;
 const MIN_PART_SYLLABLES = 4;
-/** A hold lasts this long at least and at most (C15). */
 const HOLD_MIN_SEC = 1;
 const HOLD_MAX_SEC = 2;
-/** The last shot always holds at least this long, so the video never ends on the last syllable. */
-const LAST_HOLD_SEC = 1;
-/** Longest ambient clause, in words. */
+const LAST_SHOT_MIN_HOLD_SEC = 1;
 const AMBIENT_MAX_WORDS = 14;
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 const key = (s: string) => norm(s).toLowerCase();
-const same = (shot: PlannedShot) => `${shot.kind}|${shot.characterId}|${shot.framing}`;
+const lookOf = (shot: PlannedShot) => `${shot.kind}|${shot.characterId}|${shot.framing}`;
 
-/**
- * C1, the rule no plan may break: shots follow the dialogue, each line's
- * parts join to the line exactly, a line is split only after punctuation,
- * and no part is too short to be a shot.
- */
 export function coverageErrors(
   shots: Pick<PlannedShot, "line" | "text">[],
   lines: ScriptLine[],
@@ -217,7 +155,7 @@ export function coverageErrors(
     }
     if (parts.length < 2) return;
     parts.forEach((part, j) => {
-      if (j < parts.length - 1 && !SPLIT_AFTER.test(part.text)) {
+      if (j < parts.length - 1 && !LINE_SPLITS_ONLY_AFTER_PUNCTUATION.test(part.text)) {
         errors.push(
           `Line ${index + 1}: split "${part.text}" only right after a punctuation mark, never inside a phrase.`,
         );
@@ -232,11 +170,19 @@ export function coverageErrors(
   return errors;
 }
 
-/**
- * C15, holds: each between 1 and 2 seconds, only on the shot that ends its
- * line, all together (the last shot's minimum included) no more than
- * MAX_HOLDS_SEC.
- */
+function noThreeAlikeInARowErrors(shots: PlannedShot[]): string[] {
+  const errors: string[] = [];
+  for (let i = 2; i < shots.length; i++) {
+    const a = shots[i - 2] as PlannedShot;
+    const b = shots[i - 1] as PlannedShot;
+    const c = shots[i] as PlannedShot;
+    if (a.kind !== "detail" && lookOf(a) === lookOf(b) && lookOf(b) === lookOf(c)) {
+      errors.push(`Shots ${i - 1}–${i + 1}: three alike in a row; vary the type or framing.`);
+    }
+  }
+  return errors;
+}
+
 export function holdErrors(shots: Pick<PlannedShot, "line" | "hold">[]): string[] {
   const errors: string[] = [];
   let total = 0;
@@ -251,7 +197,7 @@ export function holdErrors(shots: Pick<PlannedShot, "line" | "hold">[]): string[
         errors.push(`Shot ${i + 1}: only the shot that ends a line may hold.`);
       }
     }
-    total += last ? Math.max(LAST_HOLD_SEC, hold) : Number.isFinite(hold) ? hold : 0;
+    total += last ? Math.max(LAST_SHOT_MIN_HOLD_SEC, hold) : Number.isFinite(hold) ? hold : 0;
   });
   if (total > MAX_HOLDS_SEC + 1e-9) {
     errors.push(
@@ -261,7 +207,6 @@ export function holdErrors(shots: Pick<PlannedShot, "line" | "hold">[]): string[
   return errors;
 }
 
-/** Lowercase, no accents, words only: "Bạch Trà" → "bach tra". */
 const fold = (s: string) =>
   s
     .normalize("NFD")
@@ -280,11 +225,9 @@ export function namedProduct(text: string, names: readonly string[]): string | n
   return null;
 }
 
-/** Words that only ever mean a product's packaging, whatever the product. */
 const PACKAGING =
   /\b(packag\w*|packets?|pouch(es)?|sachets?|cartons?|labels?|label+ed|tea ?bags?|gift ?box(es)?)\b/i;
 
-/** The packaging word a text uses, if any ("pouch", "label"). */
 const namedPackaging = (text: string) => PACKAGING.exec(text)?.[0]?.toLowerCase() ?? null;
 
 const sentences = (text: string) => text.split(/(?<=[.!?;])\s+/);
@@ -299,25 +242,18 @@ export const namedInRequest = (text: string, names: readonly string[]): string |
     .find((w): w is string => Boolean(w)) ??
   null;
 
-/** The text without its sentences that name a product or packaging. */
 export const withoutProducts = (text: string, names: readonly string[]) =>
   sentences(text)
     .filter((sentence) => !namedInRequest(sentence, names))
     .join(" ")
     .trim();
 
-/** Props a still may show: never a product or its packaging. */
 export const productFreeProps = (props: ShotPlan["props"], names: readonly string[]) =>
   props.filter((p) => !propProduct(p.name, p.where, names));
 
 const propProduct = (name: string, where: string, names: readonly string[]) =>
   namedProduct(name, names) ?? namedPackaging(name) ?? namedInRequest(where, names);
 
-/**
- * Turns the director's JSON into a plan (names → ids, 1-based → 0-based) and
- * lists every rule it breaks that a machine can check. An empty list means
- * the plan can be used.
- */
 export function readDirectorAnswer(
   answer: DirectorAnswer,
   ctx: PlanContext,
@@ -377,7 +313,6 @@ export function readDirectorAnswer(
       visual: norm(String(s.visual ?? "")),
       why: norm(String(s.why ?? "")),
       ...(hold ? { hold } : {}),
-      // Never a rule error: a shot without one shows "Chưa có mô tả".
       ...(cleanBrief(s.brief) ? { brief: cleanBrief(s.brief) } : {}),
     };
   });
@@ -385,19 +320,8 @@ export function readDirectorAnswer(
   errors.push(...coverageErrors(shots, ctx.lines));
   errors.push(...holdErrors(shots));
 
-  // No fixed opening, closing or wide shot (19 Nov 2026): the director decides
-  // case by case how the video opens, ends and shows the place (C2, C3).
-  // C9: no more than two alike in a row.
-  for (let i = 2; i < shots.length; i++) {
-    const a = shots[i - 2] as PlannedShot;
-    const b = shots[i - 1] as PlannedShot;
-    const c = shots[i] as PlannedShot;
-    if (a.kind !== "detail" && same(a) === same(b) && same(b) === same(c)) {
-      errors.push(`Shots ${i - 1}–${i + 1}: three alike in a row; vary the type or framing.`);
-    }
-  }
+  errors.push(...noThreeAlikeInARowErrors(shots));
 
-  // S4: products are never props, so no still is ever asked to draw one.
   for (const prop of answer.props ?? []) {
     const named = propProduct(prop.name ?? "", prop.where ?? "", productNames);
     if (named) {
@@ -425,9 +349,9 @@ export function readDirectorAnswer(
     }
     ambient.set(id, motion);
   }
-  // C15: the ending always lands.
   const lastShot = shots.at(-1);
-  if (lastShot && (lastShot.hold ?? 0) < LAST_HOLD_SEC) lastShot.hold = LAST_HOLD_SEC;
+  if (lastShot && (lastShot.hold ?? 0) < LAST_SHOT_MIN_HOLD_SEC)
+    lastShot.hold = LAST_SHOT_MIN_HOLD_SEC;
   const plan: ShotPlan = {
     source: "ai",
     seats: seatsFor(ctx.cast.map((c) => c.id)).map((s) => ({
@@ -446,27 +370,16 @@ export function readDirectorAnswer(
   return { plan, errors };
 }
 
-// ---------------------------------------------------------------------------
-// Timing: where each shot starts and ends in the whole dialogue.
-// ---------------------------------------------------------------------------
-
-/** Per-character timing for the whole dialogue, as the voice provider returns it. */
 export interface Alignment {
   characters: string[];
   characterStartTimesSeconds: number[];
   characterEndTimesSeconds: number[];
 }
-/** One line's place in the alignment (characters [start, end)). */
 export interface LineChars {
   start: number;
   end: number;
 }
 
-/**
- * The moments inside one line where its parts meet: from the provider's
- * character timing when the part can be found, else in proportion to
- * syllables across the line's span.
- */
 export function partSplits(
   parts: string[],
   span: { start: number; end: number },
@@ -488,12 +401,10 @@ export function partSplits(
   const splits: number[] = [];
   let cursor = 0;
   for (let j = 0; j < parts.length; j++) {
-    // Sounds like "[cười]" are voiced as tags the timing may spell differently.
     const part = withoutCues(parts[j] as string);
     const at = text.indexOf(part, cursor);
     if (!part || at < 0) return proportional();
     if (j > 0) {
-      // Between the last spoken character before this part and its first one.
       let prev = chars.start + at - 1;
       while (prev > chars.start && /\s/.test(alignment.characters[prev] ?? "")) prev--;
       const end = alignment.characterEndTimesSeconds[prev];
@@ -506,11 +417,6 @@ export function partSplits(
   return splits;
 }
 
-/**
- * Every shot's [start, end) in the dialogue. The shots tile the whole audio
- * with no gap: a cut between lines sits midway through the pause, the first
- * shot starts at 0 and the last ends with the audio.
- */
 export function shotTimes(
   shots: Pick<PlannedShot, "line" | "text">[],
   lineSpans: { start: number; end: number }[],
@@ -546,24 +452,12 @@ export function shotTimes(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Holds (C15): silence after a line so it lands. The voice is never asked
-// again: the silence is inserted locally into the saved dialogue, so the
-// video's timeline is the voice's with every hold added after its line.
-// ---------------------------------------------------------------------------
-
-/** Silence inserted after `line`, at `at` seconds of the voice's own timeline. */
 export interface HoldInsert {
   line: number;
   at: number;
   sec: number;
 }
 
-/**
- * Shot times on the video's timeline: each hold lengthens its shot by its
- * seconds of silence and moves every later shot by as much. `times` are the
- * voice's own (shotTimes).
- */
 export function withHolds(
   times: { start: number; end: number }[],
   shots: Pick<PlannedShot, "line" | "hold">[],
@@ -582,7 +476,6 @@ export function withHolds(
   return { times: held, inserts };
 }
 
-/** The silences a job's shot times (already on the video's timeline) were laid out with. */
 export function holdInserts(shots: { line: number; hold?: number; end?: number }[]): HoldInsert[] {
   let offset = 0;
   const inserts: HoldInsert[] = [];
@@ -595,13 +488,11 @@ export function holdInserts(shots: { line: number; hold?: number; end?: number }
   return inserts;
 }
 
-/** Seconds every line moves on the video's timeline: the holds of the lines before it. */
 export const lineOffsets = (lineCount: number, inserts: HoldInsert[]) =>
   Array.from({ length: lineCount }, (_, line) =>
     inserts.filter((h) => h.line < line).reduce((n, h) => n + h.sec, 0),
   );
 
-/** Line spans moved onto the video's timeline. */
 export const heldSpans = <T extends { start: number; end: number } | undefined>(
   spans: T[],
   offsets: number[],
@@ -612,7 +503,6 @@ export const heldSpans = <T extends { start: number; end: number } | undefined>(
       : span,
   );
 
-/** The voice's character timing moved onto the video's timeline, line by line. */
 export function heldTiming(
   timing: { alignment: Alignment; lineChars: LineChars[] },
   offsets: number[],
@@ -635,7 +525,6 @@ export function heldTiming(
   };
 }
 
-/** Estimated seconds of a part before the voice exists. */
 export const estimatePartSec = (text: string) => syllables([{ text }]) / SPEECH_RATE;
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;

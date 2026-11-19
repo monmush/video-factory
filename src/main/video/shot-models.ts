@@ -1,23 +1,15 @@
 import type { OutputResolution } from "../../shared/batch-settings";
 import { type VideoModelId, videoModel } from "../../shared/video-models";
 
-// How each speaking-shot model is asked and answered on fal, by registry id
-// (src/shared/video-models.ts). Inputs follow each endpoint's public queue
-// OpenAPI schema as read on 13 Nov 2026; only Kling Avatar v2 Standard has
-// run live. Pure (no Electron), so it is tested beside.
-
 export interface ShotRequest {
   imageUrl: string;
   audioUrl: string;
-  /** What the person does; models without a prompt input ignore it. */
   prompt: string;
-  /** The video's output size; models with a size choice follow it. */
   resolution: OutputResolution;
 }
 
 export interface ShotResult {
   url?: string;
-  /** Seconds the provider reports (and bills); absent when it reports none. */
   seconds?: number;
 }
 
@@ -28,7 +20,6 @@ interface ShotEndpoint {
 
 type VideoResult = { video?: { url?: string }; duration?: number };
 
-/** `{ video: { url }, duration }`, the shape every candidate answers with. */
 const readVideo = (data: unknown): ShotResult => {
   const d = (data ?? {}) as VideoResult;
   return {
@@ -38,7 +29,6 @@ const readVideo = (data: unknown): ShotResult => {
 };
 
 const kling: ShotEndpoint = {
-  // Same input as the successful test (experiments/speaking-shot/fal-avatar.mjs).
   input: (r) => ({
     image_url: r.imageUrl,
     audio_url: r.audioUrl,
@@ -48,13 +38,13 @@ const kling: ShotEndpoint = {
   read: readVideo,
 };
 
+const MINIMAX_SIZE_IN_A_720P_VIDEO = "768P";
+
 const minimax: ShotEndpoint = {
-  // No prompt input. 768P in a 720p video, 1080P in a 1080p one. Transcription
-  // (on by default) guides the lips from the words.
   input: (r) => ({
     image_url: r.imageUrl,
     audio_url: r.audioUrl,
-    resolution: r.resolution === "1080p" ? "1080P" : "768P",
+    resolution: r.resolution === "1080p" ? "1080P" : MINIMAX_SIZE_IN_A_720P_VIDEO,
     enable_safety_checker: true,
   }),
   read: readVideo,
@@ -68,14 +58,11 @@ export const SHOT_ENDPOINTS: Record<VideoModelId, ShotEndpoint> = {
     read: readVideo,
   },
   "fabric-1-720p": {
-    // No prompt input; resolution is required. No 1080p, never 480p: always 720p.
     input: (r) => ({ image_url: r.imageUrl, audio_url: r.audioUrl, resolution: "720p" }),
-    // Answers with the video only: seconds come from the audio sent.
     read: readVideo,
   },
   "minimax-h3-lipsync": minimax,
 };
 
-/** By id; ids from before a merge and unknown ids resolve like `videoModel`. */
 export const shotEndpoint = (id: string): ShotEndpoint =>
   SHOT_ENDPOINTS[videoModel(id).id as VideoModelId];

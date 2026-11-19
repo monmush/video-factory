@@ -54,7 +54,6 @@ function MenuGroupLabel({ className, ...props }: MenuPrimitive.GroupLabel.Props)
   );
 }
 
-/** A choice in a radio group, with a check on the chosen one. */
 function MenuRadioItem({ className, children, ...props }: MenuPrimitive.RadioItem.Props) {
   return (
     <MenuPrimitive.RadioItem

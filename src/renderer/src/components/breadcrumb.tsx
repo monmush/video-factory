@@ -1,7 +1,6 @@
 import { Link, useMatches } from "@tanstack/react-router";
 import { useWorkspace } from "@/lib/workspace";
 
-/** Visible location: series, then the screen or session within it. */
 export function Breadcrumb() {
   const matches = useMatches();
   const workspace = useWorkspace();

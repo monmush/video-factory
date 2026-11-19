@@ -2,10 +2,6 @@ import { type MediaLevelId, mediaLevel, OFFERED_LEVELS } from "@shared/media-lev
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 
-// "Chất lượng" (the Media level) in place of the model and the resolution: the
-// offered levels only; a saved level no longer offered shows as the one it
-// reads as. The chosen segment is neutral, like the board's view toggle.
-
 export function MediaLevelPicker({
   value,
   onChange,

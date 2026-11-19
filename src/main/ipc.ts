@@ -8,7 +8,8 @@ import * as board from "./board";
 import { CHAT_FILE_EXTENSIONS, stageChatFiles } from "./chat/files";
 import { chatInfo, rememberChoice } from "./chat/models";
 import * as chat from "./chat/runtime";
-import { claudeCodeStatus, findClaude } from "./claude-code";
+import { claudeCodeStatus, findClaude, installClaude } from "./claude-code";
+import { advanceFakeClaude, fakeClaudeActive } from "./claude-fake";
 import { describeAsset } from "./describe";
 import { IMAGE_EXTENSIONS, imageRefPath, stageImages } from "./media";
 import { dataDir } from "./paths";
@@ -22,6 +23,7 @@ import {
 import * as products from "./product-change";
 import { cutOutProductPhoto } from "./product-cutout";
 import { groupProducts } from "./product-grouping";
+import { createProfile, deleteProfile, listProfiles, switchProfile } from "./profiles";
 import { clearKey, providersInfo, setKey } from "./providers";
 import { childPath } from "./safe-path";
 import { readSettings, writeSettings } from "./settings";
@@ -58,6 +60,10 @@ export function registerIpc() {
     await shell.openPath(dataDir());
     return null;
   });
+  handle("dev:profiles", listProfiles);
+  handle("dev:create-profile", createProfile);
+  handle("dev:switch-profile", switchProfile);
+  handle("dev:delete-profile", deleteProfile);
   handle("theme:set", async (preference) => {
     if (!["system", "light", "dark"].includes(preference)) throw new Error("Unknown theme");
     nativeTheme.themeSource = preference;
@@ -69,7 +75,6 @@ export function registerIpc() {
   handle("series:create", createSeries);
   handle("series:update", async (input) => {
     const series = await updateSeries(input);
-    // Batches that follow the series' level stage their unpaid videos again.
     if (input.mediaLevel !== undefined) {
       const ws = await getWorkspace();
       for (const s of ws.sessions.filter((x) => x.seriesId === series.id)) {
@@ -81,7 +86,6 @@ export function registerIpc() {
   handle("notes:update", ({ id, text }) => updateNote(id, text));
   handle("notes:remove", removeNote);
   handle("series:delete", async (id) => {
-    // Claude transcripts of the series' sessions go with it.
     const ws = await getWorkspace();
     const sessions = await Promise.all(
       ws.sessions
@@ -102,14 +106,12 @@ export function registerIpc() {
   });
   handle("session:update", async (input) => {
     const session = await updateSession(input);
-    // Unpaid videos are staged again at the new level; paid ones keep theirs.
     if (input.settings?.mediaLevel !== undefined) {
       void video.followLevel(session.id).catch((e) => console.warn("[video] level:", e.message));
     }
     return session;
   });
   handle("session:delete", async (id) => {
-    // The session's Claude transcript goes with it.
     const agentId = (await board.getBoard(id).catch(() => null))?.agent?.sessionId;
     await chat.forget([{ sessionId: id, agentId }]);
     video.forgetSession(id);
@@ -117,8 +119,6 @@ export function registerIpc() {
   });
   handle("session:approve", async (sessionId, scriptIds) => {
     const ids = await board.scriptsToCommit(sessionId, scriptIds);
-    // Committing sends the scripts to the Video tab; each is planned there in the
-    // background (free) and made by its own hold.
     const session = await approveSession(sessionId, ids);
     video.planCommitted(sessionId, ids);
     return session;
@@ -164,7 +164,6 @@ export function registerIpc() {
   handle("board:retry", ({ sessionId, scriptId }) => board.retry(sessionId, scriptId));
   handle("board:copy", ({ sessionId, scriptId }) => board.copy(sessionId, scriptId));
   handle("board:delete", async ({ sessionId, ids }) => {
-    // A video still being made keeps its script; stopping it comes first.
     const active = (await video.jobsFor(sessionId)).some(
       (j) => ids.includes(j.scriptId) && (j.status === "running" || j.status === "waiting"),
     );
@@ -183,7 +182,6 @@ export function registerIpc() {
   );
   handle("board:link-speaker", async ({ sessionId, speaker, characterId }) => {
     await board.linkSpeaker(sessionId, speaker, characterId);
-    // The character now speaks in this series, so the writer should know it.
     const { ws, session } = await board.findSession(sessionId);
     const series = ws.series.find((s) => s.id === session.seriesId);
     if (series && !series.characterIds.includes(characterId)) {
@@ -205,7 +203,6 @@ export function registerIpc() {
     return result.canceled ? [] : stageImages(result.filePaths);
   });
   handle("assets:stage-paths", stageImages);
-  // A saved place's photos are checked in the background (free; never blocks saving).
   const checkSaved = <T extends { id: string; kind: string }>(asset: T): T => {
     if (asset.kind === "environment") {
       void checkPlace(asset.id).catch((e) => console.warn("[place] check failed:", e));
@@ -297,6 +294,10 @@ export function registerIpc() {
   handle("ai:status", aiStatus);
   handle("ai:open-terminal", async (action) => {
     if (action !== "install" && action !== "login") throw new Error("Unknown action");
+    if (fakeClaudeActive()) {
+      void advanceFakeClaude();
+      return null;
+    }
     const claude = (await findClaude()) ?? "claude";
     const command =
       action === "install"
@@ -307,6 +308,15 @@ export function registerIpc() {
     await chmod(script, 0o755);
     const error = await shell.openPath(script);
     if (error) throw new Error(error);
+    return null;
+  });
+  handle("ai:install-claude", installClaude);
+  handle("ai:onboarded", () => readSettings().onboarded);
+  handle("ai:finish-onboarding", async (input) => {
+    await writeSettings({
+      onboarded: true,
+      ...(input?.useClaude === true && { textProvider: "claude-code" as const }),
+    });
     return null;
   });
   handle("ai:set-text-provider", async (provider) => {

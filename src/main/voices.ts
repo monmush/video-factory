@@ -1,13 +1,7 @@
 import type { VoiceId } from "../shared/voices";
 
-// Provider side of the voice catalogue in src/shared/voices.ts. Main process
-// only: the renderer never sees these ids. The generation job will use this
-// to call ElevenLabs (and to add a voice to the account before first use).
-
 export interface ProviderVoice {
-  /** ElevenLabs voice id. */
   voiceId: string;
-  /** Public owner id, needed to add a library voice to the account. */
   publicOwnerId: string;
 }
 
@@ -54,8 +48,4 @@ export const PROVIDER_VOICES: Record<VoiceId, ProviderVoice> = {
   },
 };
 
-/**
- * Direction before every line, as in the approved dialogue 03
- * (experiments/voice-auditions/dialogue-03.json): dry, close-mic, brisk.
- */
 export const VOICE_DIRECTION = "[close mic, dry studio recording, no echo] [speaks quickly]";

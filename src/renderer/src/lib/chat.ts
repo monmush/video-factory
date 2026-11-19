@@ -2,9 +2,6 @@ import type { ChatInfo, ChatLive } from "@shared/ipc";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { api } from "./api";
 
-// Unsaved progress of running chat turns ("chat:live": streamed text and the
-// scripts a tool is writing), and the chat's AI info (mode, models, problem).
-
 const lives = new Map<string, ChatLive>();
 const listeners = new Set<() => void>();
 const emit = () => {
@@ -30,7 +27,6 @@ export function useChatLive(sessionId: string): ChatLive | null {
   return useSyncExternalStore(subscribe, () => lives.get(sessionId) ?? null);
 }
 
-/** A chat tool is writing this script right now. */
 export function useLiveWriting(scriptId: string): boolean {
   return useSyncExternalStore(subscribe, () => writingIds.has(scriptId));
 }
@@ -52,10 +48,8 @@ function loadInfo(refresh: boolean) {
   return loading;
 }
 
-/** Re-reads the chat's AI after the text AI changes in Cài đặt. */
 export const refreshChatInfo = () => loadInfo(true);
 
-/** The chat's AI; `refresh` re-checks the installation and model list. */
 export function useChatInfo() {
   const current = useSyncExternalStore(subscribe, () => info);
   useEffect(() => {

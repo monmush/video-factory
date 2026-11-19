@@ -54,7 +54,6 @@ describe("guessVoiceTraits", () => {
   });
 
   it("does not match keywords inside other words or other meanings", () => {
-    // xanh, bàn, công, năm: substrings; Việt Nam, cô đơn, chú ý, bác sĩ, dụng cụ: other meanings.
     expect(guessVoiceTraits("", "Áo xanh, ngồi bên bàn gỗ, công phu, năm ấy")).toEqual({});
     expect(guessVoiceTraits("", "Phong cách Việt Nam, vẻ cô đơn, chú ý chi tiết")).toEqual({});
     expect(guessVoiceTraits("", "Mặc áo bác sĩ, cầm dụng cụ pha trà")).toEqual({});
@@ -103,7 +102,6 @@ describe("suggestVoice", () => {
   });
 
   it("skips voices other characters use while the gender has a free one", () => {
-    // The old voice taken: the nearest age comes next, not a young voice.
     expect(suggestVoice({ gender: "male", age: "old" }, ["tuan-anh"])).toBe("lam");
     expect(suggestVoice({ gender: "female" }, ["mai"])).toBe("nhu");
   });

@@ -39,7 +39,6 @@ describe("directorSteps", () => {
     expect(directorSteps("")).toEqual(["Đọc kịch bản, bối cảnh và nhân vật"]);
     const cut = ANSWER.slice(0, ANSWER.indexOf('"id": "plate"'));
     expect(directorSteps(cut).at(-1)).toBe("Khung hình: Cô gái");
-    // A shot half written is not counted yet.
     const half = ANSWER.slice(0, ANSWER.indexOf('"text": "Đi đâu?"'));
     expect(directorSteps(half).at(-1)).toBe("Cảnh 1: Cô gái nói");
   });

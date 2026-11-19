@@ -115,7 +115,6 @@ describe("jobStale", () => {
 
   it("fits while the lines and products are the same", () => {
     expect(jobStale(job, script)).toBe(false);
-    // Spacing and lines nobody voices do not count.
     expect(
       jobStale(job, {
         ...script,
@@ -136,7 +135,6 @@ describe("jobStale", () => {
       }),
     ).toBe(true);
     expect(jobStale(job, { ...script, productIds: [] })).toBe(true);
-    // Jobs made before products were recorded: lines only.
     expect(jobStale({ ...job, productIds: undefined }, { ...script, productIds: [] })).toBe(false);
   });
 });

@@ -5,10 +5,6 @@ import * as writer from "../script-writer";
 import type { Runner, TurnInput, TurnResult } from "./runner";
 import { runTool } from "./tools";
 
-// Sample turns for fixture mode: no AI and no cost, so the chat's streaming,
-// tool rows, stop, undo and choices can be worked on freely. Decisions come
-// from the fixture router; changes go through the same board tools as Claude.
-
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function createFixtureRunner(choice: ChatModelChoice): Runner {
@@ -46,7 +42,6 @@ export function createFixtureRunner(choice: ChatModelChoice): Runner {
         });
         return { outcome: stopping ? "stopped" : "done" };
       }
-      // "Ghi nhớ: …" or "Ghi nhớ mọi series: …" saves a note without asking.
       const remember = turn.text.match(/^ghi nhớ( mọi series)?\s*:\s*(.+)$/is);
       if (remember?.[2]) {
         await call(turn, "list_notes", {});

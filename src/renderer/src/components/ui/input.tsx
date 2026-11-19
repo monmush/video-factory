@@ -1,4 +1,3 @@
-// Adapted from T3 Code apps/web/src/components/ui/input.tsx (snapshot c6ca6056, MIT).
 import { Input as InputPrimitive } from "@base-ui/react/input";
 import type * as React from "react";
 import { cn } from "@/lib/utils";

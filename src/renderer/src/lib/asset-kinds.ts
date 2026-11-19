@@ -1,7 +1,6 @@
 import { type AngleId, type AssetKind, CORE_ANGLES } from "@shared/ipc";
 import { type LucideIcon, Package, Trees, UserRound } from "lucide-react";
 
-/** Everything that differs between asset kinds; the dialog and library stay generic. */
 export interface AssetKindConfig {
   noun: string;
   icon: LucideIcon;
@@ -11,13 +10,10 @@ export interface AssetKindConfig {
   remove: string;
   namePlaceholder: string;
   descriptionPlaceholder: string;
-  /** Optional line under the description field. */
   descriptionHint?: string;
   emptyImagesHint: string;
   emptyLibrary: string;
-  /** View labels offered on each image, in order; empty hides the label picker. */
   views: AngleId[];
-  /** AI may generate extra views (never for products: brand fidelity). */
   generateViews: boolean;
 }
 
@@ -48,7 +44,6 @@ export const ASSET_KINDS: Record<AssetKind, AssetKindConfig> = {
     descriptionPlaceholder: "Loại bao bì, hình dạng, màu sắc, chữ trên nhãn…",
     emptyImagesHint: "Kéo thả ảnh gốc rõ nét của sản phẩm vào đây hoặc chọn từ máy.",
     emptyLibrary: "Thêm sản phẩm bằng ảnh gốc, rồi gọi bằng @tên trong lời nhắc.",
-    // Kept simple: products need no view labels, and AI never generates product images.
     views: [],
     generateViews: false,
   },
@@ -70,7 +65,6 @@ export const ASSET_KINDS: Record<AssetKind, AssetKindConfig> = {
   },
 };
 
-/** Library categories that are implemented, mapped to their asset kind. */
 export const CATEGORY_KIND: Partial<Record<string, AssetKind>> = {
   characters: "character",
   products: "product",

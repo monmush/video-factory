@@ -1,12 +1,9 @@
 import { ArrowUp, Square } from "lucide-react";
 import { type DragEvent, type KeyboardEvent, type ReactNode, type Ref, useState } from "react";
+import { isImeComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 
-/**
- * The one prompt box used to describe a new series and to start a session.
- * Enter sends, Shift+Enter adds a line. `children` sit left of the send button.
- */
 export function Composer({
   value,
   onChange,
@@ -36,27 +33,20 @@ export function Composer({
   placeholder: string;
   submitLabel: string;
   busy?: boolean;
-  /** Nothing can be typed or sent. */
   disabled?: boolean;
   rows?: number;
   autoFocus?: boolean;
   header?: ReactNode;
   children?: ReactNode;
   className?: string;
-  /** Accept files dropped onto the box (images); `dropHint` shows while dragging. */
   onDropFiles?: (files: File[]) => void;
   dropHint?: string;
-  /** Files pasted into the text box (screenshots); text pastes stay text. */
   onPasteFiles?: (files: File[]) => void;
-  /** A reply is running: the button stops it while the box is empty. */
   running?: boolean;
   onStop?: () => void;
-  /** Files are attached, so the message can be sent without text. */
   hasAttachments?: boolean;
   textareaRef?: Ref<HTMLTextAreaElement>;
-  /** Runs before the box's own keys; call preventDefault to take the key. */
   onTextKeyDown?: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
-  /** The caret position, whenever the text or the selection changes. */
   onCaret?: (position: number) => void;
 }) {
   const canSubmit = (value.trim().length > 0 || Boolean(hasAttachments)) && !busy && !disabled;
@@ -98,7 +88,6 @@ export function Composer({
         value={value}
         rows={rows}
         disabled={disabled}
-        // field-sizing grows with the text; rows only sets the starting height.
         style={{ minHeight: `${rows * 1.625 + 1.2}em` }}
         // biome-ignore lint/a11y/noAutofocus: the composer is the purpose of the screens that ask for it
         autoFocus={autoFocus}
@@ -120,9 +109,7 @@ export function Composer({
         onKeyDown={(e) => {
           onTextKeyDown?.(e);
           if (e.defaultPrevented) return;
-          // Vietnamese input methods confirm a word with Enter while composing;
-          // some report it only as key code 229 (same guard as T3 Code).
-          if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) {
+          if (e.key !== "Enter" || e.shiftKey || isImeComposing(e)) {
             return;
           }
           e.preventDefault();

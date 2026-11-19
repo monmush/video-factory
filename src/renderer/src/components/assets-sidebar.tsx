@@ -21,7 +21,6 @@ const ICONS: Record<AssetCategoryId, LucideIcon> = {
 const row =
   "flex items-center gap-2.5 rounded-[var(--control-radius)] px-2.5 py-1.5 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground [&.active]:bg-sidebar-row-selected [&.active]:text-sidebar-foreground";
 
-/** Sidebar of the Thư viện tab: shared assets by category. */
 export function AssetsSidebar() {
   return (
     <div className="flex flex-col gap-1 px-1 py-2">

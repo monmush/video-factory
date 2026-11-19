@@ -16,20 +16,11 @@ import { saveClaudeLimits } from "../usage";
 import type { Runner, TurnInput, TurnResult } from "./runner";
 import { runTool, TOOLS, type ToolHost } from "./tools";
 
-// One Claude conversation per video session, through the Agent SDK driving the
-// user's own installed `claude` (spike: experiments/side-chat-agent/README.md).
-// Same restrictions as src/main/claude-code.ts: no built-in tools, no MCP
-// servers or settings from disk, an empty working folder. The only tools are
-// the board tools. The process stays up between turns and is resumed by
-// session id after an idle close or an app restart.
-
 const SERVER = "board";
 const toolId = (name: string) => `mcp__${SERVER}__${name}`;
 
-/** Where Claude Code keeps these transcripts (~/.claude/projects/<this folder>). */
 export const claudeChatDir = () => join(dataDir(), "claude-chat");
 
-/** Streaming input: one SDK process serves every turn of the session. */
 function inbox() {
   const waiting: SDKUserMessage[] = [];
   let wake: (() => void) | null = null;
@@ -59,10 +50,8 @@ function inbox() {
   };
 }
 
-/** Claude Code's own start-up has no time limit; T3 Code stops waiting after five minutes. */
 const BOOT_TIMEOUT_MS = 3 * 60 * 1000;
 
-/** Account problems Claude reports on its messages; only signing in again fixes them. */
 const ACCOUNT_ERRORS = new Set([
   "authentication_failed",
   "oauth_org_not_allowed",
@@ -71,10 +60,6 @@ const ACCOUNT_ERRORS = new Set([
   "billing_error",
 ]);
 
-/**
- * Typed signals first (as T3 Code does): the assistant message's error code
- * and the plan-limit events. The message text only fills in the explanation.
- */
 function classify(
   message: string,
   signals: { assistantError: string | null; limitResetsAt: string | null; limited: boolean },
@@ -95,7 +80,6 @@ function classify(
   return { kind: "provider", message };
 }
 
-/** Overage (extra usage) keeps a "rejected" plan window usable. */
 function blockedBy(info: {
   status: string;
   overageStatus?: string;
@@ -115,7 +99,6 @@ export async function createClaudeRunner(options: {
   resume: boolean;
   choice: ChatModelChoice;
   systemPrompt: string;
-  /** Called once Claude Code has started the conversation, so later opens resume it. */
   onStarted: () => void;
 }): Promise<Runner> {
   const bin = await findClaude();
@@ -123,7 +106,6 @@ export async function createClaudeRunner(options: {
   const cwd = claudeChatDir();
   await mkdir(cwd, { recursive: true });
 
-  // Tool calls arrive while a turn runs; they act for that turn.
   let host: ToolHost | null = null;
   const server = createSdkMcpServer({
     name: SERVER,
@@ -166,7 +148,6 @@ export async function createClaudeRunner(options: {
     },
   });
 
-  // The current turn, settled by its result message.
   let turn: {
     input: TurnInput;
     resolve: (result: TurnResult) => void;
@@ -174,7 +155,6 @@ export async function createClaudeRunner(options: {
     limitResetsAt: string | null;
     limited: boolean;
     assistantError: string | null;
-    /** Content block index → tool call id or "text". */
     blocks: Map<number, string>;
   } | null = null;
 
@@ -272,7 +252,6 @@ export async function createClaudeRunner(options: {
     })
     .finally(() => {
       closed = true;
-      // The process ended between turns or mid-turn: settle whatever is waiting.
       if (turn)
         finish({ outcome: "failed", error: { kind: "provider", message: "Claude đã dừng" } });
     });
@@ -297,7 +276,6 @@ export async function createClaudeRunner(options: {
           assistantError: null,
           blocks: new Map(),
         };
-        // The first turn starts the process; give up if it never answers.
         if (!booted) {
           const current = turn;
           setTimeout(() => {

@@ -6,19 +6,10 @@ import { parseJsonObject, textAiMode } from "../text-ai";
 import { logUsage } from "../usage";
 import { characterPeopleProblem } from "./still-people";
 
-// Layer C of docs/DIRECTING_RULES.md: the user's own AI looks at each
-// generated still before the expensive step and compares it with the plan.
-// A failed still is made again once (cents); after that it is kept and the
-// finding saved on the frame. Only with Claude as the text AI and live
-// providers; otherwise no check runs. A check that cannot run never blocks.
-
 interface Seen {
   people?: number;
-  /** For a single person: where their face points. */
   looks?: "frame_left" | "frame_right" | "camera";
-  /** Visible lettering other than on clothing (a close-up makes a robe's logo large: still costume). */
   text?: string | null;
-  /** Product packaging, or any lettered box, bag or label. */
   packaging?: string | null;
 }
 
@@ -32,14 +23,12 @@ const QUESTION = `Look at the image and answer:
 
 export const checksEnabled = () => providerMode() === "live" && textAiMode() === "claude-code";
 
-/** What is wrong with a still, in a few words, or null if it matches the plan. */
 export async function checkStill(
   frame: JobFrame,
   path: string,
   plan: ShotPlan,
   sessionId: string,
 ): Promise<string | null> {
-  // Product shots: only their generated plate is checked (it must be empty of packaging).
   if (!checksEnabled() || (frame.kind === "product" && !frame.cutout)) return null;
   try {
     const answer = await askClaudeCode({
@@ -61,7 +50,6 @@ export async function checkStill(
     const seen = parseJsonObject<Seen>(answer.text);
     const problems: string[] = [];
     if (seen.text) problems.push(`unexpected text ${seen.text}`);
-    // Products are never generated: a scene or detail still showing packaging is remade.
     if (frame.kind !== "character" && seen.packaging) {
       problems.push(`packaging ${seen.packaging}`);
     }

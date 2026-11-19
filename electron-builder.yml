@@ -3,14 +3,13 @@ productName: Hy An Video Factory
 directories:
   output: dist
   buildResources: build
+extraMetadata:
+  main: ./out-package/main/index.js
 files:
-  - out/**
+  - out-package/**
   - package.json
-  # Sample media for fixture mode (HYAN_PROVIDER_MODE=fixture).
   - resources/fixtures/**
   - "!**/*.map"
-  # The Agent SDK's own copy of Claude Code (~300 MB). The app runs the
-  # user's installed `claude` instead (docs/TECH_STACK_AND_SKILLS.md).
   - "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 asarUnpack: []
 mac:
@@ -18,8 +17,11 @@ mac:
   target:
     - target: dmg
       arch: [arm64]
-  # Unsigned for the pilot. Signing and notarisation come later.
-  identity: null
+  identity: "-"
+  hardenedRuntime: false
+  extraResources:
+    - from: resources/bin/darwin-arm64
+      to: bin
 dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
 win:

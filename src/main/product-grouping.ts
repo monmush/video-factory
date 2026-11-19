@@ -6,11 +6,6 @@ import { falClient, providerMode } from "./providers";
 import { readSettings } from "./settings";
 import { logUsage } from "./usage";
 
-// Batch product import: one AI pass over a pile of photos. It groups photos of
-// the same product, names each product from its label (copied, never invented),
-// writes a factual description, sets aside non-product photos and suggests
-// gift sets. The user reviews everything before anything is saved.
-
 const FAL_ENDPOINT = "openrouter/router/vision";
 const FAL_MODEL = "google/gemini-2.5-flash";
 
@@ -40,7 +35,6 @@ interface RawResult {
   skipped?: { image?: number; reason?: string }[];
 }
 
-/** Parses the model's JSON and enforces the rules, converting 1-based image numbers to indexes. */
 function normalise(text: string, count: number): Omit<ProductGroupingResult, "source" | "cost"> {
   const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
   let raw: RawResult;
@@ -68,7 +62,6 @@ function normalise(text: string, count: number): Omit<ProductGroupingResult, "so
       note: p.note ? String(p.note).trim() : undefined,
     }))
     .filter((p) => p.images.length > 0);
-  // Keep only valid one-level set links between products that survived.
   const isChild = new Set(products.flatMap((p) => p.contains));
   for (const [i, p] of products.entries()) {
     p.contains = isChild.has(i)
@@ -104,7 +97,6 @@ export async function groupProducts(paths: string[]): Promise<ProductGroupingRes
     return { ...normalise(answer.text, paths.length), source: "claude-code", cost: null };
   }
 
-  // Fixture mode: one product per photo, so the review board can be tried for free.
   if (providerMode() === "fixture") {
     await new Promise((r) => setTimeout(r, 900));
     return {

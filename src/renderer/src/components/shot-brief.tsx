@@ -6,6 +6,7 @@ import { type JobShot, spentUsd, type VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { withOccurrenceKeys } from "@/lib/occurrence-keys";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -14,34 +15,16 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
-// "Dàn dựng": the video scene by scene before anything is paid
-// (docs/PLAN_PHASE_PROPOSAL.md). Each scene shows its framing and length, the
-// words heard, then what the viewer sees. While nothing is spent, what is seen
-// can be rewritten in the operator's own words; the video is then planned
-// again (free), keeping what they wrote.
+const STEPS_IN_VIEW = 4;
 
-/** Lines of the director's work kept in view; older ones scroll out. */
-const STEPS_SHOWN = 4;
-
-/**
- * While a video is planned: what the director has done so far, read from its
- * answer as it is written (src/shared/plan-progress.ts). Each new line slides
- * in; the newest shimmers while the director keeps working.
- */
 export function PlanningSteps({ steps, className }: { steps: string[]; className?: string }) {
-  const first = Math.max(0, steps.length - STEPS_SHOWN);
+  const shown = withOccurrenceKeys(steps, (step) => step).slice(-STEPS_IN_VIEW);
   return (
     <ol className={cn("flex flex-col gap-1 border-l border-border pl-3 text-xs", className)}>
-      {steps.slice(first).map((step, i) => {
-        const latest = first + i === steps.length - 1;
+      {shown.map(({ item: step, key }, i) => {
+        const latest = i === shown.length - 1;
         return (
-          <li
-            // biome-ignore lint/suspicious/noArrayIndexKey: the list only grows, and lines repeat ("Khung hình: Cô gái" twice), so the position in the whole list is the stable key; only new lines mount and slide in.
-            key={first + i}
-            className={cn("line-in truncate", !latest && "text-muted-foreground/70")}
-          >
-            {/* Its own element, sized to the words: the slide-in and the shine are two animations,
-                and the band sweeps across the text, not the card's whole width. */}
+          <li key={key} className={cn("line-in truncate", !latest && "text-muted-foreground/70")}>
             {latest ? <span className="shimmer-text">{step}</span> : step}
           </li>
         );
@@ -50,8 +33,7 @@ export function PlanningSteps({ steps, className }: { steps: string[]; className
   );
 }
 
-/** Nothing made or spent: the plan can still change for free (runner.ts, `unstarted`). */
-const editable = (job: VideoJob) =>
+const canReplanForFree = (job: VideoJob) =>
   job.status === "idle" && !job.planning && !job.dialogue && spentUsd(job) === 0;
 
 export function ShotBrief({
@@ -62,7 +44,6 @@ export function ShotBrief({
 }: {
   sessionId: string;
   script: Script;
-  /** The job to show; looked up when absent. */
   job?: VideoJob | null;
   className?: string;
 }) {
@@ -77,7 +58,6 @@ export function ShotBrief({
   const staging = script.staging?.trim();
   const errorLine = error && <p className="text-xs text-destructive-foreground">{error}</p>;
 
-  // Being made, or about to be (it starts by itself a moment after the script is written).
   if (job?.planning || (jobs && stagingState(script, job) === "staging")) {
     return (
       <div data-shot-brief className={className}>
@@ -87,7 +67,6 @@ export function ShotBrief({
   }
 
   if (!job?.plan) {
-    // The way to try again when staging failed.
     return (
       <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>
         {staging && <StagingNote text={staging} />}
@@ -103,7 +82,7 @@ export function ShotBrief({
     );
   }
 
-  const open = editable(job);
+  const open = canReplanForFree(job);
   const keyframes = job.live?.plan.keyframes ?? [];
   const nameOf = (shot: JobShot) => {
     const line = job.lines[shot.lineIndex];
@@ -112,8 +91,7 @@ export function ShotBrief({
     );
   };
   const whole = (job.direction ?? []).filter((d) => !d.words);
-  // Plans made before briefs were sentences: planned again for free, wishes kept.
-  const undescribed = job.shots.some((shot) => !sceneBrief(shot));
+  const plannedBeforeBriefsWereSentences = job.shots.some((shot) => !sceneBrief(shot));
   const save = (shot: JobShot, value: string) => {
     setEditing(null);
     const want = value.replace(/\s+/g, " ").trim();
@@ -149,7 +127,7 @@ export function ShotBrief({
           ))}
         </ul>
       )}
-      {open && undescribed && (
+      {open && plannedBeforeBriefsWereSentences && (
         <Button
           variant="outline"
           size="xs"
@@ -180,11 +158,6 @@ export function ShotBrief({
   );
 }
 
-/**
- * One scene: its number, framing and length; the words heard, then who says
- * them; what the viewer sees, which the operator can rewrite while nothing is
- * spent (the video is then planned again with it).
- */
 function Scene({
   shot,
   name,
@@ -223,13 +196,14 @@ function Scene({
       </div>
       <p className="text-sm leading-relaxed text-foreground" data-selectable>
         “
-        {spokenParts(shot.text).map((part, i, all) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: parts of one fixed line, never reordered.
-          <span key={i} className={cn(part.sound && "text-muted-foreground")}>
-            {part.text}
-            {i < all.length - 1 ? " " : ""}
-          </span>
-        ))}
+        {withOccurrenceKeys(spokenParts(shot.text), (part) => part.text).map(
+          ({ item: part, key }, i, all) => (
+            <span key={key} className={cn(part.sound && "text-muted-foreground")}>
+              {part.text}
+              {i < all.length - 1 ? " " : ""}
+            </span>
+          ),
+        )}
         ”
         {name && (
           <span className="ml-1.5 text-xs whitespace-nowrap text-muted-foreground">{name}</span>
@@ -307,7 +281,6 @@ function SceneEditor({
   );
 }
 
-/** The writer's staging note, once, above the list, with library tags shown as names. */
 function StagingNote({ text }: { text: string }) {
   const { assets } = useWorkspace();
   const named = text.replace(

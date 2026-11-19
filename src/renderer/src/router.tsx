@@ -14,9 +14,6 @@ import { SeriesNewPage } from "./screens/series-new";
 import { ScriptsPage, SessionLayout, VideosPage } from "./screens/session";
 import { SettingsPage } from "./screens/settings";
 
-// Code-based routes: few enough that a generated route tree is not worth the plugin.
-// Hash history works for both the dev server and the packaged file:// load.
-
 const rootRoute = createRootRoute({ component: AppShell, notFoundComponent: NotFound });
 
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: HomePage });
@@ -59,9 +56,7 @@ const videosRoute = createRoute({
   component: VideosPage,
 });
 
-// The batch's settings tab is gone (the settings sit on the Video tab and
-// beside the prompt); a location left there, such as a reload, opens the scripts.
-const sessionSettingsRoute = createRoute({
+const retiredSessionSettingsRoute = createRoute({
   getParentRoute: () => sessionRoute,
   path: "settings",
   beforeLoad: ({ params }) => {
@@ -91,7 +86,12 @@ const routeTree = rootRoute.addChildren([
   homeRoute,
   seriesNewRoute,
   seriesRoute,
-  sessionRoute.addChildren([sessionIndexRoute, scriptsRoute, videosRoute, sessionSettingsRoute]),
+  sessionRoute.addChildren([
+    sessionIndexRoute,
+    scriptsRoute,
+    videosRoute,
+    retiredSessionSettingsRoute,
+  ]),
   assetsRoute,
   assetsCategoryRoute,
   settingsRoute,

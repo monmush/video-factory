@@ -3,28 +3,16 @@ import { DEFAULT_IMAGE_MODEL, MODELS } from "./image-models";
 import type { Rate } from "./live-plan";
 import { DEFAULT_VIDEO_MODEL, videoModel } from "./video-models";
 
-// "Chất lượng" (the Media level): the operator picks a quality/price level,
-// never a model. Two are offered, "Nhanh" and "Cân bằng"; they differ in one
-// thing only, whether wide and detail scenes really move (src/shared/recipe.ts,
-// builtinRecipe). Three older ids stay readable so saved series, batches and
-// videos still load; each reads as the offered level that makes the same video.
-
 export type MediaLevelId = "fastest" | "fast" | "balanced" | "detailed" | "most-detailed";
 
 export interface MediaLevel {
   id: MediaLevelId;
   label: string;
-  /** What the director is told to favour (English, for the prompt). */
   preference: string;
-  /** Size of the final video. */
   output: OutputResolution;
-  /** Target keyframe size (9:16), or the model's nearest. */
   keyframe: { width: number; height: number };
-  /** Wide and detail scenes are made by a motion model; otherwise a still with a slow zoom. */
   motion: boolean;
-  /** What the level buys, for the operator (Vietnamese, no model or provider names). */
   points: string[];
-  /** Offered in the menus. A level not offered reads as `sameAs`. */
   offered?: true;
   sameAs?: MediaLevelId;
 }
@@ -84,31 +72,19 @@ export const MEDIA_LEVELS: readonly MediaLevel[] = [
   },
 ];
 
-/** The levels the menus offer, cheapest first. */
 export const OFFERED_LEVELS: readonly MediaLevel[] = MEDIA_LEVELS.filter((l) => l.offered);
 
 export const DEFAULT_MEDIA_LEVEL: MediaLevelId = "balanced";
 
 const byId = (id: string | null | undefined) => MEDIA_LEVELS.find((l) => l.id === id);
 
-/**
- * The offered level for this id: a level no longer offered reads as the one
- * that makes the same video; missing or unknown ids read as the default.
- */
 export const mediaLevel = (id?: string | null): MediaLevel => {
   const level = byId(id);
   return (byId(level?.sameAs ?? level?.id) ?? byId(DEFAULT_MEDIA_LEVEL)) as MediaLevel;
 };
 
-// ---------------------------------------------------------------------------
-// What a level costs. The same rates as the built-in recipe (recipe.ts uses
-// these), so the menu, the batch button and the plan's cost table agree.
-// ---------------------------------------------------------------------------
-
-/** The motion model's rate for wide and detail shots ($0.045 a second, 2 s at least; read 16 Nov). */
 export const MOTION_RATE: Rate = { usd: 0.045, unit: "seconds", minSeconds: 2 };
 
-/** Rates for each paid role at this level; no motion rate when the level has no motion. */
 export function levelRates(level: MediaLevel): {
   stills: Rate;
   speak: Rate;
@@ -126,18 +102,8 @@ export function levelRates(level: MediaLevel): {
   };
 }
 
-/**
- * A typical 45-second video, from the plans made on 16–17 Nov: about seven
- * generated pictures, ~38 s of speaking scenes and ~7 s of wide and detail
- * scenes (paid motion on "Cân bằng", a free still with a zoom on "Nhanh").
- */
 const TYPICAL_VIDEO = { seconds: 45, pictures: 7, speakSec: 38, motionSec: 7 } as const;
 
-/**
- * Pictures, speaking scenes and motion for a typical video of `seconds` at
- * this level (the voice excluded: it depends on the words), scaled from
- * TYPICAL_VIDEO.
- */
 export function levelMediaUsd(level: MediaLevel, seconds: number): number {
   const rates = levelRates(level);
   const scale = Math.max(1, seconds) / TYPICAL_VIDEO.seconds;

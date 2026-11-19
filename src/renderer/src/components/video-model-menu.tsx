@@ -25,14 +25,8 @@ import {
 } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-// "Mô hình AI": the speaking-shot model, by name, grouped by level, each with
-// its all-in price per video and a hover card (sample, maker, what to expect,
-// facts). Registry: src/shared/video-models.ts.
-
-/** One video's all-in price and the length it is for. */
 export type PerVideo = { usd: number; seconds: number };
 
-/** "~$2.85/video 45 giây". */
 const priceText = (p: PerVideo | null) =>
   p ? `~${formatCost(p.usd)}/video ${formatSeconds(p.seconds)}` : "";
 
@@ -46,22 +40,16 @@ export function VideoModelMenu({
   trigger,
   triggerContent,
 }: {
-  /** A model id; missing or unknown reads as the default. */
   value?: string;
   onChange: (id: string) => void;
-  /** Null: no price for this model here (it is disabled). */
   price: (model: VideoModel) => PerVideo | null;
-  /** The video's output size: some models follow it, and their price with it. */
   resolution: OutputResolution;
   label: string;
-  /** Models offered but not pickable (a video's existing takes). */
   disabled?: (model: VideoModel) => boolean;
-  /** Opens the menu from this element instead of the value button; nothing shows as chosen. */
   trigger?: ReactElement;
   triggerContent?: ReactNode;
 }) {
   const current = videoModel(value);
-  // The row under the pointer or keyboard; its card sits beside the menu.
   const { shown, clear, row } = useShownRow<VideoModel>();
   return (
     <Menu onOpenChange={(open) => !open && clear()}>
@@ -142,7 +130,6 @@ export function VideoModelMenu({
   );
 }
 
-/** Sample, name and maker, what to expect, and the facts. */
 function ModelCard({ model, resolution }: { model: VideoModel; resolution: OutputResolution }) {
   const out = modelOutput(model, resolution);
   const minutes = minutesFor45(model);

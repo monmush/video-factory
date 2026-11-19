@@ -5,12 +5,9 @@ import { builtinRecipe } from "../../shared/recipe";
 import { DEFAULT_VIDEO_MODEL } from "../../shared/video-models";
 import { SHOT_ENDPOINTS } from "./shot-models";
 
-// The built-in recipe asks exactly what the fixed pipeline asks, so the two
-// cannot drift apart while both exist.
-
 const recipe = builtinRecipe(mediaLevel("balanced"));
 
-describe("built-in recipe", () => {
+describe("the built-in recipe cannot drift from the fixed pipeline", () => {
   it("sends a still as the fixed pipeline does for a 9:16 start frame", () => {
     const model = MODELS[DEFAULT_IMAGE_MODEL];
     expect(recipe.stills.endpoint).toBe(model.endpoint);

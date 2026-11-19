@@ -22,15 +22,12 @@ function validate(ws: Workspace, input: AssetInput, selfId?: string) {
   if (!["character", "product", "environment"].includes(input.kind)) {
     throw new Error(`Unknown asset kind: ${input.kind}`);
   }
-  // Brand fidelity: product references must be original photos, never AI renders.
   if (
     input.kind === "product" &&
     input.images.some((i) => i.source === "staged" && i.origin === "ai")
   ) {
     throw new Error("Sản phẩm chỉ dùng ảnh gốc, không dùng ảnh AI");
   }
-  // A photo replacing another: a cleaned place photo (src/main/place-check.ts)
-  // or a product cut-out (src/main/product-cutout.ts); nothing else.
   const replacing = (i: ImageRef) =>
     i.source === "staged" ? Boolean(i.cleanOf || i.cutout) : Boolean(i.restore);
   const allowed = (i: ImageRef) =>
@@ -55,33 +52,21 @@ const cleanContains = (ids: string[] | undefined) => {
   return unique.length ? unique : undefined;
 };
 
-/** A known catalogue id for characters; anything else is "no voice". */
 const cleanVoice = (kind: AssetInput["kind"], id: string | undefined) =>
   kind === "character" ? voiceById(id)?.id : undefined;
 
-/** Saved images by id for one asset. */
 const imageFiles = (asset?: Asset) => new Map(asset?.images.map((i) => [i.id, i.file]));
 
-/** Every file an image keeps in the asset folder. */
 const filesOf = (image: AssetImage) => [
   image.file,
   ...(image.cutout ? [image.cutout.file] : []),
   ...(image.original ? [image.original.file] : []),
 ];
 
-/**
- * Resolves the ordered refs into the asset's image list: staged files are
- * copied into the asset folder (the staged copy stays until the next start,
- * so a failed save can be retried), existing images are kept. A cleaned place
- * photo replaces its original, which stays on disk as `original`; a restore
- * swaps it back. Returns the files no image uses any more; delete them only
- * once the workspace is saved.
- */
 async function applyImages(assetId: string, refs: ImageRef[], previous: AssetImage[]) {
   const dir = assetDir(assetId);
   await mkdir(dir, { recursive: true });
   const existing = new Map(previous.map((i) => [i.id, i]));
-  /** Copies a staged file in; a place photo's check comes with it. */
   const copyIn = async (stagedId: string) => {
     const file = `${randomUUID()}${extname(stagedId)}`;
     const from = imageRefPath({ source: "staged", id: stagedId });
@@ -115,13 +100,11 @@ async function applyImages(assetId: string, refs: ImageRef[], previous: AssetIma
       angle: ref.angle,
       placeCheck: copied.placeCheck,
     };
-    // A product cut-out is also the photo's cut-out, so videos use it as is.
     if (ref.cutout) {
       image.cutout = { file: copied.file, usable: await isUsableCutout(join(dir, copied.file)) };
     }
     const source = ref.cleanOf;
     if (source?.source === "asset" && source.assetId === assetId) {
-      // Cleaning a cleaned photo keeps the first original.
       const replaced = existing.get(source.id);
       if (replaced) {
         image.original = replaced.original ?? {
@@ -140,8 +123,6 @@ async function applyImages(assetId: string, refs: ImageRef[], previous: AssetIma
     }
     images.push(image);
   }
-  // A removed photo takes its kept cut-out (src/main/video/product-shot.ts)
-  // and its original with it.
   const inUse = new Set(images.flatMap(filesOf));
   const removed = previous
     .flatMap(filesOf)
@@ -150,7 +131,6 @@ async function applyImages(assetId: string, refs: ImageRef[], previous: AssetIma
   return { images, removed };
 }
 
-/** Runs a save that creates asset folders; the folders go again if it fails. */
 async function withNewFolders<T>(ids: string[], save: () => Promise<T>): Promise<T> {
   try {
     return await save();
@@ -190,7 +170,6 @@ export function createAsset(input: AssetInput): Promise<Asset> {
   );
 }
 
-/** Creates several products at once (batch import); sets refer to items by index. */
 export function createProductBatch(items: BatchProductItem[]): Promise<Asset[]> {
   const ids = items.map(() => randomUUID());
   return withNewFolders(ids, () =>
@@ -232,7 +211,6 @@ export async function updateAsset(id: string, input: AssetInput): Promise<Asset>
     const asset = ws.assets.find((a) => a.id === id);
     if (!asset) throw new Error(`Asset not found: ${id}`);
     validate(ws, input, id);
-    // Omitted contains keeps the current set (the edit dialog does not send it).
     const contains =
       input.contains === undefined || asset.kind !== "product"
         ? asset.contains
@@ -249,7 +227,6 @@ export async function updateAsset(id: string, input: AssetInput): Promise<Asset>
     asset.updatedAt = now();
     return asset;
   });
-  // Only now that the workspace no longer points at them.
   await Promise.all(removed.map((file) => rm(file, { force: true })));
   return saved;
 }
@@ -264,7 +241,6 @@ export function deleteAsset(id: string): Promise<null> {
       series.productIds = series.productIds.filter((c) => c !== id);
       series.environmentIds = series.environmentIds.filter((c) => c !== id);
     }
-    // A deleted product leaves any set it was in.
     for (const asset of ws.assets) {
       if (asset.contains?.includes(id)) {
         asset.contains = cleanContains(asset.contains.filter((c) => c !== id));
@@ -275,7 +251,6 @@ export function deleteAsset(id: string): Promise<null> {
   });
 }
 
-/** Absolute paths for refs, looking up saved images in the workspace. */
 export function refPaths(ws: Workspace, refs: ImageRef[]): string[] {
   return refs.map((ref) =>
     imageRefPath(

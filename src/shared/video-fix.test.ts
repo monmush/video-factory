@@ -26,7 +26,6 @@ import {
 } from "./video-job";
 import { modelOutput, videoModel } from "./video-models";
 
-/** The default model's rate: every job here is made by it. */
 const VIDEO_USD_PER_SEC = modelOutput(videoModel()).usdPerSec;
 
 const NOW = "2026-11-13T10:00:00.000Z";
@@ -72,7 +71,6 @@ const PLAN: ShotPlan = {
   ],
 };
 
-/** A finished video: every shot 3 seconds, every part paid for. */
 function done(plan: ShotPlan = PLAN): VideoJob {
   const planned = applyPlan(
     newJob({
@@ -140,7 +138,6 @@ describe("redoing one shot", () => {
     expect(nextActions({ ...fixed, status: "running" }, new Set())).toEqual([
       { kind: "submit-shot", index: 2 },
     ]);
-    // New files never overwrite the previous cut's.
     expect(revFile(fixed, "shot-03", "mp4")).toBe("shot-03-r1.mp4");
     expect(revFile(job, "shot-03", "mp4")).toBe("shot-03.mp4");
   });
@@ -165,10 +162,8 @@ describe("redoing one shot", () => {
 
   it("a remake always uses the video's model, and records it again when sent", () => {
     const job = { ...done(), model: "omnihuman-v2" };
-    // Made earlier with the default (saved before models were recorded).
     const fixed = applyFix(job, [{ op: "redo_shot", shot: 2 }], LATER);
     expect(fixed.shots[2]?.model).toBeUndefined();
-    // OmniHuman bills at least 4 seconds; the shot's audio is 3.
     expect(fixPriceUsd(job, [{ op: "redo_shot", shot: 2 }], LATER)).toBeCloseTo(4 * 0.105);
   });
 
@@ -222,7 +217,6 @@ describe("showing something else during a line", () => {
       [3, "speaker", "planned"],
       [4, "detail", "done"],
     ]);
-    // The product still follows its shot to the new position.
     expect(frameFor(fixed, fixed.shots[4] as never)).toMatchObject({
       id: "product:4",
       shot: 4,
@@ -231,10 +225,8 @@ describe("showing something else during a line", () => {
     expect(fixed.frames.find((f) => f.id === "detail:2")?.file).toBeUndefined();
     expect(fixed.plan?.shots).toHaveLength(5);
     expect(fixed.plan?.stateChanges).toEqual([{ fromShot: 4, change: "tea on the table" }]);
-    // New shots need their place in the dialogue first: the voice step cuts again for free.
     expect(jobPhase(fixed)).toBe("voice");
     expect(fixed.dialogue).toBe("dialogue.mp3");
-    // One still and one short speaking shot; the replaced shot's cost stays on record.
     expect(spentUsd(fixed)).toBeCloseTo(spentUsd(job));
   });
 
@@ -253,7 +245,6 @@ describe("showing something else during a line", () => {
     expect(fixed.shots.every((s) => s.end === undefined)).toBe(true);
     expect(jobPhase(fixed)).toBe("voice");
     expect(fixed.plan?.shots[2]?.hold).toBe(1.5);
-    // Only the held speaking shot is paid for again, its silence included.
     expect(fixPriceUsd(job, [{ op: "replace_line", line: 2, shots: held }], LATER)).toBeGreaterThan(
       1.5 * VIDEO_USD_PER_SEC,
     );
@@ -321,7 +312,6 @@ describe("the previous cut", () => {
     const again = restorePrevious(back, LATER);
     expect([again.final, again.shots[0]?.clip]).toEqual(["final-r1.mp4", "shot-01-r1.mp4"]);
     expect(spentUsd(again)).toBeCloseTo(spent);
-    // The next fix gets a fresh revision either way.
     expect(applyFix(back, [{ op: "redo_shot", shot: 0 }], LATER).rev).toBe(2);
   });
 

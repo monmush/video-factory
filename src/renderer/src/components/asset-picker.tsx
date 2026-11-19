@@ -15,10 +15,6 @@ const LABEL: Record<AssetKind, { title: string }> = {
   environment: { title: "Bối cảnh" },
 };
 
-/**
- * Each kind keeps its own thumbnail shape wherever assets appear together, so
- * they read apart at a glance: round faces, square products, wide places.
- */
 const THUMB_SHAPE: Record<AssetKind, Record<"sm" | "md", string>> = {
   character: {
     sm: "size-5.5 rounded-full [&_img]:object-[50%_18%]",
@@ -36,7 +32,6 @@ const SERIES_KINDS = [
   ["environment", "environmentIds"],
 ] as const;
 
-/** The assets a series uses: one labelled row per kind. */
 export function SeriesAssetFields({
   value,
   onChange,
@@ -88,7 +83,6 @@ export function AssetThumb({ asset, className }: { asset: Asset; className?: str
   );
 }
 
-/** Selected library assets as removable chips, ending with the button that opens the picker. */
 export function AssetChips({
   kind,
   ids,
@@ -144,7 +138,6 @@ export function AssetChips({
   );
 }
 
-/** Choose which library assets of one kind a series uses. */
 export function AssetPicker({
   kind,
   open,
@@ -161,7 +154,6 @@ export function AssetPicker({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPopup className="max-w-2xl">
-        {/* Mounted per opening, so the draft selection always starts from the saved one. */}
         <PickerBody
           kind={kind}
           selected={selected}
@@ -190,7 +182,6 @@ function PickerBody({
   const [importing, setImporting] = useState(false);
   const { title } = LABEL[kind];
   const copy = ASSET_KINDS[kind];
-  // Anything created from here is meant for this series: select it straight away.
   const select = (created: Asset[]) =>
     setDraft((ids) => [...ids, ...created.map((a) => a.id).filter((id) => !ids.includes(id))]);
   const createButtons = (
@@ -270,7 +261,6 @@ function PickerBody({
         </span>
         <Button onClick={() => onConfirm(draft)}>Xong</Button>
       </DialogFooter>
-      {/* Opened on top of the picker, so the page underneath never changes. */}
       <AssetDialog
         kind={kind}
         open={creating}

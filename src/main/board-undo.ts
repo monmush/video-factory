@@ -1,32 +1,16 @@
 import type { Board, Script } from "../shared/ipc";
 
-// Undo for chat turns, kept free of Electron and file access so it can be
-// tested directly. board.ts applies these inside its serialised writes.
-
 const now = () => new Date().toISOString();
 
-/** What one agent turn has changed so far. */
 export interface TurnLog {
   messageId: string;
   touched: Set<string>;
-  /**
-   * Scripts sent to video that this turn edited through a new version:
-   * original id → the copy, so later edits in the same turn reuse the copy.
-   */
   copies?: Map<string, string>;
 }
 
-/** Script ids a turn's undo would change. */
 const undoTargets = (undo: NonNullable<Board["messages"][number]["undo"]>) =>
   new Set([...undo.before.map((s) => s.id), ...(undo.added ?? [])]);
 
-/**
- * Restores every script a chat turn changed and removes the scripts it added.
- * Refuses when a later turn that is still undoable changed the same scripts:
- * restoring the older snapshot would silently throw that later work away.
- * Also refuses when one of them has since been sent to video (`locked`):
- * a script with a video never changes.
- */
 export function applyUndo(b: Board, messageId: string, locked: ReadonlySet<string> = new Set()) {
   const index = b.messages.findIndex((x) => x.id === messageId);
   const m = b.messages[index];
@@ -69,11 +53,6 @@ export function turnUndo(b: Board, log: TurnLog) {
   return m.undo;
 }
 
-/**
- * Saves a script for undo the first time a turn touches it, in the same write
- * as the change, so a turn stopped midway can still be undone completely.
- * Returns true when this call took the snapshot.
- */
 export function recordTouch(b: Board, log: TurnLog, script: Script) {
   const undoState = turnUndo(b, log);
   if (!undoState || log.touched.has(script.id)) return false;
@@ -82,7 +61,6 @@ export function recordTouch(b: Board, log: TurnLog, script: Script) {
   return true;
 }
 
-/** Forgets a snapshot taken by this turn when the script did not change after all. */
 export function dropTouch(b: Board, log: TurnLog, id: string) {
   const undoState = turnUndo(b, log);
   if (!undoState) return;

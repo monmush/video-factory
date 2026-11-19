@@ -22,17 +22,12 @@ export const ANGLE_LABELS: Record<AngleId, string> = {
   other: "Khác",
 };
 
-// Shown as a tooltip only; the panel itself stays short.
 const ANGLE_HINTS: Record<CoreAngle, string> = {
   closeup: "Giữ khuôn mặt nhất quán khi nói và ở cận cảnh",
   "three-quarter": "Khuôn mặt và dáng khi quay nghiêng",
   "full-body": "Trang phục và tỉ lệ cơ thể cho cảnh rộng",
 };
 
-/**
- * "Tạo thêm góc nhìn": completes the generic core character sheet. Angles the
- * character already has (by image label) start unticked.
- */
 export function AngleGenerator({
   references,
   covered,
@@ -46,7 +41,6 @@ export function AngleGenerator({
   covered: Set<AngleId>;
   description: string;
   disabled?: boolean;
-  /** Free image slots left on the character; never generate more than this. */
   maxNew: number;
   onStart: (angles: CoreAngle[]) => void;
   onResult: (result: GenerateAnglesResult | null, error?: string) => void;
@@ -178,7 +172,6 @@ export function AngleGenerator({
   );
 }
 
-/** Placeholder tile while an angle is being generated. */
 export function PendingAngleTile({ angle }: { angle: CoreAngle }) {
   return (
     <div className="flex flex-col gap-1.5">

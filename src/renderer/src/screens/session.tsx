@@ -1,6 +1,6 @@
 import { boardOrder } from "@shared/board";
 import { committedIds, finishedScripts } from "@shared/ready-check";
-import { type SessionSteps, sessionSteps } from "@shared/session-steps";
+import { sessionSteps } from "@shared/session-steps";
 import { Link, Outlet, useMatches, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowRight, Check, ChevronRight, LayoutGrid, Rows3 } from "lucide-react";
 import { type ReactNode, useEffect, useRef } from "react";
@@ -14,10 +14,6 @@ import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { NotFound } from "./not-found";
 
-/**
- * A production session: scripts first, videos after session-level approval.
- * Board rules: docs/SCRIPT_BOARD_DECISIONS.md.
- */
 export function SessionLayout() {
   const { sessionId } = useParams({ from: "/sessions/$sessionId" });
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
@@ -26,13 +22,12 @@ export function SessionLayout() {
   const matches = useMatches();
   const onScripts = matches.some((m) => m.routeId === "/sessions/$sessionId/scripts");
   const onVideos = matches.some((m) => m.routeId === "/sessions/$sessionId/videos");
-  // An empty session starts in the chat: its composer takes the keyboard once.
   const empty =
     !!board && boardOrder(board.scripts).length === 0 && !board.messages.some((m) => m.pending);
-  const focused = useRef<string | null>(null);
+  const chatFocusedOnceFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!empty || focused.current === sessionId) return;
-    focused.current = sessionId;
+    if (!empty || chatFocusedOnceFor.current === sessionId) return;
+    chatFocusedOnceFor.current = sessionId;
     if (document.activeElement instanceof HTMLTextAreaElement) return;
     requestChatFocus(sessionId);
   }, [empty, sessionId]);
@@ -86,7 +81,6 @@ export function SessionLayout() {
             key={sessionId}
             sessionId={sessionId}
             approved={Boolean(session.approvedAt)}
-            steps={steps}
           />
         )}
         {onVideos && <VideosToolbar key={sessionId} sessionId={sessionId} />}
@@ -98,7 +92,6 @@ export function SessionLayout() {
   );
 }
 
-/** A step of the header: its number (a check once done), name and count. */
 function StepLabel({
   number,
   name,
@@ -121,27 +114,12 @@ function StepLabel({
   );
 }
 
-/**
- * View toggle and the step's next action: approve the scripts on the board,
- * which sends them to the Video tab, or, once nothing is left to send, a way
- * there. A series' first batch nudges toward one test video first
- * (docs/VIDEO_COMMIT_DECISIONS.md, "One video first").
- */
-function ScriptsToolbar({
-  sessionId,
-  approved,
-  steps,
-}: {
-  sessionId: string;
-  approved: boolean;
-  steps: SessionSteps;
-}) {
+function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: boolean }) {
   const board = useBoard(sessionId);
   const { sessions } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const navigate = useNavigate();
   const [view, setView] = useBoardView(sessionId);
-  // A chat turn or the writer may still change the scripts.
   const busy =
     !!board &&
     (board.scripts.some((s) => s.status === "writing") || board.messages.some((m) => m.pending));
@@ -153,15 +131,13 @@ function ScriptsToolbar({
   });
   if (!board || !session) return null;
   const scripts = boardOrder(board.scripts);
-  // Scripts already sent to video are not counted again.
   const sent = committedIds(session, board.scripts);
-  // Counts cards still being written, so the number rises the moment a card
-  // appears; the button waits until writing finishes. Failed cards are not videos.
-  const ready = scripts.filter((s) => s.status !== "failed" && !sent.includes(s.id)).length;
+  const unsentIncludingStillWriting = scripts.filter(
+    (s) => s.status !== "failed" && !sent.includes(s.id),
+  ).length;
   const writing = scripts.some((s) => s.status === "writing");
-  // A chat turn may still change the scripts; wait for it before approving.
   const chatting = board.messages.some((m) => m.pending);
-  const waiting = writing || chatting;
+  const scriptsMayStillChange = writing || chatting;
   const layout = boardLayout(view, scripts.length);
   const finished = finishedScripts(board.scripts).filter((s) => !sent.includes(s.id));
   const finishedIds = finished.map((s) => s.id);
@@ -190,15 +166,13 @@ function ScriptsToolbar({
         </fieldset>
       )}
       {make.error && <span className="text-xs text-destructive-foreground">{make.error}</span>}
-      {ready > 0 ? (
-        // Experiment branch: no price here; the Media level is chosen on the Video tab.
+      {unsentIncludingStillWriting > 0 ? (
         <Button
-          disabled={waiting}
+          disabled={scriptsMayStillChange}
           onClick={() =>
             make.needsCheck(finishedIds) ? make.open(finishedIds) : make.make(finishedIds)
           }
         >
-          {/* How many scripts this sends: the one number worth seeing before approving. */}
           {finishedIds.length > 0 ? `Duyệt ${finishedIds.length} kịch bản` : "Duyệt kịch bản"}
         </Button>
       ) : (
@@ -248,11 +222,9 @@ function ViewButton({
 
 export function ScriptsPage() {
   const { sessionId } = useParams({ from: "/sessions/$sessionId" });
-  // Keyed so board-local state (selection, undo notice) never carries over to another session.
   return <ScriptBoard key={sessionId} sessionId={sessionId} />;
 }
 
-/** The session's videos (docs/VIDEO_GENERATION_DECISIONS.md). */
 export function VideosPage() {
   const { sessionId } = useParams({ from: "/sessions/$sessionId" });
   return <VideosList key={sessionId} sessionId={sessionId} />;

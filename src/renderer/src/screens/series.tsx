@@ -39,18 +39,10 @@ import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { NotFound } from "./not-found";
 
-/** Sessions listed before "Xem thêm"; each row reads its own board. */
 const VISIBLE_SESSIONS = 8;
 
-/**
- * Series home. Visited daily to start a session or pick one up; the series
- * setup (direction and assets) changes rarely, so it stays one click away in
- * a dialog and is summarised in the composer it applies to.
- */
 export function SeriesPage() {
   const { seriesId } = useParams({ from: "/series/$seriesId" });
-  // Keyed so dialogs and local state never carry over to another series
-  // (for example a closing delete dialog showing the next series' name).
   return <SeriesView key={seriesId} seriesId={seriesId} />;
 }
 
@@ -58,13 +50,9 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const workspace = useWorkspace();
   const { createSession } = useCreateActions();
   const [request, setRequest, clearRequest] = useDraft(`series-request:${seriesId}`, "");
-  // The next batch's level; null follows the series.
-  const [level, setLevel, clearLevel] = useDraft<MediaLevelId | null>(
-    `series-level:${seriesId}`,
-    null,
-  );
+  const [nextBatchLevelOverride, setNextBatchLevelOverride, clearNextBatchLevelOverride] =
+    useDraft<MediaLevelId | null>(`series-level:${seriesId}`, null);
   const input = useRef<HTMLTextAreaElement>(null);
-  // The sidebar's "+" focuses the prompt box, also when this page is already open.
   useEffect(
     () =>
       onSeriesFocusRequest(() => {
@@ -103,10 +91,13 @@ function SeriesView({ seriesId }: { seriesId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const own = level && mediaLevel(level).id !== seriesLevel ? mediaLevel(level).id : undefined;
+      const own =
+        nextBatchLevelOverride && mediaLevel(nextBatchLevelOverride).id !== seriesLevel
+          ? mediaLevel(nextBatchLevelOverride).id
+          : undefined;
       await createSession(series.id, request, own);
       clearRequest();
-      clearLevel();
+      clearNextBatchLevelOverride();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -161,8 +152,8 @@ function SeriesView({ seriesId }: { seriesId: string }) {
         >
           <SeriesAssetSummary series={series} onEdit={() => setEditing(true)} />
           <QualityChip
-            value={level ?? seriesLevel}
-            onChange={(next) => setLevel(next === seriesLevel ? null : next)}
+            value={nextBatchLevelOverride ?? seriesLevel}
+            onChange={(next) => setNextBatchLevelOverride(next === seriesLevel ? null : next)}
             seriesDefault={seriesLevel}
           />
         </Composer>
@@ -207,7 +198,6 @@ function SeriesView({ seriesId }: { seriesId: string }) {
 
 const MAX_PRODUCT_THUMBS = 4;
 
-/** What every new session inherits, as thumbnails grouped by kind. Opens the setup dialog. */
 function SeriesAssetSummary({ series, onEdit }: { series: Series; onEdit: () => void }) {
   const assets = useWorkspace().assets;
   const pick = (ids: string[] | undefined) =>
@@ -255,7 +245,6 @@ function SeriesAssetSummary({ series, onEdit }: { series: Series; onEdit: () => 
   );
 }
 
-/** Date, the session's topics, and what it is waiting for. */
 function SessionRow({ session, showDate }: { session: Session; showDate: boolean }) {
   const board = useBoard(session.id);
   const scripts = board ? boardOrder(board.scripts) : [];
@@ -263,7 +252,6 @@ function SessionRow({ session, showDate }: { session: Session; showDate: boolean
   const writing = scripts.some((s) => s.status === "writing");
   const failed = scripts.filter((s) => s.status === "failed").length;
   const ready = scripts.length - failed;
-  // Only a session waiting on the operator stands out.
   const needsYou = !session.approvedAt && !writing && ready > 0;
 
   let state: ReactNode = null;
@@ -334,14 +322,12 @@ function EditSeriesDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPopup className="max-w-2xl">
-        {/* Mounted per opening, so the form always starts from the saved series. */}
         <EditSeriesForm series={series} onDone={() => onOpenChange(false)} />
       </DialogPopup>
     </Dialog>
   );
 }
 
-/** Name, direction and assets, saved together; the same fields as "Series mới". */
 function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void }) {
   const [name, setName] = useState(series.name);
   const [guidance, setGuidance] = useState(series.guidance);

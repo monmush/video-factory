@@ -2,11 +2,6 @@ import type { Workspace } from "@shared/ipc";
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
 
-// A client copy of the main-process workspace. Main pushes "workspace:changed"
-// after every saved change (including work that finishes in the background),
-// so screens stay current without refreshing. `refreshWorkspace()` remains for
-// the first load and for callers that want the new state before continuing.
-
 let snapshot: Workspace | null = null;
 const listeners = new Set<() => void>();
 
@@ -27,7 +22,6 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
-/** Resolves once before the first render (see main.tsx), so this is never null in screens. */
 export function useWorkspace(): Workspace {
   const value = useSyncExternalStore(subscribe, () => snapshot);
   if (!value) throw new Error("Workspace not loaded");

@@ -1,7 +1,3 @@
-// Sample stories for fixture mode, so the script board can be tried without AI.
-// Taken from prototypes/batch-script-review; illustrative, not approved by Hy An.
-// Lines alternate between the series' first and second character.
-
 export interface FixtureStory {
   title: string;
   hook: string;

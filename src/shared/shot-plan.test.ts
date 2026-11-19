@@ -50,7 +50,6 @@ const shot = (type: string, lineNo: number, text: string, extra: Record<string, 
   ...extra,
 });
 
-/** A plan that keeps every rule. */
 const GOOD: DirectorAnswer = {
   seats: [
     { character: "Cô gái", behind: "bamboo" },
@@ -87,7 +86,6 @@ describe("seats", () => {
 describe("reading the director's answer", () => {
   it("maps names and products to ids and keeps a plan that follows the rules", () => {
     const fixed = structuredClone(GOOD);
-    // "Chén đầy rồi thì" does not end on punctuation: a forbidden split.
     (fixed.shots as unknown[]).splice(
       5,
       2,
@@ -152,7 +150,6 @@ describe("reading the director's answer", () => {
     };
     const { plan, errors } = readDirectorAnswer(answer, CTX);
     expect(errors).toEqual([]);
-    // The ending still lands, on a shot that does not speak.
     expect(plan.shots.at(-1)?.hold).toBe(1);
     const listenerLast = structuredClone(answer);
     (listenerLast.shots as unknown[]).splice(
@@ -264,7 +261,6 @@ describe("timing", () => {
       { start: 0, end: 3 },
       { alignment, chars: { start: 0, end: chars.length } },
     );
-    // Between the end of "." (two characters back, past the space) and the start of "Ô".
     expect(split).toBeCloseTo(((at - 2) * 0.1 + 0.08 + at * 0.1) / 2);
   });
 
@@ -284,7 +280,6 @@ describe("timing", () => {
   });
 });
 
-/** GOOD with its forbidden split mended: a plan that passes every check. */
 function passing(): DirectorAnswer {
   const fixed = structuredClone(GOOD);
   (fixed.shots as unknown[]).splice(
@@ -343,7 +338,6 @@ describe("products are never generated", () => {
       ...(answer.shots?.[1] as object),
       visual: "The two at the table, Bach Tra Shan Tuyet between them.",
     };
-    // The product's own detail shot may name it.
     (answer.shots as { visual?: string }[])[2] = {
       ...(answer.shots?.[2] as object),
       visual: "Bạch Trà Shan Tuyết on the mat beside the teapot.",
@@ -421,7 +415,6 @@ describe("holds (C15)", () => {
       "Shot 2: only the shot that ends a line may hold.",
       "Holds add up to 6 seconds; at most 4, the last shot's included.",
     ]);
-    // The last shot's second counts even when the plan leaves it out.
     expect(holdErrors([{ line: 0, hold: 2 }, { line: 1, hold: 2 }, { line: 2 }])).toEqual([
       "Holds add up to 5 seconds; at most 4, the last shot's included.",
     ]);

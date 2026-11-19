@@ -38,7 +38,6 @@ describe("new versions of a script sent to video", () => {
       version: 2,
       brief: { kind: "copy", sourceId: "a", targetSec: 45 },
     });
-    // A deep copy: editing the new version never touches the original.
     copy.lines[0] = { characterId: "c", speaker: "C", text: "khác" };
     expect(scripts[0]?.lines[0]?.text).toBe("Trà ngon");
   });
@@ -49,7 +48,6 @@ describe("new versions of a script sent to video", () => {
     const third = insert(scripts, "a", "a3");
     expect(third.version).toBe(3);
     expect(scripts.map((s) => s.id)).toEqual(["a", "a2", "a3", "b"]);
-    // Copying a copy stays in the same chain.
     const fourth = insert(scripts, "a2", "a4");
     expect(fourth).toMatchObject({ versionOf: "a", version: 4 });
     expect(versionRoot(fourth)).toBe("a");

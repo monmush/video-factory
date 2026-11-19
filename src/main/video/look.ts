@@ -5,14 +5,6 @@ import type { PlanSeat } from "../../shared/shot-plan";
 import type { VideoJob } from "../../shared/video-job";
 import { mediaDir, writeJsonAtomic } from "../paths";
 
-// The series' look (docs/VIDEO_REVIEW_DECISIONS.md): when the operator keeps a
-// video (downloads it), the character stills it was made from are saved on
-// the series. Later videos of the series reuse them instead of generating
-// new ones: the same faces and seats every time, nothing to pay, and nothing
-// that can come out wrong again. A still stops applying when its character or
-// the place is edited afterwards. The file's existence also marks that the
-// series has a kept video, which ends the test video's pause.
-
 interface LookStill {
   characterId: string;
   file: string;
@@ -25,7 +17,6 @@ interface LookStill {
 
 export interface SeriesLook {
   savedAt: string;
-  /** Session and script of the kept video. */
   from: { sessionId: string; scriptId: string };
   stills: LookStill[];
 }
@@ -41,7 +32,6 @@ export async function readLook(seriesId: string): Promise<SeriesLook | null> {
   }
 }
 
-/** The kept still for a character in this seat, if nothing it shows has changed since. */
 export function lookStill(
   look: SeriesLook | null,
   seat: PlanSeat | undefined,
@@ -61,11 +51,6 @@ export function lookStill(
 
 export const lookPath = (seriesId: string, file: string) => join(lookDir(seriesId), file);
 
-/**
- * Saves the kept video's character stills as the series' look. Stills the
- * automatic check complained about are left out. Without generated stills
- * (no place) the file still records that the series has a kept video.
- */
 export async function saveLook(
   job: VideoJob,
   jobDir: string,
@@ -82,7 +67,6 @@ export async function saveLook(
     const seat = job.plan?.seats.find((s) => s.characterId === frame.characterId);
     if (!character || !seat || !place) continue;
     if (frame.source === "look") {
-      // Already the series' look: keep the saved one.
       const kept = previous?.stills.find((s) => s.characterId === character.id);
       if (kept) stills.push(kept);
       continue;
@@ -100,7 +84,6 @@ export async function saveLook(
       placeUpdatedAt: place.updatedAt,
     });
   }
-  // Characters this video did not show keep their earlier stills.
   for (const old of previous?.stills ?? []) {
     if (!stills.some((s) => s.characterId === old.characterId)) stills.push(old);
   }

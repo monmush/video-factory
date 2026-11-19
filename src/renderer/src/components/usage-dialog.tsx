@@ -9,7 +9,6 @@ import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "./ui/dialog";
 
-/** Live balances and plan limits of the app's AI providers. */
 export function UsageDialog({
   open,
   onOpenChange,
@@ -137,7 +136,6 @@ function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-/** Renders a balance, or explains why it is unavailable and how to fix it. */
 function Status<T>({
   result,
   provider,
@@ -193,14 +191,12 @@ function Meter({ label, used, detail }: { label: string; used: number; detail: s
         </div>
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        {/* The percentage is shown as text beside the bar; the bar is decoration. */}
         <div className="h-3 overflow-hidden rounded-full bg-muted" aria-hidden="true">
           <div
             className={cn(
               "h-full rounded-full",
               left <= 10 ? "bg-destructive" : left <= 30 ? "bg-warning" : "bg-primary",
             )}
-            // Fill shows what is left, matching the large "x% còn lại" figure.
             style={{ width: `${(1 - share) * 100}%` }}
           />
         </div>

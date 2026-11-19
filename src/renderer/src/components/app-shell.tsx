@@ -11,28 +11,30 @@ import {
 import { type PointerEvent, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { onChatFocusRequest } from "@/lib/board";
+import { useOnboarded } from "@/lib/claude-setup";
 import { lastPath, type Section, TABS, useSection } from "@/lib/sections";
 import { usePersistentNumber, usePersistentToggle } from "@/lib/shell-state";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
+import { OnboardingScreen } from "@/screens/onboarding";
 import { AssetsSidebar } from "./assets-sidebar";
 import { Breadcrumb } from "./breadcrumb";
+import { ActiveProfileLabel } from "./profile-label";
 import { SessionChat } from "./session-chat";
 import { Sidebar } from "./sidebar";
 import { Button } from "./ui/button";
 import { UsageDialog } from "./usage-dialog";
 
-/**
- * Desktop shell. An icon rail on the far left switches areas (Tạo video,
- * Thư viện) and opens usage and settings. The active area decides the sidebar
- * next to the rail; the content sits in a bordered card of its own. Sessions
- * additionally get their collapsible chat panel on the right of the card.
- */
+const CLEAR_OF_MAC_TRAFFIC_LIGHTS = "pl-[78px]";
+
 export function AppShell() {
+  return useOnboarded() ? <Shell /> : <OnboardingScreen />;
+}
+
+function Shell() {
   const section = useSection();
   const [sidebarOpen, toggleSidebar] = usePersistentToggle("sidebar-open", true);
   const [panelOpen, togglePanel, setPanelOpen] = usePersistentToggle("panel-open", true);
-  // "Nhắc trong chat" on a card opens the chat if it is closed.
   useEffect(() => onChatFocusRequest(() => setPanelOpen(true)), [setPanelOpen]);
   const panel = useSidePanel();
   const isMac = api.platform === "darwin";
@@ -49,8 +51,6 @@ export function AppShell() {
   );
 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  // Derive the tab from the URL itself (not from route matches) so the pair can
-  // never be out of step while a navigation is in flight.
   useEffect(() => {
     if (pathname === "/settings") return;
     lastPath[pathname.startsWith("/assets") ? "assets" : "generate"] = pathname;
@@ -68,8 +68,7 @@ export function AppShell() {
       <header
         className={cn(
           "app-drag col-span-full flex items-center gap-1 px-2",
-          // Leave room for the macOS traffic lights (positioned in main/index.ts).
-          isMac && "pl-[78px]",
+          isMac && CLEAR_OF_MAC_TRAFFIC_LIGHTS,
         )}
       >
         {hasSidebar && (
@@ -87,6 +86,7 @@ export function AppShell() {
         )}
         <Breadcrumb />
         <span className="flex-1" />
+        <ActiveProfileLabel className="px-2 text-sidebar-muted-foreground" />
         {panel && (
           <Button
             variant="ghost-muted"
@@ -128,7 +128,6 @@ export function AppShell() {
         )}
       </aside>
 
-      {/* Content card: its own surface, inset from the window chrome. */}
       <div className="mr-2 mb-2 flex min-h-0 min-w-0 overflow-hidden rounded-xl border bg-background text-foreground">
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <Outlet />
@@ -159,7 +158,6 @@ interface WidthBounds {
   initial: number;
   min: number;
   max: number;
-  /** Released below this, the panel closes instead (and keeps its last width). */
   collapseBelow?: number;
 }
 
@@ -167,11 +165,6 @@ const SIDEBAR_WIDTH: WidthBounds = { initial: 224, min: 180, max: 420 };
 const PANEL_WIDTH: WidthBounds = { initial: 320, min: 280, max: 560, collapseBelow: 200 };
 const clamp = (w: number, b: WidthBounds) => Math.min(b.max, Math.max(b.min, w));
 
-/**
- * Drag handle on a panel edge: the sidebar's right edge or the chat's left
- * edge. Drag to resize, double-click to reset; the width is saved when the
- * drag ends. With `onCollapse`, dragging well past the minimum closes the panel.
- */
 function ResizeHandle({
   edge,
   bounds,
@@ -206,7 +199,6 @@ function ResizeHandle({
       handle.removeEventListener("pointercancel", end);
       document.body.style.cursor = "";
       if (onCollapse && bounds.collapseBelow && raw < bounds.collapseBelow) {
-        // Reopening brings back the width it had before this drag.
         onResize(width);
         onCommit(width);
         onCollapse();
@@ -239,10 +231,6 @@ function ResizeHandle({
 const railItem =
   "app-no-drag grid size-9 cursor-pointer place-items-center rounded-[var(--control-radius)] text-sidebar-muted-foreground outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:bg-sidebar-row-selected aria-[current=page]:text-sidebar-foreground aria-[current=page]:shadow-xs aria-[current=page]:ring-1 aria-[current=page]:ring-sidebar-border [&_svg]:size-[18px]";
 
-/**
- * Narrow icon rail on the far left: the areas of the app at the top, usage and
- * settings at the bottom. Labels show as tooltips.
- */
 function NavRail({ active, onUsage }: { active: Section; onUsage: () => void }) {
   const router = useRouter();
 
@@ -294,7 +282,6 @@ const TAB_ICONS: Record<Exclude<Section, "settings">, LucideIcon> = {
   assets: LibraryBig,
 };
 
-/** Which side panel the current route offers, if any: sessions get their chat. */
 function useSidePanel(): { label: string; sessionId: string } | null {
   const matches = useMatches();
   const workspace = useWorkspace();
@@ -302,8 +289,6 @@ function useSidePanel(): { label: string; sessionId: string } | null {
   if (ids.some((id) => id.startsWith("/sessions/$sessionId"))) {
     const sessionId = (matches.at(-1)?.params as { sessionId?: string } | undefined)?.sessionId;
     if (sessionId && workspace.sessions.some((s) => s.id === sessionId)) {
-      // No visible title: the panel is plainly a chat. The label names it for
-      // the toggle's tooltip and screen readers.
       return { label: "Chat", sessionId };
     }
   }

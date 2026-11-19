@@ -1,5 +1,3 @@
-// Adapted from T3 Code apps/web/src/components/ui/dialog.tsx (snapshot c6ca6056, MIT).
-// Trimmed: no media variant, mobile sheet or nested-dialog retention.
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import type { ComponentProps } from "react";

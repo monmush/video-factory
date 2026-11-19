@@ -35,7 +35,6 @@ describe("a batch's product mix", () => {
 
   it("gives new scripts the product the board is furthest behind on", () => {
     const half = evenMix(["bach", "hong"]);
-    // The first live board: two scripts already on Bạch Trà.
     expect(assignProducts(half, ["bach", "bach"], 2)).toEqual(["hong", "hong"]);
     expect(assignProducts(half, [], 4)).toEqual(["bach", "hong", "bach", "hong"]);
     const mostly = [
@@ -43,7 +42,6 @@ describe("a batch's product mix", () => {
       { productId: "hong", share: 25 },
     ];
     expect(assignProducts(mostly, [], 4)).toEqual(["bach", "bach", "hong", "bach"]);
-    // Scripts with no product, or one outside the mix, still count toward the total.
     expect(assignProducts(half, [null, "luc"], 2)).toEqual(["bach", "hong"]);
   });
 

@@ -10,13 +10,6 @@ import { findSession } from "./board";
 import { dataDir, mediaDir } from "./paths";
 import { childPath, childPathOrNull } from "./safe-path";
 
-// Local media is served to the renderer through a custom protocol instead of
-// file:// so the renderer never gets general file-system access:
-//   hyan-media://asset/<assetId>/<file>   saved asset images
-//   hyan-media://staging/<file>           images picked but not yet saved
-//   hyan-media://chat/<sessionId>/<file>  files attached in a session chat
-//   hyan-media://video/<sessionId>/<scriptId>/<file>  a video job's voice, frames and clips
-
 const SCHEME = "hyan-media";
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
@@ -24,8 +17,7 @@ const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 export const assetDir = (assetId: string) => childPath(join(dataDir(), "assets"), assetId);
 export const stagingDir = () => join(dataDir(), "staging");
 
-/** Must run before app "ready". */
-export function registerMediaScheme() {
+export function registerMediaSchemeBeforeAppReady() {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: SCHEME,
@@ -78,18 +70,12 @@ const MEDIA_TYPES: Record<string, string> = {
   m4a: "audio/mp4",
 };
 
-/**
- * Answers a byte-range request ourselves: players ask for ranges to start and
- * to seek, and a file:// fetch does not honour them. Null when the request has
- * no usable range, so the caller serves the whole file.
- */
 async function serveRange(file: string, range: string | null): Promise<Response | null> {
   const match = range?.match(/^bytes=(\d*)-(\d*)$/);
   if (!match || (!match[1] && !match[2])) return null;
   const info = await stat(file).catch(() => null);
   if (!info?.isFile()) return new Response("Not found", { status: 404 });
   const size = info.size;
-  // "bytes=-N" is the last N bytes.
   const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
   const end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
   if (start > end || start >= size) {
@@ -108,12 +94,10 @@ async function serveRange(file: string, range: string | null): Promise<Response 
   });
 }
 
-/** Staged files from an earlier run were never saved; start clean. */
 export async function clearStaging() {
   await rm(stagingDir(), { recursive: true, force: true });
 }
 
-/** Copies user-chosen images into staging. Non-images and oversized files are skipped. */
 export async function stageImages(paths: string[]): Promise<StagedImage[]> {
   await mkdir(stagingDir(), { recursive: true });
   const staged: StagedImage[] = [];
@@ -129,7 +113,6 @@ export async function stageImages(paths: string[]): Promise<StagedImage[]> {
   return staged;
 }
 
-/** Absolute path of a staged or saved image. Ids are file names, validated against traversal. */
 export function imageRefPath(ref: ImageRef, assetImages?: Map<string, string>): string {
   if (ref.source === "staged") {
     if (!/^[0-9a-f-]+\.(png|jpg|webp)$/.test(ref.id)) throw new Error("Invalid staged image");

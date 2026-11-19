@@ -5,7 +5,6 @@ import { rulesPlan } from "./shot-plan";
 
 const NO_MOTION = { motion: false };
 
-/** The fixture with one change. */
 function changed(edit: (a: ShotListAnswer) => void): ShotListAnswer {
   const a = answer();
   edit(a);
@@ -58,7 +57,6 @@ describe("readShotList", () => {
     expect(errorsOf(changed((a) => (shot(a, 0).picture = "nope"))).join(" ")).toMatch(
       /picture "nope" does not exist/,
     );
-    // A speaker shot speaks, from a character picture of that speaker.
     expect(errorsOf(changed((a) => (shot(a, 0).route = "still-move"))).join(" ")).toMatch(
       /speaker shot uses the speak route/,
     );
@@ -68,20 +66,17 @@ describe("readShotList", () => {
     expect(errorsOf(changed((a) => (shot(a, 1).route = "speak"))).join(" ")).toMatch(
       /only speaker and listener shots use the speak route/,
     );
-    // Product shot ⇔ product route.
     expect(errorsOf(changed((a) => (shot(a, 3).route = "still-move"))).join(" ")).toMatch(
       /product shot uses the product route/,
     );
     expect(errorsOf(changed((a) => (shot(a, 1).route = "product"))).join(" ")).toMatch(
       /only for a product detail shot/,
     );
-    // The plate is optional for a product shot.
     const noPlate = changed((a) => {
       shot(a, 3).picture = null;
       a.pictures = a.pictures?.filter((p) => p.kind !== "plate");
     });
     expect(errorsOf(noPlate)).toEqual([]);
-    // A picture no shot starts from would be paid for nothing.
     expect(errorsOf(changed((a) => (shot(a, 3).picture = null))).join(" ")).toMatch(
       /no shot starts from it/,
     );
@@ -117,7 +112,6 @@ describe("readShotList", () => {
         changed((a) => ((a.pictures?.[3] as { framing: string }).framing = "close on the label")),
       ).join(" "),
     ).toMatch(/products are never drawn/);
-    // Ruling packaging out is fine.
     expect(
       errorsOf(
         changed(

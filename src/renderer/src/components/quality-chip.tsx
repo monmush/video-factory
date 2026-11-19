@@ -18,11 +18,6 @@ import {
 import { SettingChip } from "./ui/setting-chip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-/**
- * "Chất lượng": the Media level as a setting chip. Each level shows its price
- * for a typical 45-second video (levelEstimateUsd, the recipe's own rates) and
- * a card with what it buys; the series' own level is tagged when given.
- */
 export function QualityChip({
   value,
   onChange,
@@ -34,7 +29,6 @@ export function QualityChip({
 }) {
   const current = mediaLevel(value);
   const series = seriesDefault ? mediaLevel(seriesDefault).id : undefined;
-  // The row under the pointer or keyboard; its card sits beside the menu.
   const { shown, clear, row } = useShownRow<MediaLevel>();
   return (
     <Menu onOpenChange={(open) => !open && clear()}>
@@ -82,13 +76,8 @@ export function QualityChip({
   );
 }
 
-/**
- * The same picture for every level, so the only difference is what the level
- * changes: wide and detail scenes that really move, or a still with a slow zoom.
- */
 const SAMPLE = { loop: "motion-wan.mp4", still: "motion-wan.jpg" };
 
-/** What a level buys: the picture, its name and price, and two short lines. */
 function LevelCard({ level }: { level: MediaLevel }) {
   return (
     <div className="flex flex-col gap-2 p-2.5 text-xs">

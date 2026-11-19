@@ -6,5 +6,4 @@ declare global {
   }
 }
 
-/** Typed access to the main process. See src/shared/ipc.ts for every channel. */
 export const api = window.hyan;

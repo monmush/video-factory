@@ -1,9 +1,6 @@
 import type { ShotListAnswer } from "./shot-list";
 import type { PlanContext } from "./shot-plan";
 
-// A small video for the shot list and build tests: two people, a place, a
-// product shot on a plate, an over-the-shoulder picture.
-
 export const LINES = [
   { characterId: "a", speaker: "An", text: "Chào ông, hôm nay trời đẹp quá ạ." },
   { characterId: "b", speaker: "Ba", text: "Ừ cháu ngồi đây, uống chén trà đã cháu." },

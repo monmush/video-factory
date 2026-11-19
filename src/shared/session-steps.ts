@@ -3,28 +3,12 @@ import type { Script, Session } from "./ipc";
 import { committedIds, finishedScripts } from "./ready-check";
 import type { VideoJob } from "./video-job";
 
-// The session header's two steps, "Kịch bản" then "Video": their counts and
-// marks, and what the corner offers next. Pure, so the header and tests share
-// one answer.
-
-/**
- * A sent video waiting on the operator: not started, at "Nghe và xem cảnh chính",
- * stopped or failed. A job being planned is not waiting.
- */
 export function jobNeedsYou(job: VideoJob | null | undefined): boolean {
   if (!job) return true;
   if (job.status === "idle") return !job.planning;
   return job.status === "review" || job.status === "stopped" || job.status === "failed";
 }
 
-/**
- * A written script's Dàn dựng (docs/SCRIPT_BOARD_DECISIONS.md): a new script
- * is done once its words and its staging both exist, and the staging follows
- * by itself. "staging": being made or about to be; "failed": it stopped and
- * waits for "Lên dàn dựng"; "ready": it exists; "none": nothing to stage
- * (still written, no voiced line) or the video is being made, which its own
- * status says.
- */
 export type StagingState = "none" | "staging" | "failed" | "ready";
 
 export function stagingState(
@@ -40,23 +24,15 @@ export function stagingState(
 }
 
 export interface SessionSteps {
-  /** Scripts on the board that are not failed (cards still being written count). */
   scripts: number;
-  /** Every finished script has been sent to video (and there is at least one). */
   scriptsDone: boolean;
-  /** Finished scripts not yet sent. */
   toSend: number;
-  /** Scripts sent to video. */
   sent: number;
-  /** Sent scripts whose video is finished. */
   done: number;
-  /** Sent scripts waiting on the operator (`jobNeedsYou`). */
   waiting: number;
-  /** Sent scripts being made, planned or queued. */
   running: number;
 }
 
-/** `jobs` is null while the session's jobs are loading: nothing counts as done or waiting yet. */
 export function sessionSteps(
   session: Session,
   scripts: Script[],

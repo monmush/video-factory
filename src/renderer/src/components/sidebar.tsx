@@ -32,7 +32,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const VISIBLE_SESSIONS = 3;
 
-/** Pinned items first, otherwise in their saved order. */
 function pinnedFirst<T extends { pinnedAt?: string }>(items: T[]): T[] {
   return [...items.filter((i) => i.pinnedAt), ...items.filter((i) => !i.pinnedAt)];
 }
@@ -71,12 +70,15 @@ type RowAction =
   | { label: string; icon: LucideIcon; onClick: () => void; destructive?: boolean }
   | "separator";
 
-/** The same actions in the ⋯ menu and the right-click menu. */
+function labelBefore(actions: RowAction[], index: number): string {
+  const previous = actions[index - 1];
+  return previous && previous !== "separator" ? previous.label : "start";
+}
+
 function RowActionItems({ actions }: { actions: RowAction[] }) {
   return actions.map((action, i) =>
     action === "separator" ? (
-      // biome-ignore lint/suspicious/noArrayIndexKey: static list
-      <ContextMenuSeparator key={i} />
+      <ContextMenuSeparator key={`separator-after-${labelBefore(actions, i)}`} />
     ) : (
       <MenuItem key={action.label} destructive={action.destructive} onClick={action.onClick}>
         <action.icon />
@@ -104,7 +106,6 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
   const FolderIcon = open ? FolderOpen : Folder;
   const pinned = Boolean(series.pinnedAt);
   const menuShown = menuOpen || contextOpen;
-  // "+" opens the series page with its prompt box focused; nothing is created yet.
   const create = () => {
     requestSeriesFocus(series.id);
     void navigate({ to: "/series/$seriesId", params: { seriesId: series.id } });
@@ -220,7 +221,6 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
   );
 }
 
-/** Hover card: the full name, the series direction and how many videos it has. */
 function SeriesCard({ series, sessionCount }: { series: Series; sessionCount: number }) {
   return (
     <TooltipPopup className="flex w-72 flex-col gap-1.5">
@@ -247,7 +247,6 @@ function SessionRow({ session }: { session: Session }) {
     {
       label: "Đổi tên",
       icon: Pencil,
-      // Opened once the menu has fully closed, so its focus handling can't blur the input.
       onClick: () => {
         renameAfterMenu.current = true;
       },
@@ -297,7 +296,6 @@ function SessionRow({ session }: { session: Session }) {
               />
             )}
           </ContextMenuTrigger>
-          {/* No focus return: it would land after "Đổi tên" opens the input and blur it. */}
           <ContextMenuPopup finalFocus={false}>
             <RowActionItems actions={actions} />
           </ContextMenuPopup>
@@ -308,16 +306,21 @@ function SessionRow({ session }: { session: Session }) {
   );
 }
 
-/**
- * A name that fits shows as is. A long one fades at the right edge and, after a
- * short hover, glides left at reading speed to show its end, then returns on leave.
- */
+const READING_SPEED_PX_PER_S = 25;
+const SHORTEST_GLIDE_MS = 1500;
+const LONGEST_GLIDE_MS = 14000;
+
+const glideDurationMs = (distancePx: number) =>
+  Math.min(
+    LONGEST_GLIDE_MS,
+    Math.max(SHORTEST_GLIDE_MS, (distancePx / READING_SPEED_PX_PER_S) * 1000),
+  );
+
 function ScrollingName({ name }: { name: string }) {
   const outer = useRef<HTMLSpanElement>(null);
   const inner = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(0);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure when the name changes
   useLayoutEffect(() => {
     const measure = () => {
       if (outer.current && inner.current) {
@@ -327,15 +330,14 @@ function ScrollingName({ name }: { name: string }) {
     measure();
     const observer = new ResizeObserver(measure);
     if (outer.current) observer.observe(outer.current);
+    if (inner.current) observer.observe(inner.current);
     return () => observer.disconnect();
-  }, [name]);
+  }, []);
 
-  // The right-edge fade (styles.css) clears as the end arrives.
   const shift = overflow;
   const style = {
     "--shift": `-${shift}px`,
-    // About 25 px per second at a constant pace, so the words can be read as they pass.
-    "--dur": `${Math.min(14000, Math.max(1500, (shift / 25) * 1000))}ms`,
+    "--dur": `${glideDurationMs(shift)}ms`,
   } as CSSProperties;
 
   return (
@@ -359,10 +361,9 @@ function RenameInput({ session, onDone }: { session: Session; onDone: () => void
   const done = useRef(false);
   const input = useRef<HTMLInputElement>(null);
 
-  // Focus on the next frame, once the row it replaces is gone.
   useEffect(() => {
-    const frame = requestAnimationFrame(() => input.current?.focus());
-    return () => cancelAnimationFrame(frame);
+    const focusOnceReplacedRowIsGone = requestAnimationFrame(() => input.current?.focus());
+    return () => cancelAnimationFrame(focusOnceReplacedRowIsGone);
   }, []);
 
   const finish = async (save: boolean) => {
@@ -375,7 +376,6 @@ function RenameInput({ session, onDone }: { session: Session; onDone: () => void
         await refreshWorkspace();
       }
     } catch (error) {
-      // The row shows the saved name again, so a failed rename is visible.
       console.error(error);
     } finally {
       onDone();

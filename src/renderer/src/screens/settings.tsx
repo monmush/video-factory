@@ -1,18 +1,25 @@
 import type {
   AiStatus,
   AppInfo,
+  ClaudeCodeStatus,
+  DevProfile,
+  DevProfiles,
   ProviderId,
+  ProviderStatus,
   ProvidersInfo,
   TextProvider,
   ThemePreference,
 } from "@shared/ipc";
+import { LoaderCircle, Trash2 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { DeleteProfileDialog } from "@/components/delete-profile-dialog";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { refreshChatInfo } from "@/lib/chat";
+import { useClaudeInstall } from "@/lib/claude-setup";
 import { useTheme } from "@/lib/theme";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
@@ -135,7 +142,96 @@ export function SettingsPage() {
           <p className="mt-3 text-xs text-muted-foreground">Phiên bản {info.version}</p>
         </Section>
       )}
+
+      <DevProfilesSection />
     </Page>
+  );
+}
+
+function DevProfilesSection() {
+  const [state, setState] = useState<DevProfiles | null>(null);
+  const [name, setName] = useState("");
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<DevProfile | null>(null);
+  const { error, run } = useAction();
+
+  useEffect(() => {
+    void run(async () => setState(await api.invoke("dev:profiles")));
+  }, [run]);
+
+  if (!state) return null;
+
+  const switchTo = async (id: string) => {
+    setSwitching(id);
+    if (!(await run(() => api.invoke("dev:switch-profile", id)))) setSwitching(null);
+  };
+
+  return (
+    <Section title="Hồ sơ thử nghiệm">
+      {state.fixed ? (
+        <p className="text-muted-foreground">Thư mục dữ liệu do HYAN_DATA_DIR đặt.</p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-1.5">
+            {state.profiles.map((profile) => (
+              <div key={profile.id} className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  aria-pressed={profile.active}
+                  disabled={profile.active || switching !== null}
+                  onClick={() => void switchTo(profile.id)}
+                  className={cn(
+                    "flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-left disabled:cursor-default",
+                    profile.active ? "border-ring bg-accent" : "hover:bg-accent/50",
+                  )}
+                >
+                  <span className="min-w-0 flex-1 truncate">{profile.name}</span>
+                  {profile.active && (
+                    <span className="text-xs text-muted-foreground">Đang dùng</span>
+                  )}
+                  {switching === profile.id && (
+                    <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" />
+                  )}
+                </button>
+                {!profile.isDefault && !profile.active && (
+                  <Button
+                    variant="ghost-muted"
+                    size="icon-sm"
+                    aria-label={`Xóa ${profile.name}`}
+                    title="Xóa"
+                    disabled={switching !== null}
+                    onClick={() => setDeleting(profile)}
+                  >
+                    <Trash2 />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+          <form
+            className="mt-3 flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void run(async () => {
+                setState(await api.invoke("dev:create-profile", name));
+                setName("");
+              });
+            }}
+          >
+            <Input placeholder="Tên hồ sơ" value={name} onValueChange={setName} />
+            <Button type="submit" variant="outline" disabled={!name.trim() || switching !== null}>
+              Tạo
+            </Button>
+          </form>
+        </>
+      )}
+      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
+      <DeleteProfileDialog
+        profile={deleting}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        onDeleted={setState}
+      />
+    </Section>
   );
 }
 
@@ -143,6 +239,13 @@ function TextAiSection() {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const { error, run } = useAction();
+  const installer = useClaudeInstall(
+    useCallback(
+      (claudeCode: ClaudeCodeStatus) =>
+        setStatus((current) => current && { ...current, claudeCode }),
+      [],
+    ),
+  );
 
   const refresh = useCallback(async () => {
     setChecking(true);
@@ -220,18 +323,33 @@ function TextAiSection() {
         })}
       </fieldset>
       <div className="mt-2 flex gap-1.5">
-        {!ccReady && (
-          <Button
-            size="sm"
-            onClick={() => void api.invoke("ai:open-terminal", cc.installed ? "login" : "install")}
-          >
-            {cc.installed ? "Đăng nhập Claude" : "Cài Claude"}
+        {!ccReady &&
+          (cc.installed ? (
+            <Button size="sm" onClick={() => void api.invoke("ai:open-terminal", "login")}>
+              Đăng nhập Claude
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled={installer.installing}
+              onClick={() => void installer.install()}
+            >
+              {installer.installing && <LoaderCircle className="animate-spin" />}
+              {installer.installing ? "Đang cài…" : "Cài Claude"}
+            </Button>
+          ))}
+        {!cc.installed && installer.error && (
+          <Button variant="outline" size="sm" onClick={installer.openTerminal}>
+            Mở Terminal để cài
           </Button>
         )}
         <Button variant="ghost-muted" size="sm" onClick={refresh} disabled={checking}>
           {checking ? "Đang kiểm tra…" : "Kiểm tra lại"}
         </Button>
       </div>
+      {!cc.installed && installer.error && (
+        <p className="mt-2 text-xs text-destructive-foreground">{installer.error}</p>
+      )}
       {errorLine}
     </Section>
   );
@@ -239,7 +357,7 @@ function TextAiSection() {
 
 function ProviderKeyRow(props: {
   id: ProviderId;
-  source: "env" | "stored" | null;
+  source: ProviderStatus["source"];
   canStore: boolean;
   onChange: (info: ProvidersInfo) => void;
 }) {
@@ -261,7 +379,9 @@ function ProviderKeyRow(props: {
             ? "Đã cấu hình (.env.local)"
             : props.source === "stored"
               ? "Đã lưu"
-              : "Chưa cấu hình"}
+              : props.source === "bundled"
+                ? "Có sẵn"
+                : "Chưa cấu hình"}
         </span>
         {props.source === "stored" && (
           <Button

@@ -2,12 +2,6 @@ import { ChevronDown } from "lucide-react";
 import type * as React from "react";
 import { cn } from "@/lib/utils";
 
-/**
- * A batch setting as a small outline button: muted label, the value, a chevron.
- * Neutral, never primary. Used as a menu or popover trigger, through a render
- * function so the trigger's props (ref, aria, handlers) reach the button:
- * `<MenuTrigger render={(props) => <SettingChip {...props} label="…" value="…" />} />`.
- */
 function SettingChip({
   label,
   value,

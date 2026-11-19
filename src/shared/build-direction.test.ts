@@ -83,12 +83,10 @@ describe("buildDirection", () => {
       prompt.startsWith("Images 1-2 are the place. Images 3-5 are An. Images 6-7 are Ba."),
     ).toBe(true);
     expect(prompt).toContain("Make a vertical 9:16 photograph. An and Ba sit");
-    // The framing field repeats the description's opening: never sent twice.
     expect(prompt).not.toContain("Wide shot at eye level.");
     expect(prompt).toContain(STILL_IDENTITY);
     expect(prompt).not.toContain(STILL_BEFORE_SPEAKING);
     expect(prompt.endsWith(STILL_NO_TEXT)).toBe(true);
-    // The rest of the template is the fixed pipeline's request.
     expect(master?.input).toMatchObject({ image_size: "portrait_16_9", quality: "high" });
   });
 
@@ -106,10 +104,8 @@ describe("buildDirection", () => {
     expect(prompt).toMatch(
       /^Image 1 is the master scene\. Images 2-3 are Ba\. Images 4-5 are An\./,
     );
-    // A speak shot starts from it, and two people share it: only Ba speaks.
     expect(prompt).toContain(stillBeforeSpeakingWith("Ba"));
     expect(prompt).not.toContain(STILL_BEFORE_SPEAKING);
-    // The still check expects the two people it lists.
     expect(ots?.people).toBe(2);
   });
 
@@ -192,7 +188,6 @@ describe("buildDirection", () => {
       duration: "5",
     });
     expect(live.plan.models.map((m) => m.role)).toEqual(["keyframes", "lip-sync", "motion"]);
-    // Without motion shots the motion model is neither listed nor priced.
     const none = build(list(), recipe);
     expect(none.plan.models.map((m) => m.role)).toEqual(["keyframes", "lip-sync"]);
     expect(Object.keys(none.rates)).not.toContain(MOTION.endpoint);
@@ -241,9 +236,7 @@ describe("buildDirection", () => {
     for (const f of planned.frames.slice(1)) expect(frameDeps(planned, f)).toEqual(["kf:master"]);
     expect(frameDeps(planned, planned.frames[0] as never)).toEqual([]);
     expect(planned.frames[3]?.productId).toBe("p");
-    // Each still knows how many people its picture lists, for the still check.
     expect(planned.frames.map((f) => f.people)).toEqual([2, 1, 2, undefined]);
-    // Voice done: the master first, then every other picture.
     const voiced = {
       ...planned,
       status: "running" as const,
@@ -280,7 +273,6 @@ describe("a fix on a planned video", () => {
       useEnvironment: true,
       now: "2026-11-16T10:00:00.000Z",
     });
-    // At "Nghe và xem cảnh chính", where #3 was fixed from the chat.
     return { ...applyLivePlan(job, build(list())), status: "review" as const };
   };
 
@@ -295,7 +287,6 @@ describe("a fix on a planned video", () => {
 
   it("starts new shots from the plan's pictures, never a still of its own", () => {
     const job = planned();
-    // Line 2 was a wide then Ba: now Ba speaks first, then the wide.
     const fixed = applyFix(
       job,
       [
@@ -322,7 +313,6 @@ describe("a fix on a planned video", () => {
 
   it("keeps each later shot's route when a fix changes the number of shots", () => {
     const job = planned();
-    // Line 2's two shots become one: the product shot moves from 4th to 3rd.
     const fixed = applyFix(
       job,
       [
@@ -485,7 +475,6 @@ describe("the no-text rule", () => {
     expect(once.prompt).toBe(`Leaves sway. ${NO_CAPTIONS}`);
     expect(withNoCaptions(once)).toEqual(once);
     expect(withNoCaptions({ image_url: "{{keyframe}}" })).toEqual({ image_url: "{{keyframe}}" });
-    // Speaking and listening sentences already carry it.
     expect(speakPrompt(false, "steam drifts")).toContain(NO_CAPTIONS);
     expect(speakPrompt(true, undefined)).toContain(NO_CAPTIONS);
   });
