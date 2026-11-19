@@ -254,7 +254,7 @@ export interface ChatModelChoice {
 export const HIDDEN_CHAT_MODELS = ["default", "fable"];
 
 /** New chats start here: Claude Code's recommended model at medium effort. */
-export const DEFAULT_CHAT_CHOICE: ChatModelChoice = { model: "opus", effort: "medium" };
+const DEFAULT_CHAT_CHOICE: ChatModelChoice = { model: "opus", effort: "medium" };
 
 /**
  * Always a named model and effort, so the composer can show exactly what runs.
@@ -848,10 +848,6 @@ export interface IpcContract {
     result: null;
   };
   /** This video's own model, before any shot is sent (it then no longer follows the batch). */
-  "video:set-model": {
-    args: [input: { sessionId: string; scriptId: string; model: string }];
-    result: null;
-  };
   /**
    * Takes with another model (src/shared/video-takes.ts): start one (held: it
    * spends), make one "the video", delete one, or make one the take worked on.
@@ -940,7 +936,6 @@ export const IPC_CHANNELS = [
   "video:fix",
   "video:restore",
   "video:take",
-  "video:set-model",
   "video:save",
 ] as const satisfies readonly IpcChannel[];
 

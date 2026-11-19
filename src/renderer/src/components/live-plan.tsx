@@ -3,12 +3,6 @@ import type { CostRow } from "@shared/live-plan";
 import { costToPreviewUsd, liveCostTable, stopsForPreview, type VideoJob } from "@shared/video-job";
 import { Check } from "lucide-react";
 
-// What a video costs, on its card at every stage: planned, being made and
-// finished. One row per kind of step and model, every step on request. Prices
-// follow one rule: charged amounts plain (with a check), estimates with "~".
-// Once something is paid the total reads "Đã chi · Còn · Tổng", and "Còn" is
-// what the hold shows; once everything is paid, only "Đã chi".
-
 /** "Khung hình master" → "Khung hình"; "Cảnh 3 · Khẩu hình" → "Khẩu hình". */
 function kindOf(row: CostRow): string {
   if (row.step.includes(" · ")) return row.step.split(" · ")[1] as string;
@@ -17,7 +11,6 @@ function kindOf(row: CostRow): string {
 
 interface Group {
   kind: string;
-  model: string | null;
   count: number;
   usd: number | null;
   /** Every step of the group is made and charged. */
@@ -28,13 +21,13 @@ function groups(rows: CostRow[]): Group[] {
   const out: Group[] = [];
   for (const row of rows) {
     const kind = kindOf(row);
-    const found = out.find((g) => g.kind === kind && g.model === row.model);
+    const found = out.find((g) => g.kind === kind);
     if (found) {
       found.count++;
       found.usd = found.usd === null || row.usd === null ? null : found.usd + row.usd;
       found.paid &&= Boolean(row.paid);
     } else {
-      out.push({ kind, model: row.model, count: 1, usd: row.usd, paid: Boolean(row.paid) });
+      out.push({ kind, count: 1, usd: row.usd, paid: Boolean(row.paid) });
     }
   }
   return out;
@@ -92,9 +85,8 @@ export function LivePlanTable({ job, className }: { job: VideoJob; className?: s
       <table className="w-full tabular-nums">
         <tbody>
           {groups(costs.rows).map((g) => (
-            <tr key={`${g.kind}|${g.model}`} className="border-b last:border-b-0">
+            <tr key={g.kind} className="border-b last:border-b-0">
               <td className="py-1 pr-3">{g.kind}</td>
-              <td className="py-1 pr-3 text-muted-foreground">{g.model ?? ""}</td>
               <td className="py-1 pr-3 text-right text-muted-foreground">
                 {g.count > 1 ? `×${g.count}` : ""}
               </td>
@@ -147,7 +139,6 @@ export function LivePlanTable({ job, className }: { job: VideoJob; className?: s
             {costs.rows.map((row) => (
               <tr key={row.step} className="border-b last:border-b-0">
                 <td className="py-0.5 pr-3">{row.step}</td>
-                <td className="py-0.5 pr-3 text-muted-foreground">{row.model ?? ""}</td>
                 <td className="py-0.5 pr-3 text-right text-muted-foreground">{row.quantity}</td>
                 <td className="py-0.5 text-right">
                   <Price usd={row.usd} paid={row.paid} />

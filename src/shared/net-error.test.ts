@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isNetworkError, isNetworkMessage, retryDelayMs } from "./net-error";
+import { isNetworkError, isNetworkMessage, providerBusy, retryDelayMs } from "./net-error";
 
 // Network trouble versus a real failure: only the second counts toward a
 // fallback (docs/LIVE_DIRECTOR_EXPERIMENT.md, "Network failures").
@@ -26,13 +26,17 @@ describe("telling network trouble from a failed request", () => {
     ).toBe(true);
   });
 
-  it("treats a busy provider as network trouble, a refused request as a failure", () => {
+  it("treats a busy provider as trouble to retry, a refused request as a failure", () => {
     const api = (status: number) => Object.assign(new Error(`Lỗi ${status}`), { status });
     expect(isNetworkError(api(429))).toBe(true);
     expect(isNetworkError(api(503))).toBe(true);
     expect(isNetworkError(api(422))).toBe(false);
     expect(isNetworkError(api(400))).toBe(false);
     expect(isNetworkError(api(401))).toBe(false);
+    expect(providerBusy(api(503))).toBe(true);
+    expect(providerBusy(new Error("wrapped", { cause: api(429) }))).toBe(true);
+    expect(providerBusy(api(422))).toBe(false);
+    expect(providerBusy(new TypeError("fetch failed", { cause: cause("ENOTFOUND") }))).toBe(false);
   });
 
   it("never mistakes a model or local error for the network", () => {

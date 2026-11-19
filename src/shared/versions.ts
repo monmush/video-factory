@@ -9,7 +9,7 @@ import type { Script } from "./ipc";
 export const versionRoot = (s: Pick<Script, "id" | "versionOf">) => s.versionOf ?? s.id;
 
 /** Every version of `script`'s chain on the board, deleted ones included, in board array order. */
-export const chainOf = (scripts: Script[], script: Pick<Script, "id" | "versionOf">) => {
+const chainOf = (scripts: Script[], script: Pick<Script, "id" | "versionOf">) => {
   const root = versionRoot(script);
   return scripts.filter((s) => versionRoot(s) === root);
 };

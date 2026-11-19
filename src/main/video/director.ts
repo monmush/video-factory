@@ -1,14 +1,12 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { app } from "electron";
-import { estimateSeconds, MAX_HOLDS_SEC, SPEECH_RATE } from "../../shared/board";
+import { MAX_HOLDS_SEC, SPEECH_RATE } from "../../shared/board";
 import { buildDirection } from "../../shared/build-direction";
 import { directionSlot } from "../../shared/direction";
 import type { Asset } from "../../shared/ipc";
 import {
   type LiveContext,
   type LiveDirection,
-  type LivePlan,
   liveDirection,
   type ToolRecord,
 } from "../../shared/live-plan";
@@ -25,25 +23,18 @@ import {
 } from "../../shared/shot-list";
 import {
   castOf,
-  type DirectorAnswer,
   type PlanContext,
-  readDirectorAnswer,
   rulesPlan,
   type ShotPlan,
   seatsFor,
 } from "../../shared/shot-plan";
 import type { VideoJob } from "../../shared/video-job";
 import { getBoard } from "../board";
-import { claudeEnv, findClaude } from "../claude-code";
-import { dataDir } from "../paths";
-import { getKey, providerMode } from "../providers";
+import { providerMode } from "../providers";
 import { getWorkspace } from "../store";
 import { askText, parseJsonObject, textAiMode } from "../text-ai";
-import { logUsage } from "../usage";
 import PROMPT from "./director-prompt.md?raw";
-import { falConnections } from "./fal-tools";
-import { ConnectionError, runLiveSession } from "./live-director";
-import { checkAnswer, LIVE_SYSTEM, type LiveFile, livePrompt } from "./live-prompt";
+import { checkAnswer } from "./live-prompt";
 import { shotListPrompt } from "./shot-list-prompt";
 
 // The directing pass (docs/DIRECTING_RULES.md, layer A; docs/PLAN_PHASE_PROPOSAL.md):
@@ -67,34 +58,18 @@ function fill(slots: Record<string, string>): string {
   return text;
 }
 
-/**
- * Fixture text AI: HYAN_FIXTURE_SHOT_LIST, a saved shot-list answer (JSON) put
- * through the same checks; else HYAN_FIXTURE_PLAN, a saved director answer of
- * the old format (no pictures), given the rules' pictures; else the rules-only
- * list. A saved answer that breaks a rule falls to the rules, as a real one does.
- */
 async function fixtureShotList(ctx: PlanContext, caps: ShotListCaps): Promise<ShotList> {
   const listFile = process.env.HYAN_FIXTURE_SHOT_LIST;
-  const planFile = process.env.HYAN_FIXTURE_PLAN;
+  if (!listFile) return rulesShotList(ctx);
   try {
-    if (listFile) {
-      const answer = parseJsonObject<ShotListAnswer>(await readFile(listFile, "utf8"));
-      const { list, errors } = readShotList(answer, ctx, caps);
-      if (!errors.length) return list;
-      console.warn("[video] fixture shot list broke rules:", errors.join(" | "));
-      return rulesShotList(ctx, rulesPlan(ctx, errors));
-    }
-    if (planFile) {
-      const answer = parseJsonObject<DirectorAnswer>(await readFile(planFile, "utf8"));
-      const { plan, errors } = readDirectorAnswer(answer, ctx);
-      if (!errors.length) return rulesShotList(ctx, plan);
-      console.warn("[video] fixture plan broke rules:", errors.join(" | "));
-      return rulesShotList(ctx, rulesPlan(ctx, errors));
-    }
+    const answer = parseJsonObject<ShotListAnswer>(await readFile(listFile, "utf8"));
+    const { list, errors } = readShotList(answer, ctx, caps);
+    if (!errors.length) return list;
+    console.warn("[video] fixture shot list broke rules:", errors.join(" | "));
+    return rulesShotList(ctx, rulesPlan(ctx, errors));
   } catch (error) {
     return rulesShotList(ctx, rulesPlan(ctx, [(error as Error).message]));
   }
-  return rulesShotList(ctx);
 }
 
 /**
@@ -124,99 +99,11 @@ export interface Direction {
   live?: LiveDirection;
 }
 
-/** Placeholders the live director may reference: the place's photos and each cast member's. */
-function liveFiles(place: Asset, cast: Asset[]): LiveFile[] {
+function liveRefs(place: Asset, cast: Asset[]): string[] {
   return [
-    ...place.images.map((_, i) => ({
-      id: `place-${i + 1}`,
-      what: `photo ${i + 1} of the place (${place.name})`,
-    })),
-    ...cast.flatMap((c, ci) =>
-      c.images.slice(0, 3).map((_, i) => ({
-        id: `cast${ci + 1}-${i + 1}`,
-        what: `reference photo ${i + 1} of ${c.name}`,
-      })),
-    ),
+    ...place.images.map((_, i) => `place-${i + 1}`),
+    ...cast.flatMap((c, ci) => c.images.slice(0, 3).map((_, i) => `cast${ci + 1}-${i + 1}`)),
   ];
-}
-
-/**
- * The live director (experiment branch, docs/LIVE_DIRECTOR_EXPERIMENT.md):
- * the user's own Claude with the media provider's read-only planning tools,
- * signed in or with the app's key. Null when neither connection works or the
- * plan still breaks a rule after one correction: the fixed pipeline plans.
- */
-async function directLive(
-  job: VideoJob,
-  dir: string,
-  base: string,
-  ctx: LiveContext,
-  files: LiveFile[],
-): Promise<Direction | null> {
-  const bin = await findClaude();
-  if (!bin) return null;
-  const connections = await falConnections(await getKey("fal"));
-  if (!connections.length) return null;
-  const prompt = livePrompt(base, {
-    level: ctx.level,
-    files,
-    seconds: estimateSeconds(job.lines),
-    lines: job.lines,
-  });
-  await writeFile(join(dir, "live-prompt.md"), prompt, "utf8");
-  const cwd = join(dataDir(), "claude-code");
-  await mkdir(cwd, { recursive: true });
-  const logFile = join(dir, "live-tools.jsonl");
-  for (const connection of connections) {
-    let plan: LivePlan | null = null;
-    try {
-      const result = await runLiveSession({
-        bin,
-        cwd,
-        env: claudeEnv(),
-        connection,
-        system: LIVE_SYSTEM,
-        prompt,
-        timeoutMs: 15 * 60_000,
-        clientVersion: app.getVersion(),
-        check: (text, record) => {
-          const checked = checkAnswer(text, ctx, record);
-          plan = checked.plan;
-          return checked.errors;
-        },
-        log: (entry) =>
-          void appendFile(
-            logFile,
-            `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`,
-          ).catch(() => undefined),
-      });
-      await writeFile(join(dir, "live-answer.json"), result.answer ?? "", "utf8");
-      await writeFile(join(dir, "live-record.json"), JSON.stringify(result.record, null, 2));
-      await logUsage({
-        provider: "claude-code",
-        purpose: "video-live-plan",
-        sessionId: job.sessionId,
-        durationMs: result.durationMs,
-      });
-      const accepted = plan as LivePlan | null;
-      if (result.errors.length || !accepted) {
-        console.warn("[video] live plan refused:", result.errors.join(" | "));
-        return null;
-      }
-      return {
-        plan: accepted.shots,
-        live: liveDirection(accepted, result.record, ctx.lines, ctx.level, {
-          connection: result.connection,
-          model: result.model,
-          ms: result.durationMs,
-        }),
-      };
-    } catch (error) {
-      console.warn(`[video] live director (${connection.kind}):`, (error as Error).message);
-      if (!(error instanceof ConnectionError)) return null;
-    }
-  }
-  return null;
 }
 
 /**
@@ -279,19 +166,9 @@ export async function directJob(
 
   // Without a place there is nothing to stage, and without text AI nobody to ask.
   if (!ctx.hasPlace || !place) return { plan: rulesPlan(ctx) };
-  const files = liveFiles(place, cast);
   const level = mediaLevel(job.level);
-  const liveCtx: LiveContext = { ...ctx, refs: files.map((f) => f.id), level };
-  // The old per-video live director, kept only behind HYAN_LEGACY_LIVE_DIRECTOR=1
-  // (with its previous conditions). It goes away once a video has been made
-  // live on the shot-list path; live-director.ts and fal-tools.ts stay for the
-  // recipe session.
-  const legacyLive =
-    process.env.HYAN_LEGACY_LIVE_DIRECTOR === "1" &&
-    textAiMode() === "claude-code" &&
-    (providerMode() === "live" || process.env.HYAN_LIVE_DIRECTOR === "1");
-  // Fixture mode can replay a saved live director session.
-  if (providerMode() === "fixture" && !legacyLive) {
+  const liveCtx: LiveContext = { ...ctx, refs: liveRefs(place, cast), level };
+  if (providerMode() === "fixture") {
     const replay = await fixtureLive(liveCtx);
     if (replay) return replay;
   }
@@ -338,15 +215,6 @@ export async function directJob(
       .map((l, i) => `${i + 1}. ${names.get(l.characterId ?? "") ?? l.speaker}: ${l.text}`)
       .join("\n"),
   });
-
-  if (legacyLive) {
-    await save("director-prompt.md", base);
-    const live = await directLive(job, dir, base, liveCtx, files).catch((error) => {
-      console.warn("[video] live director failed:", (error as Error).message);
-      return null;
-    });
-    if (live) return live;
-  }
 
   const prompt = shotListPrompt(base, {
     level,

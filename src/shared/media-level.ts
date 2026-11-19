@@ -131,7 +131,7 @@ export function levelRates(level: MediaLevel): {
  * generated pictures, ~38 s of speaking scenes and ~7 s of wide and detail
  * scenes (paid motion on "Cân bằng", a free still with a zoom on "Nhanh").
  */
-export const TYPICAL_VIDEO = { seconds: 45, pictures: 7, speakSec: 38, motionSec: 7 } as const;
+const TYPICAL_VIDEO = { seconds: 45, pictures: 7, speakSec: 38, motionSec: 7 } as const;
 
 /**
  * Pictures, speaking scenes and motion for a typical video of `seconds` at

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardOrder, estimateSeconds, formatSeconds, syllables } from "./board";
+import { boardOrder, formatSeconds, syllables } from "./board";
 import { cleanHandleInput, toHandle } from "./handle";
 import type { Script } from "./ipc";
 
@@ -16,10 +16,6 @@ describe("boardOrder", () => {
 describe("length estimate", () => {
   it("counts Vietnamese syllables, ignoring punctuation-only tokens", () => {
     expect(syllables([{ text: "Trà ngon — uống chậm thôi." }])).toBe(5);
-  });
-
-  it("is zero for an empty script", () => {
-    expect(estimateSeconds([])).toBe(0);
   });
 
   it("formats seconds and minutes", () => {

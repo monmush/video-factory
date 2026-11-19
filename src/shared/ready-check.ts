@@ -9,7 +9,7 @@ import { resolveVoice, takenVoiceIds, type VoiceId } from "./voices";
 // tests share one answer.
 
 /** A script is warned about past its own target by more than this share. */
-export const OVER_TARGET_MARGIN = 0.2;
+const OVER_TARGET_MARGIN = 0.2;
 
 /** Finished scripts that can become videos, in board order. */
 export const finishedScripts = (scripts: Script[]) =>
@@ -91,7 +91,7 @@ export interface ReadyCheck {
 const speakerKey = (name: string) => name.trim().toLocaleLowerCase("vi");
 
 /** Speakers of `script` that are not library characters, by name, once each. */
-export function unknownSpeakers(script: Script, assets: readonly Asset[]): string[] {
+function unknownSpeakers(script: Script, assets: readonly Asset[]): string[] {
   const names = script.lines
     .filter((l) => !l.characterId || !assets.some((a) => a.id === l.characterId))
     .map((l) => l.speaker.trim() || "?");

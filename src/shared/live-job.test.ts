@@ -16,6 +16,7 @@ import {
   type ToolRecord,
 } from "./live-plan";
 import { mediaLevel } from "./media-level";
+import { MAX_BUSY_ANSWERS } from "./net-error";
 import {
   applyLivePlan,
   costToFinishUsd,
@@ -25,9 +26,8 @@ import {
   madeByProvider,
   newJob,
   nextActions,
-  repairNetworkFailure,
-  resumeJob,
   shotAttemptFailed,
+  shotEstimateUsd,
   stepReportedFailure,
   stepThrew,
   type VideoJob,
@@ -315,6 +315,28 @@ describe("a planned job", () => {
     expect(madeByProvider({ kind: "wide", route: "motion" })).toBe(true);
   });
 
+  it("keeps a made step with no recorded price unknown, never free", () => {
+    const base = plannedJob();
+    if (!base.live) throw new Error("no plan");
+    const { [LIPS]: _, ...rates } = base.live.rates;
+    const job: VideoJob = { ...base, live: { ...base.live, rates } };
+    const shot = job.shots[0];
+    if (!shot) throw new Error("no shot");
+    expect(shotEstimateUsd(job, shot)).toBeNull();
+    const made: VideoJob = {
+      ...job,
+      shots: job.shots.map((s) =>
+        s.index === 0 ? { ...s, state: "done", clip: "c.mp4", costUsd: null } : s,
+      ),
+    };
+    const table = liveCostTable(made);
+    expect(table?.rows.find((r) => r.step.startsWith("Cảnh 1"))).toMatchObject({
+      usd: null,
+      paid: true,
+    });
+    expect(table?.unknownSteps).toBe(liveCostTable(job)?.unknownSteps);
+  });
+
   it("keeps its own size and models whatever the batch says", () => {
     const job = { ...plannedJob(), resolution: "1080p" };
     expect(followBatch(job, { model: "kling-avatar-v2-standard", resolution: "720p" })).toBe(job);
@@ -393,82 +415,20 @@ describe("network trouble", () => {
     });
   });
 
-  it("brings back a job that failed on it before the check existed (first live run)", () => {
-    const base = plannedJob();
-    const failed: VideoJob = {
-      ...base,
-      status: "failed",
-      error: "fetch failed",
-      dialogue: "dialogue.mp3",
-      voiceCostUsd: 0.12,
-      frames: base.frames.map((f) =>
-        f.id === "kf:master"
-          ? { ...f, requestId: "req-1", file: "still-kf-master.png", costUsd: 0.15 }
-          : { ...f, retried: true, fallback: true, error: "fetch failed" },
-      ),
-    };
-    const repaired = repairNetworkFailure(failed, () => 0);
-    // Paid results stay; the stills that only lost the connection go back to their plan.
-    expect(repaired.frames[0]).toMatchObject({ file: "still-kf-master.png", requestId: "req-1" });
-    for (const f of repaired.frames.slice(1)) {
-      expect(f).toMatchObject({ retried: false });
-      expect(f.fallback).toBeUndefined();
-      expect(f.error).toBeUndefined();
+  it("a provider that keeps answering busy counts as a failed attempt after a bounded number of tries", () => {
+    const busy = () => Object.assign(new Error("Internal Server Error"), { status: 500 });
+    let job = plannedJob();
+    for (let i = 0; i < MAX_BUSY_ANSWERS - 1; i++) {
+      job = stepThrew(job, { shot: 0 }, busy(), T0 + i * 120_000);
     }
-    const resumed = { ...resumeJob(repaired, NOW), status: "running" as const };
-    // Nothing paid is made again: the voice exists, the master is reused.
-    expect(
-      nextActions(
-        {
-          ...resumed,
-          shots: resumed.shots.map((s) => ({
-            ...s,
-            start: 0,
-            end: 3,
-            audio: "a.mp3",
-            state: "queued" as const,
-          })),
-        },
-        new Set(),
-      ),
-    ).toEqual([
-      { kind: "frame", frame: "kf:an" },
-      { kind: "frame", frame: "kf:ba" },
-    ]);
-    // A real failure is left alone.
-    const real = {
-      ...failed,
-      frames: [{ ...(failed.frames[1] as JobFrameT), error: "Lỗi giả lập" }],
-    };
-    expect(repairNetworkFailure(real, () => 0)).toBe(real);
-  });
-
-  it("makes the cut-out again only when it never ran", () => {
-    const base = plannedJob();
-    const plate = {
-      id: "kf:plate",
-      kind: "product" as const,
-      keyframe: "plate",
-      productId: "p",
-      file: "still-kf-plate.png",
-      source: "photo" as const,
-      noCutout: true,
-      retried: false,
-    };
-    const failed: VideoJob = {
-      ...base,
-      status: "failed",
-      error: "fetch failed",
-      frames: [...base.frames, plate],
-    };
-    const repaired = repairNetworkFailure(failed, () => 2);
-    expect(repaired.frames.at(-1)).toMatchObject({ id: "kf:plate", retried: false });
-    expect(repaired.frames.at(-1)?.file).toBeUndefined();
-    // Every photo tried and refused: the photo was the right answer.
-    expect(repairNetworkFailure(failed, () => 0).frames.at(-1)).toMatchObject({
-      file: "still-kf-plate.png",
-    });
+    expect(job.shots[0]).toMatchObject({ retried: false, failures: 0 });
+    expect(job.offline).toBeDefined();
+    job = stepThrew(job, { shot: 0 }, busy(), T0 + MAX_BUSY_ANSWERS * 120_000);
+    expect(job.shots[0]).toMatchObject({ retried: true, failures: 1 });
+    expect(job.shots[0]?.busyAnswers).toBeUndefined();
+    for (let i = 0; i < MAX_BUSY_ANSWERS; i++) {
+      job = stepThrew(job, { shot: 0 }, busy(), T0 + (10 + i) * 120_000);
+    }
+    expect(job.shots[0]).toMatchObject({ fallback: true, failures: 2 });
   });
 });
-
-type JobFrameT = VideoJob["frames"][number];

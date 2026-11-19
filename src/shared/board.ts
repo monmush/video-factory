@@ -70,7 +70,7 @@ export const VOICE_USD_PER_CHAR = 0.08 / 1000;
 export const FRAME_USD = 0.12;
 
 /** Characters with at least one line: each needs its own start frame. */
-export const speakingCharacters = (lines: Partial<Pick<ScriptLine, "characterId">>[]) => [
+const speakingCharacters = (lines: Partial<Pick<ScriptLine, "characterId">>[]) => [
   ...new Set(lines.flatMap((l) => l.characterId ?? [])),
 ];
 
@@ -99,7 +99,7 @@ export interface EstimateOpts {
 }
 
 /** The picture of a video from these lines. Excludes voice, images and retries. */
-export const estimateVideoUsd = (
+const estimateVideoUsd = (
   lines: Pick<ScriptLine, "text">[],
   model?: string | null,
   resolution?: string | null,
@@ -109,7 +109,7 @@ export const estimateVideoUsd = (
     : 0;
 
 /** Characters the voice model reads aloud (the dialogue, nothing else). */
-export const spokenChars = (lines: Pick<ScriptLine, "text">[]) =>
+const spokenChars = (lines: Pick<ScriptLine, "text">[]) =>
   lines.reduce((n, line) => n + line.text.trim().length, 0);
 
 export const estimateVoiceUsd = (lines: Pick<ScriptLine, "text">[]) =>
@@ -151,21 +151,6 @@ export const TYPICAL_LINES: (Pick<ScriptLine, "text"> & Pick<ScriptLine, "charac
 export function levelEstimateUsd(level: MediaLevel, seconds = DEFAULT_TARGET_SEC): number {
   const voicePerSec = estimateVoiceUsd(TYPICAL_LINES) / estimateSeconds(TYPICAL_LINES);
   return levelMediaUsd(level, seconds) + voicePerSec * Math.max(1, seconds);
-}
-
-/**
- * All-in price of one video for a model choice, the same estimate as the
- * make buttons, with the length it is for: the average of `scripts` when
- * there are any, else a typical 45-second video.
- */
-export function perVideo(
-  scripts: { lines: (Pick<ScriptLine, "text"> & Partial<Pick<ScriptLine, "characterId">>)[] }[],
-  opts: EstimateOpts,
-): { usd: number; seconds: number } {
-  const list = scripts.length ? scripts.map((s) => s.lines) : [TYPICAL_LINES];
-  const mean = (f: (lines: (typeof list)[number]) => number) =>
-    list.reduce((n, lines) => n + f(lines), 0) / list.length;
-  return { usd: mean((lines) => estimateUsd(lines, opts)), seconds: mean(estimateSeconds) };
 }
 
 /** "42 giây", "1 phút 5 giây". */

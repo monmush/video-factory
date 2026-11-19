@@ -13,8 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { refreshChatInfo } from "@/lib/chat";
-import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -35,11 +35,23 @@ export function SettingsPage() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [providers, setProviders] = useState<ProvidersInfo | null>(null);
   const notes = useWorkspace().notes ?? [];
+  const { error, run } = useAction();
 
+  const load = useCallback(
+    () =>
+      run(async () => {
+        const [app, keys] = await Promise.all([
+          api.invoke("app:info"),
+          api.invoke("providers:status"),
+        ]);
+        setInfo(app);
+        setProviders(keys);
+      }),
+    [run],
+  );
   useEffect(() => {
-    void api.invoke("app:info").then(setInfo);
-    void api.invoke("providers:status").then(setProviders);
-  }, []);
+    void load();
+  }, [load]);
 
   return (
     <Page className="max-w-2xl">
@@ -76,6 +88,14 @@ export function SettingsPage() {
       )}
 
       <Section title="Khóa API">
+        {error && (
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-xs text-destructive-foreground">{error}</span>
+            <Button variant="ghost-muted" size="sm" onClick={load}>
+              Thử lại
+            </Button>
+          </div>
+        )}
         {providers && (
           <>
             <p className="mb-4 text-muted-foreground">
@@ -104,7 +124,11 @@ export function SettingsPage() {
             <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-selectable>
               {info.dataDir}
             </code>
-            <Button variant="outline" size="sm" onClick={() => api.invoke("app:open-data-dir")}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => run(() => api.invoke("app:open-data-dir"))}
+            >
               Mở thư mục
             </Button>
           </div>
@@ -115,27 +139,16 @@ export function SettingsPage() {
   );
 }
 
-/**
- * Which AI writes text (descriptions now; scripts and orchestration later).
- * Claude Code runs the user's own installed and signed-in CLI. We never sign in
- * on the user's behalf: Anthropic's terms require their own sign-in flow.
- */
 function TextAiSection() {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { error, run } = useAction();
 
   const refresh = useCallback(async () => {
     setChecking(true);
-    setError(null);
-    try {
-      setStatus(await api.invoke("ai:status"));
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setChecking(false);
-    }
-  }, []);
+    await run(async () => setStatus(await api.invoke("ai:status")));
+    setChecking(false);
+  }, [run]);
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -187,15 +200,12 @@ function TextAiSection() {
               type="button"
               aria-pressed={selected}
               disabled={option.disabled && !selected}
-              onClick={async () => {
-                setError(null);
-                try {
+              onClick={() =>
+                run(async () => {
                   setStatus(await api.invoke("ai:set-text-provider", option.value));
                   void refreshChatInfo();
-                } catch (e) {
-                  setError(errorMessage(e));
-                }
-              }}
+                })
+              }
               className={cn(
                 "flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-4 py-3 text-left disabled:cursor-default",
                 selected ? "border-ring bg-accent" : "hover:bg-accent/50",
@@ -234,17 +244,13 @@ function ProviderKeyRow(props: {
   onChange: (info: ProvidersInfo) => void;
 }) {
   const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const { error, run } = useAction();
 
-  const save = async () => {
-    try {
+  const save = () =>
+    run(async () => {
       props.onChange(await api.invoke("providers:set-key", props.id, value));
       setValue("");
-      setError(null);
-    } catch {
-      setError("Không lưu được khóa.");
-    }
-  };
+    });
 
   return (
     <div className="rounded-lg border px-4 py-3">
@@ -261,7 +267,9 @@ function ProviderKeyRow(props: {
           <Button
             variant="ghost-muted"
             size="xs"
-            onClick={async () => props.onChange(await api.invoke("providers:clear-key", props.id))}
+            onClick={() =>
+              run(async () => props.onChange(await api.invoke("providers:clear-key", props.id)))
+            }
           >
             Xóa
           </Button>

@@ -20,6 +20,8 @@ export function textAiMode(): TextAiMode {
   return providerMode() === "fixture" ? "fixture" : "fal";
 }
 
+export const textAiIsOwn = () => textAiMode() !== "fal";
+
 /** Runs at most `limit` tasks at once; the rest wait their turn. */
 function limiter(limit: number) {
   let active = 0;

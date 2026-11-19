@@ -1,10 +1,11 @@
-import { execFile, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { access, constants, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { nativeImage } from "electron";
 import type { ClaudeCodeStatus, ClaudeLimits, ClaudeLimitWindow } from "../shared/ipc";
+import { streamReader } from "./claude-stream";
 import { dataDir } from "./paths";
 import { saveClaudeLimits } from "./usage";
 
@@ -52,20 +53,35 @@ export function claudeEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-// GUI apps on macOS do not inherit the shell PATH, so look in the usual places.
-const CANDIDATE_DIRS = [
+const INSTALL_DIRS = [
   join(homedir(), ".local", "bin"),
   join(homedir(), ".claude", "local"),
   "/opt/homebrew/bin",
   "/usr/local/bin",
 ];
 
+let shellPath: Promise<string[]> | null = null;
+
+function loginShellPath(): Promise<string[]> {
+  shellPath ??= run(process.env.SHELL || "/bin/zsh", ["-ilc", 'printf "%s" "$PATH"'], {
+    timeout: 5_000,
+    env: claudeEnv(),
+  })
+    .then(({ stdout }) => stdout.trim().split("\n").at(-1)?.split(delimiter).filter(Boolean) ?? [])
+    .catch(() => []);
+  return shellPath;
+}
+
 let cachedPath: string | null | undefined;
 
 export async function findClaude(): Promise<string | null> {
   if (cachedPath !== undefined) return cachedPath;
-  const dirs = [...CANDIDATE_DIRS, ...(process.env.PATH ?? "").split(delimiter)];
-  for (const dir of dirs) {
+  const dirs = [
+    ...(await loginShellPath()),
+    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
+    ...INSTALL_DIRS,
+  ];
+  for (const dir of new Set(dirs)) {
     const candidate = join(dir, process.platform === "win32" ? "claude.exe" : "claude");
     try {
       await access(candidate, constants.X_OK);
@@ -78,7 +94,8 @@ export async function findClaude(): Promise<string | null> {
 }
 
 export async function claudeCodeStatus(): Promise<ClaudeCodeStatus> {
-  cachedPath = undefined; // re-detect: the user may have just installed it
+  cachedPath = undefined;
+  shellPath = null;
   const bin = await findClaude();
   if (!bin) return { installed: false, version: null, loggedIn: false, plan: null };
   const version = await run(bin, ["--version"], { timeout: 10_000, env: claudeEnv() })
@@ -180,71 +197,43 @@ export async function askClaudeCode(input: {
 
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, env: claudeEnv(), stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("Claude Code không phản hồi kịp"));
-    }, input.timeoutMs ?? 120_000);
-
-    // Streamed text: whole lines only, each a JSON event; text deltas are added up.
-    let pending = "";
-    let soFar = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      if (!input.onText) return;
-      pending += chunk;
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      let grew = false;
-      for (const line of lines) {
-        if (!line.includes('"text_delta"')) continue;
-        try {
-          const delta = JSON.parse(line)?.event?.delta;
-          if (delta?.type === "text_delta" && typeof delta.text === "string") {
-            soFar += delta.text;
-            grew = true;
-          }
-        } catch {
-          // Not an event line.
-        }
-      }
-      if (grew) {
-        try {
-          input.onText(soFar);
-        } catch {
-          // Progress is never a reason to fail the answer.
-        }
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", (error) => {
+    children.add(child);
+    let settled = false;
+    const finish = (error: Error | null, answer?: ClaudeCodeAnswer) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(error);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (error) reject(error);
+      else resolve(answer as ClaudeCodeAnswer);
+    };
+    const timer = setTimeout(
+      () => finish(new Error("Claude Code không phản hồi kịp")),
+      input.timeoutMs ?? 120_000,
+    );
+    const reader = streamReader(input.onText);
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (!reader.push(chunk.toString())) finish(new Error("Claude Code trả về quá nhiều dữ liệu"));
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString()).slice(-MAX_STDERR_CHARS);
+    });
+    child.stdin.on("error", () => undefined);
+    child.on("error", (error) => {
+      children.delete(child);
+      finish(error);
     });
     child.on("close", () => {
-      clearTimeout(timer);
-      const messages = stdout
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        });
-      const limits = messages.findLast((m) => m?.type === "rate_limit_event");
+      children.delete(child);
+      const { result, limits } = reader.end();
       if (limits) void saveClaudeLimits(toLimits(limits.rate_limit_info)).catch(() => {});
-      const result = messages.find((m) => m?.type === "result");
       if (!result) {
-        reject(new Error(stderr.trim().split("\n").at(-1) || "Claude Code không trả về kết quả"));
+        finish(new Error(stderr.trim().split("\n").at(-1) || "Claude Code không trả về kết quả"));
       } else if (result.is_error) {
-        reject(new Error(String(result.result ?? "Claude Code báo lỗi")));
+        finish(new Error(String(result.result ?? "Claude Code báo lỗi")));
       } else {
-        resolve({
+        finish(null, {
           text: String(result.result ?? "").trim(),
           notionalCostUsd: typeof result.total_cost_usd === "number" ? result.total_cost_usd : null,
           durationMs: typeof result.duration_ms === "number" ? result.duration_ms : null,
@@ -254,4 +243,13 @@ export async function askClaudeCode(input: {
 
     child.stdin.end(`${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`);
   });
+}
+
+const MAX_STDERR_CHARS = 4_000;
+
+const children = new Set<ChildProcess>();
+
+export function stopClaudeProcesses() {
+  for (const child of children) child.kill();
+  children.clear();
 }

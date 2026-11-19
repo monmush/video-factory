@@ -48,7 +48,7 @@ import {
   useBoardView,
 } from "@/lib/board";
 import { useLiveWriting } from "@/lib/chat";
-import { errorMessage } from "@/lib/errors";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
@@ -109,6 +109,7 @@ interface CardActions {
   setProduct: (id: string, productId: string | null) => void;
   /** Takes back the card's last product change. */
   undoProduct: (id: string) => void;
+  stage: (id: string) => void;
 }
 
 interface Notice {
@@ -141,6 +142,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const [box, setBox] = useState<Box | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const videoJobs = useVideoJobs(sessionId);
+  const action = useAction();
 
   useEffect(() => {
     if (!notice || notice.productOf) return;
@@ -171,13 +173,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     ? { isTest: (id: string) => id === testId, pick: (id: string) => setView({ testId: id }) }
     : null;
 
-  const run = async (action: () => Promise<unknown>) => {
-    try {
-      await action();
-    } catch (error) {
-      setNotice({ text: errorMessage(error) });
-    }
-  };
+  const run = action.run;
 
   const actions: CardActions = {
     variant: (id, direction) =>
@@ -221,6 +217,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
         });
         if (changed) setNotice({ text: "Đã đổi sản phẩm", productOf: changed.scriptId });
       }),
+    stage: (id) => run(() => api.invoke("video:plan", { sessionId, scriptId: id })),
     undoProduct: (id) =>
       run(async () => {
         await api.invoke("board:undo-product", { sessionId, scriptId: id });
@@ -236,7 +233,15 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const productNotice = notice?.productOf
     ? scripts.findIndex((s) => s.id === notice.productOf && s.productUndo)
     : -1;
-  const shownNotice = notice?.productOf && productNotice < 0 ? null : notice;
+  const shownNotice: Notice | null = action.error
+    ? { text: action.error }
+    : notice?.productOf && productNotice < 0
+      ? null
+      : notice;
+  const closeNotice = () => {
+    setNotice(null);
+    action.clear();
+  };
 
   const restore = (ids: string[]) =>
     run(async () => {
@@ -417,7 +422,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
                       size="icon-sm"
                       className="rounded-full"
                       aria-label="Đóng"
-                      onClick={() => setNotice(null)}
+                      onClick={closeNotice}
                     >
                       <X />
                     </Button>
@@ -429,7 +434,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
                   size="icon-sm"
                   className="rounded-full"
                   aria-label="Đóng"
-                  onClick={() => setNotice(null)}
+                  onClick={closeNotice}
                 >
                   <X />
                 </Button>
@@ -885,7 +890,7 @@ function CompactCard({
             {isSent ? (
               <SentBadge sessionId={shared.sessionId} job={job} staging={staging} />
             ) : (
-              <StagingMark sessionId={shared.sessionId} scriptId={script.id} state={staging} />
+              <StagingMark scriptId={script.id} state={staging} actions={actions} />
             )}
           </CardMeta>
           <h3 className="mt-1 line-clamp-2 font-semibold leading-snug text-balance">
@@ -1148,13 +1153,13 @@ function useStaging(sessionId: string, script: Script): StagingState {
  * cards say it on their "Dàn dựng" tab.
  */
 function StagingMark({
-  sessionId,
   scriptId,
   state,
+  actions,
 }: {
-  sessionId: string;
   scriptId: string;
   state: StagingState;
+  actions: CardActions;
 }) {
   if (state === "staging") {
     return <span className="shimmer-text text-2xs whitespace-nowrap">Đang lên dàn dựng</span>;
@@ -1168,7 +1173,7 @@ function StagingMark({
       onClick={(e) => {
         // The card opens on a click; this one only retries.
         e.stopPropagation();
-        void api.invoke("video:plan", { sessionId, scriptId }).catch(() => undefined);
+        actions.stage(scriptId);
       }}
     >
       Lên dàn dựng

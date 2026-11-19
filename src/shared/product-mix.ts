@@ -30,7 +30,7 @@ export function mixProblem(mix: ProductMix, isProduct: (id: string) => boolean):
   return null;
 }
 
-export const mixTotal = (mix: ProductMix) => mix.reduce((n, e) => n + e.share, 0);
+const mixTotal = (mix: ProductMix) => mix.reduce((n, e) => n + e.share, 0);
 
 /** Equal shares for these products, summing to 100 (the first ones take the remainder). */
 export function evenMix(productIds: readonly string[]): ProductMix {
@@ -147,35 +147,4 @@ export function newTopicProducts(input: {
       );
   let next = 0;
   return named.map((p) => (p !== undefined ? p : assigned[next++]));
-}
-
-/** How many scripts feature each product, in order of first appearance; none counted apart. */
-export function productCounts(scripts: readonly { productIds: readonly string[] }[]) {
-  const counts = new Map<string, number>();
-  let none = 0;
-  for (const s of scripts) {
-    const id = s.productIds[0];
-    if (!id) none++;
-    else counts.set(id, (counts.get(id) ?? 0) + 1);
-  }
-  return { counts, none };
-}
-
-/**
- * Short labels for product names in a tight space: words every name shares
- * are dropped ("Bạch Trà Shan Tuyết", "Hồng Trà Shan Tuyết", "Shan Tuyết Cổ
- * Thụ" read "Bạch Trà", "Hồng Trà", "Cổ Thụ"), unless that would empty one.
- */
-export function shortNames(names: readonly string[]): string[] {
-  if (names.length < 2) return [...names];
-  const words = names.map((n) => n.split(/\s+/).filter(Boolean));
-  const key = (w: string) => w.toLocaleLowerCase("vi");
-  const shared = new Set(words[0]?.map(key));
-  for (const list of words.slice(1)) {
-    const mine = new Set(list.map(key));
-    for (const w of shared) if (!mine.has(w)) shared.delete(w);
-  }
-  if (!shared.size) return [...names];
-  const short = words.map((list) => list.filter((w) => !shared.has(key(w))).join(" "));
-  return short.some((s) => !s) ? [...names] : short;
 }

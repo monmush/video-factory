@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, rm, stat } from "node:fs/promises";
-import { extname, join, resolve, sep } from "node:path";
+import { extname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { net, protocol } from "electron";
 import { type ImageRef, mediaUrl, type StagedImage } from "../shared/ipc";
 import { findSession } from "./board";
 import { dataDir, mediaDir } from "./paths";
+import { childPath, childPathOrNull } from "./safe-path";
 
 // Local media is served to the renderer through a custom protocol instead of
 // file:// so the renderer never gets general file-system access:
@@ -20,7 +21,7 @@ const SCHEME = "hyan-media";
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
-export const assetDir = (assetId: string) => join(dataDir(), "assets", assetId);
+export const assetDir = (assetId: string) => childPath(join(dataDir(), "assets"), assetId);
 export const stagingDir = () => join(dataDir(), "staging");
 
 /** Must run before app "ready". */
@@ -35,32 +36,39 @@ export function registerMediaScheme() {
 
 export function handleMediaProtocol() {
   protocol.handle(SCHEME, async (request) => {
-    const url = new URL(request.url);
-    const parts = decodeURIComponent(url.pathname).split("/").filter(Boolean);
-    const base =
-      url.hostname === "asset" && parts.length === 2
-        ? assetDir(parts[0] as string)
-        : url.hostname === "staging" && parts.length === 1
-          ? stagingDir()
-          : url.hostname === "chat" && parts.length === 2
-            ? await findSession(parts[0] as string)
-                .then(({ session }) => join(mediaDir(session.seriesId, session.id), "chat-files"))
-                .catch(() => null)
-            : url.hostname === "video" && parts.length === 3 && /^[\w-]+$/.test(parts[1] as string)
-              ? await findSession(parts[0] as string)
-                  .then(({ session }) =>
-                    join(mediaDir(session.seriesId, session.id), "videos", parts[1] as string),
-                  )
-                  .catch(() => null)
-              : null;
-    if (!base) return new Response("Not found", { status: 404 });
-    const file = resolve(base, parts.at(-1) as string);
-    if (!file.startsWith(resolve(base) + sep)) return new Response("Forbidden", { status: 403 });
+    const file = await mediaFile(new URL(request.url)).catch(() => null);
+    if (!file) return new Response("Not found", { status: 404 });
     return (
       (await serveRange(file, request.headers.get("range"))) ??
       net.fetch(pathToFileURL(file).toString())
     );
   });
+}
+
+async function sessionDir(sessionId: string | undefined) {
+  if (!sessionId) return null;
+  const { session } = await findSession(sessionId);
+  return mediaDir(session.seriesId, session.id);
+}
+
+async function mediaFile(url: URL): Promise<string | null> {
+  const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const [first, second, third] = parts;
+  if (url.hostname === "asset" && parts.length === 2) {
+    return childPathOrNull(join(dataDir(), "assets"), first as string, second as string);
+  }
+  if (url.hostname === "staging" && parts.length === 1) {
+    return childPathOrNull(stagingDir(), first as string);
+  }
+  if (url.hostname === "chat" && parts.length === 2) {
+    const dir = await sessionDir(first);
+    return dir && childPathOrNull(dir, "chat-files", second as string);
+  }
+  if (url.hostname === "video" && parts.length === 3) {
+    const dir = await sessionDir(first);
+    return dir && childPathOrNull(dir, "videos", second as string, third as string);
+  }
+  return null;
 }
 
 const MEDIA_TYPES: Record<string, string> = {

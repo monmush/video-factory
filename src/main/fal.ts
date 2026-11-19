@@ -1,3 +1,4 @@
+import { isNetworkError } from "../shared/net-error";
 import type { falClient } from "./providers";
 import { logUsage, recordFailed, recordSubmitted } from "./usage";
 
@@ -90,6 +91,7 @@ export async function falPoll<T>(
     purpose: string;
     cost: (data: T) => number | null;
     costIsEstimate?: boolean;
+    keep?: (data: T) => Promise<void>;
   } & Record<string, unknown>,
 ): Promise<FalPoll<T>> {
   const status = await fal.queue.status(endpoint, { requestId, logs: false });
@@ -110,15 +112,28 @@ export async function falPoll<T>(
     }
     throw error;
   }
-  const { cost, purpose, costIsEstimate, ...extra } = log;
-  await logUsage({
-    provider: "fal",
-    endpoint,
-    purpose,
-    requestId,
-    cost: cost(data),
-    ...(costIsEstimate ? { costIsEstimate: true } : {}),
-    ...extra,
-  });
+  const { cost, purpose, costIsEstimate, keep, ...extra } = log;
+  const settle = () =>
+    logUsage({
+      provider: "fal",
+      endpoint,
+      purpose,
+      requestId,
+      cost: cost(data),
+      ...(costIsEstimate ? { costIsEstimate: true } : {}),
+      ...extra,
+    });
+  try {
+    await keep?.(data);
+  } catch (error) {
+    if (!isNetworkError(error)) await settle();
+    throw error;
+  }
+  await settle();
   return { state: "done", data };
+}
+
+export async function falCancel(fal: Fal, endpoint: string, requestId: string): Promise<void> {
+  await fal.queue.cancel(endpoint, { requestId }).catch(() => undefined);
+  await recordFailed({ provider: "fal", requestId });
 }

@@ -6,6 +6,7 @@ import { MAX_CHAT_ATTACHMENTS } from "../../shared/ipc";
 import { findSession } from "../board";
 import { imageBlock } from "../claude-code";
 import { mediaDir } from "../paths";
+import { childPath } from "../safe-path";
 
 // Files attached to chat messages: images, PDFs and plain text, copied into
 // the session folder (media/<series>/<session>/chat-files/) when they are
@@ -38,7 +39,7 @@ const validId = (id: string) => /^[0-9a-f-]+\.[a-z]+$/.test(id);
 
 export async function chatFilePath(sessionId: string, id: string) {
   if (!validId(id)) throw new Error("Invalid file");
-  return join(await chatFilesDir(sessionId), id);
+  return childPath(await chatFilesDir(sessionId), id);
 }
 
 export async function stageChatFiles(
@@ -53,12 +54,14 @@ export async function stageChatFiles(
   const staged: ChatAttachment[] = [];
   for (const file of files) {
     const name = basename(file.name || (file.path ? basename(file.path) : "tệp"));
-    const ext = extname(name || file.path || "")
+    const ext = extname(file.path ?? name)
       .slice(1)
       .toLowerCase();
     const type = KINDS[ext];
     if (!type) throw new Error(`Chưa hỗ trợ tệp ${name}. Dùng ảnh, PDF hoặc văn bản.`);
-    const bytes = file.data ? file.data.byteLength : file.path ? (await stat(file.path)).size : 0;
+    const info = file.data ? null : file.path ? await stat(file.path).catch(() => null) : null;
+    if (info && !info.isFile()) throw new Error(`Không đọc được ${name}`);
+    const bytes = file.data ? file.data.byteLength : (info?.size ?? 0);
     if (bytes === 0) throw new Error(`Không đọc được ${name}`);
     if (bytes > type.maxBytes) {
       throw new Error(`${name} quá lớn (tối đa ${Math.round(type.maxBytes / 1024 / 1024)} MB)`);

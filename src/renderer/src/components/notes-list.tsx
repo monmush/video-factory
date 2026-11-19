@@ -4,19 +4,14 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
-import { errorMessage } from "@/lib/errors";
+import { useAction } from "@/lib/use-action";
 
 /**
  * Learned preferences ("Ghi nhớ") saved from the chat: click a sentence to
  * edit it, × removes it at once. The workspace push re-renders the list.
  */
 export function NotesList({ notes }: { notes: Note[] }) {
-  const [error, setError] = useState<string | null>(null);
-  const run = (work: Promise<unknown>) =>
-    work.then(
-      () => setError(null),
-      (e) => setError(errorMessage(e)),
-    );
+  const { error, run } = useAction();
   return (
     <div>
       <ul className="flex flex-col">
@@ -24,8 +19,8 @@ export function NotesList({ notes }: { notes: Note[] }) {
           <NoteRow
             key={note.id}
             note={note}
-            onSave={(text) => run(api.invoke("notes:update", { id: note.id, text }))}
-            onRemove={() => run(api.invoke("notes:remove", note.id))}
+            onSave={(text) => run(() => api.invoke("notes:update", { id: note.id, text }))}
+            onRemove={() => run(() => api.invoke("notes:remove", note.id))}
           />
         ))}
       </ul>

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { estimateSeconds, levelEstimateUsd } from "./board";
 import {
-  bareToolName,
   costWarnings,
   emptyRecord,
   type LiveAnswer,
@@ -202,11 +201,6 @@ describe("recording tool results", () => {
     // The best answer counts; a later failure does not lower it.
     expect(record.guidance).toBe("partial");
     expect(record.calls.at(-1)).toEqual({ tool: "search_guidance", ok: false });
-  });
-
-  it("strips the server prefix from tool names", () => {
-    expect(bareToolName("mcp__fal__get_pricing")).toBe("get_pricing");
-    expect(bareToolName("mcp__my_srv__get_x")).toBe("get_x");
   });
 
   it("finds placeholders anywhere in an input", () => {

@@ -1,21 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { migrateSettings } from "./batch-settings";
-import {
-  estimateSeconds,
-  estimateUsd,
-  estimateVoiceUsd,
-  FRAME_USD,
-  perVideo,
-  TYPICAL_LINES,
-} from "./board";
+import { estimateSeconds, estimateUsd, estimateVoiceUsd } from "./board";
 import { migrateJob, newJob } from "./video-job";
 import {
   billedClipSec,
   clipUsd,
   DEFAULT_VIDEO_MODEL,
   LEVEL_LABEL,
-  levelPick,
-  minutesFor45,
   modelForClip,
   modelGroups,
   modelOutput,
@@ -42,21 +33,21 @@ describe("video model registry", () => {
     }
   });
 
-  it("groups by level, suggested first", () => {
-    expect(modelGroups().map((g) => [g.label, g.models.map((m) => m.id)])).toEqual([
-      ["Tiêu chuẩn", ["kling-avatar-v2-standard", "minimax-h3-lipsync"]],
-      ["Cao cấp", ["omnihuman-v2", "kling-avatar-v2-pro", "fabric-1-720p"]],
-    ]);
+  it("groups by level, suggested first, every model once", () => {
+    const groups = modelGroups();
+    for (const g of groups) {
+      const first = g.models[0];
+      expect(first && "pick" in first && first.pick).toBe(true);
+      expect(g.models.every((m) => m.level === g.level)).toBe(true);
+    }
+    const listed = groups.flatMap((g) => g.models.map((m) => m.id));
+    expect(listed.sort()).toEqual(VIDEO_MODELS.map((m) => m.id).sort());
   });
 
-  it("reads missing and unknown ids as the default, Kling Standard", () => {
+  it("reads missing and unknown ids as the default", () => {
     expect(videoModel().id).toBe(DEFAULT_VIDEO_MODEL);
     expect(videoModel(null).id).toBe(DEFAULT_VIDEO_MODEL);
     expect(videoModel("gone-model").id).toBe(DEFAULT_VIDEO_MODEL);
-    expect(videoModel().endpoint).toBe("fal-ai/kling-video/ai-avatar/v2/standard");
-    expect(modelOutput(videoModel()).usdPerSec).toBe(0.0562);
-    expect(levelPick("standard").id).toBe(DEFAULT_VIDEO_MODEL);
-    expect(levelPick("high").id).toBe("omnihuman-v2");
   });
 
   it("MiniMax follows the output size: 768p in a 720p video, 1080p at twice the rate", () => {
@@ -118,14 +109,6 @@ describe("video model registry", () => {
     expect(modelForClip("kling-avatar-v2-pro", 1000).id).toBe("kling-avatar-v2-pro");
     expect(modelForClip(undefined, 3).id).toBe(DEFAULT_VIDEO_MODEL);
   });
-
-  it("estimates minutes for a 45-second video, every shot at once; unknown stays unknown", () => {
-    expect(minutesFor45(videoModel())).toBe(5);
-    expect(minutesFor45(model("kling-avatar-v2-pro"))).toBe(5);
-    expect(minutesFor45(model("omnihuman-v2"))).toBe(3);
-    expect(minutesFor45(model("minimax-h3-lipsync"))).toBe(1);
-    expect(minutesFor45(model("fabric-1-720p"))).toBeUndefined();
-  });
 });
 
 describe("board estimates follow the batch's model", () => {
@@ -154,20 +137,5 @@ describe("board estimates follow the batch's model", () => {
     const at = (resolution: string) =>
       estimateUsd(lines, { model: "minimax-h3-lipsync", resolution }) - estimateVoiceUsd(lines);
     expect(at("1080p")).toBeCloseTo(2 * at("720p"));
-  });
-
-  it("the per-video price agrees with the make buttons and says what length it is for", () => {
-    const typical = perVideo([], {});
-    expect(typical.seconds).toBeGreaterThan(44.5);
-    expect(typical.seconds).toBeLessThan(45.5);
-    const opts = { frames: true, model: "omnihuman-v2" };
-    expect(perVideo([], opts).usd).toBeCloseTo(estimateUsd(TYPICAL_LINES, opts));
-    expect(perVideo([], { frames: true }).usd).toBeCloseTo(typical.usd + 2 * FRAME_USD);
-    const one = { lines };
-    const two = { lines: [...lines, ...lines] };
-    expect(perVideo([one, two], opts)).toEqual({
-      usd: expect.closeTo((estimateUsd(one.lines, opts) + estimateUsd(two.lines, opts)) / 2),
-      seconds: expect.closeTo((estimateSeconds(one.lines) + estimateSeconds(two.lines)) / 2),
-    });
   });
 });

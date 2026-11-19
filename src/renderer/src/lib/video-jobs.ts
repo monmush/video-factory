@@ -1,6 +1,7 @@
 import type { StepAverages, VideoJob } from "@shared/video-job";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
+import { errorMessage } from "./errors";
 
 // Video jobs as last pushed by the main process ("video:job"). Jobs run in
 // the main process; this is only a view of them, so leaving the screen
@@ -9,6 +10,7 @@ import { api } from "./api";
 type SessionJobs = { jobs: Map<string, VideoJob>; averages: StepAverages };
 const sessions = new Map<string, SessionJobs>();
 const loading = new Set<string>();
+const failures = new Map<string, string>();
 const pending = new Map<string, Map<string, VideoJob>>();
 const listeners = new Set<() => void>();
 const emit = () => {
@@ -53,6 +55,7 @@ api.on("video:job-removed", ({ sessionId, scriptId }) => {
 function load(sessionId: string) {
   if (sessions.has(sessionId) || loading.has(sessionId)) return;
   loading.add(sessionId);
+  if (failures.delete(sessionId)) emit();
   api
     .invoke("video:jobs", sessionId)
     .then(({ jobs, averages }) => {
@@ -62,9 +65,17 @@ function load(sessionId: string) {
       sessions.set(sessionId, { jobs: map, averages });
       emit();
     })
-    .catch(console.error)
+    .catch((error) => {
+      failures.set(sessionId, errorMessage(error));
+      emit();
+    })
     .finally(() => loading.delete(sessionId));
 }
+
+export const reloadVideoJobs = (sessionId: string) => load(sessionId);
+
+export const useVideoJobsError = (sessionId: string) =>
+  useSyncExternalStore(subscribe, () => failures.get(sessionId) ?? null);
 
 /** The session's video jobs by script id; null until loaded. */
 export function useVideoJobs(sessionId: string): SessionJobs | null {

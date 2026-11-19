@@ -11,10 +11,12 @@ import { GripVertical, ImagePlus, LoaderCircle, Plus, Sparkles, X } from "lucide
 import { type DragEvent, type ReactNode, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/errors";
+import { usePaidTextAi } from "@/lib/text-ai";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { Button } from "./ui/button";
 import { Dialog, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "./ui/dialog";
+import { HoldButton } from "./ui/hold-button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 
@@ -123,6 +125,7 @@ function ImportBoard({
   const [dragKind, setDragKind] = useState<"photo" | "group" | null>(null);
 
   const busy = grouping || saving;
+  const paidText = usePaidTextAi();
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const dirty = photos.size > 0;
   useEffect(
@@ -617,10 +620,17 @@ function ImportBoard({
               >
                 Tự xếp nhóm
               </Button>
-              <Button disabled={photos.size === 0 || busy || adding} onClick={autoGroup}>
-                {grouping ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                {grouping ? "Đang xếp nhóm…" : "Xếp nhóm tự động"}
-              </Button>
+              {paidText ? (
+                <HoldButton disabled={photos.size === 0 || busy || adding} onHold={autoGroup}>
+                  {grouping ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                  {grouping ? "Đang xếp nhóm…" : "Giữ để xếp nhóm tự động"}
+                </HoldButton>
+              ) : (
+                <Button disabled={photos.size === 0 || busy || adding} onClick={autoGroup}>
+                  {grouping ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                  {grouping ? "Đang xếp nhóm…" : "Xếp nhóm tự động"}
+                </Button>
+              )}
             </>
           ) : (
             <>

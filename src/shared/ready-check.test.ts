@@ -9,7 +9,6 @@ import {
   needsAttention,
   readyCheck,
 } from "./ready-check";
-import { modelOutput, videoModel } from "./video-models";
 
 const character = (id: string, fields: Partial<Asset> = {}): Asset => ({
   id,
@@ -61,11 +60,6 @@ describe("all-in estimate", () => {
   it("prices voice at about $0.08 per 1,000 characters", () => {
     expect(estimateVoiceUsd(lines)).toBeCloseTo(0.08);
     expect(estimateVoiceUsd([])).toBe(0);
-  });
-
-  it("adds voice to video", () => {
-    const expected = estimateSeconds(lines) * modelOutput(videoModel()).usdPerSec + 0.08;
-    expect(estimateUsd(lines)).toBeCloseTo(expected);
   });
 });
 

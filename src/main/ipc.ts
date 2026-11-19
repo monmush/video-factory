@@ -11,7 +11,7 @@ import * as chat from "./chat/runtime";
 import { claudeCodeStatus, findClaude } from "./claude-code";
 import { describeAsset } from "./describe";
 import { IMAGE_EXTENSIONS, imageRefPath, stageImages } from "./media";
-import { dataDir, dataFile } from "./paths";
+import { dataDir } from "./paths";
 import {
   checkPlace,
   checkPlaceImages,
@@ -23,6 +23,7 @@ import * as products from "./product-change";
 import { cutOutProductPhoto } from "./product-cutout";
 import { groupProducts } from "./product-grouping";
 import { clearKey, providersInfo, setKey } from "./providers";
+import { childPath } from "./safe-path";
 import { readSettings, writeSettings } from "./settings";
 import {
   approveSession,
@@ -58,6 +59,7 @@ export function registerIpc() {
     return null;
   });
   handle("theme:set", async (preference) => {
+    if (!["system", "light", "dark"].includes(preference)) throw new Error("Unknown theme");
     nativeTheme.themeSource = preference;
     await writeSettings({ theme: preference });
     return null;
@@ -277,9 +279,6 @@ export function registerIpc() {
   handle("video:restore", ({ sessionId, scriptId, take }) =>
     video.restore(sessionId, scriptId, take),
   );
-  handle("video:set-model", ({ sessionId, scriptId, model }) =>
-    video.setModel(sessionId, scriptId, model),
-  );
   handle("video:take", ({ sessionId, scriptId, action, model }) =>
     video.take(sessionId, scriptId, action, model),
   );
@@ -296,15 +295,14 @@ export function registerIpc() {
     claudeCode: await claudeCodeStatus(),
   });
   handle("ai:status", aiStatus);
-  // Anthropic's own install and sign-in, run visibly in the user's Terminal.
-  // The app never sees the credentials.
   handle("ai:open-terminal", async (action) => {
+    if (action !== "install" && action !== "login") throw new Error("Unknown action");
     const claude = (await findClaude()) ?? "claude";
     const command =
       action === "install"
         ? "curl -fsSL https://claude.ai/install.sh | bash"
         : `'${claude.replace(/'/g, "'\\''")}' auth login`;
-    const script = dataFile(`claude-${action}.command`);
+    const script = childPath(dataDir(), `claude-${action}.command`);
     await writeFile(script, `#!/bin/zsh -l\n${command}\n`, "utf8");
     await chmod(script, 0o755);
     const error = await shell.openPath(script);

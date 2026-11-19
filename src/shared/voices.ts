@@ -116,9 +116,9 @@ export const VOICES: readonly Voice[] = [
 ];
 
 /** Approved by ear for the pilot's young woman and elderly man. */
-export const DEFAULT_VOICE: Record<VoiceGender, VoiceId> = { female: "mai", male: "tuan-anh" };
+const DEFAULT_VOICE: Record<VoiceGender, VoiceId> = { female: "mai", male: "tuan-anh" };
 /** Used when nothing tells us the character's gender. */
-export const FALLBACK_VOICE: VoiceId = "mai";
+const FALLBACK_VOICE: VoiceId = "mai";
 
 export const ACCENTS: { id: VoiceAccent; label: string }[] = [
   { id: "north", label: "Bắc" },

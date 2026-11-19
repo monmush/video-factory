@@ -1,6 +1,6 @@
 import type { Series, Session } from "./ipc";
 import { type MediaLevelId, mediaLevel } from "./media-level";
-import { fitResolution, legacyModel, videoModel } from "./video-models";
+import { legacyModel } from "./video-models";
 
 // Output settings of a batch (a session). Each is optional on the session;
 // missing means the series' value, else the default. A job resolves them
@@ -18,7 +18,7 @@ export const RESOLUTIONS = {
 
 export type OutputResolution = keyof typeof RESOLUTIONS;
 
-export const DEFAULT_RESOLUTION: OutputResolution = "720p";
+const DEFAULT_RESOLUTION: OutputResolution = "720p";
 
 const isResolution = (r: unknown): r is OutputResolution =>
   typeof r === "string" && r in RESOLUTIONS;
@@ -30,33 +30,6 @@ export const outputResolution = (r?: string | null): OutputResolution =>
 /** Width and height of a job's final video and every clip in it. */
 export const outputSize = (r?: string | null): { width: number; height: number } =>
   RESOLUTIONS[outputResolution(r)];
-
-/** The resolved speaking-shot model id, and whether it comes from the series (or the default). */
-export function batchVideoModel(
-  session: Pick<Session, "settings"> | undefined,
-  series: Pick<Series, "videoModel"> | undefined,
-): { id: string; inherited: boolean } {
-  const own = session?.settings?.videoModel;
-  if (own) return { id: videoModel(own).id, inherited: false };
-  return { id: videoModel(series?.videoModel).id, inherited: true };
-}
-
-/**
- * The resolved output resolution, and whether it comes from the series (or the
- * default). With a model that cannot make 1080p it is 720p whatever is saved:
- * the saved choice is kept and applies again with a model that can.
- */
-export function batchResolution(
-  session: Pick<Session, "settings"> | undefined,
-  series: Pick<Series, "resolution"> | undefined,
-  modelId?: string | null,
-): { id: OutputResolution; inherited: boolean } {
-  const own = session?.settings?.resolution;
-  const picked = isResolution(own)
-    ? { id: own, inherited: false }
-    : { id: outputResolution(series?.resolution), inherited: true };
-  return modelId === undefined ? picked : { ...picked, id: fitResolution(modelId, picked.id) };
-}
 
 /** Experiment branch: the resolved Media level, and whether it comes from the series (or the default). */
 export function batchMediaLevel(

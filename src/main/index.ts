@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { app, BrowserWindow, nativeTheme, shell } from "electron";
 import { closeAll as closeChats } from "./chat/runtime";
+import { stopClaudeProcesses } from "./claude-code";
 import { registerIpc } from "./ipc";
 import { clearStaging, handleMediaProtocol, registerMediaScheme } from "./media";
 import { readSettings } from "./settings";
@@ -103,6 +104,7 @@ app.whenReady().then(() => {
 // Stop the users' Claude processes with the app.
 app.on("before-quit", () => {
   closeChats();
+  stopClaudeProcesses();
   stopRunner();
 });
 

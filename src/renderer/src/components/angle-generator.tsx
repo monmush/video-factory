@@ -1,7 +1,7 @@
 import { formatCost } from "@shared/credits";
+import { DEFAULT_IMAGE_MODEL } from "@shared/image-models";
 import {
   type AngleId,
-  type AngleModel,
   CORE_ANGLES,
   type CoreAngle,
   type GenerateAnglesResult,
@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
+import { ButtonPrice, HoldButton } from "./ui/hold-button";
 
 export const ANGLE_LABELS: Record<AngleId, string> = {
   closeup: "Cận mặt",
@@ -27,11 +28,6 @@ const ANGLE_HINTS: Record<CoreAngle, string> = {
   "three-quarter": "Khuôn mặt và dáng khi quay nghiêng",
   "full-body": "Trang phục và tỉ lệ cơ thể cho cảnh rộng",
 };
-
-const MODELS: { id: AngleModel; label: string }[] = [
-  { id: "gpt-image", label: "GPT Image 2.6" },
-  { id: "nano-banana-pro", label: "Nano Banana Pro" },
-];
 
 /**
  * "Tạo thêm góc nhìn": completes the generic core character sheet. Angles the
@@ -57,8 +53,8 @@ export function AngleGenerator({
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<CoreAngle>>(new Set());
-  const [model, setModel] = useState<AngleModel>("gpt-image");
   const [estimate, setEstimate] = useState<number | null>(null);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
 
   const openPanel = () => {
     setSelected(new Set(CORE_ANGLES.filter((a) => !covered.has(a)).slice(0, maxNew)));
@@ -69,13 +65,15 @@ export function AngleGenerator({
     if (!open) return;
     let cancelled = false;
     setEstimate(null);
-    void api
-      .invoke("assets:estimate-angles", { model, count: selected.size })
-      .then((r) => !cancelled && setEstimate(r.cost));
+    setEstimateError(null);
+    api.invoke("assets:estimate-angles", { model: DEFAULT_IMAGE_MODEL, count: selected.size }).then(
+      (r) => !cancelled && setEstimate(r.cost),
+      (e) => !cancelled && setEstimateError(errorMessage(e)),
+    );
     return () => {
       cancelled = true;
     };
-  }, [open, model, selected.size]);
+  }, [open, selected.size]);
 
   const toggle = (angle: CoreAngle) =>
     setSelected((current) => {
@@ -92,7 +90,7 @@ export function AngleGenerator({
     try {
       onResult(
         await api.invoke("assets:generate-angles", {
-          model,
+          model: DEFAULT_IMAGE_MODEL,
           angles,
           description,
           images: references,
@@ -162,33 +160,19 @@ export function AngleGenerator({
       </div>
 
       <div className="flex items-center gap-3">
-        <fieldset className="inline-flex rounded-lg border p-0.5 text-xs">
-          <legend className="sr-only">Mô hình</legend>
-          {MODELS.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              aria-pressed={model === m.id}
-              onClick={() => setModel(m.id)}
-              className={cn(
-                "cursor-pointer rounded-md px-2.5 py-1 text-muted-foreground",
-                model === m.id && "bg-accent text-foreground",
-              )}
-            >
-              {m.label}
-            </button>
-          ))}
-        </fieldset>
-        <span className="flex-1 text-xs text-muted-foreground tabular-nums">
-          {selected.size > 0 && (estimate === null ? "…" : `~${formatCost(estimate)}`)}
-        </span>
+        <span className="flex-1 text-xs text-destructive-foreground">{estimateError}</span>
         <Button variant="ghost-muted" size="sm" onClick={() => setOpen(false)}>
           Hủy
         </Button>
-        {/* Neutral on purpose: the dialog's single primary action is saving. */}
-        <Button variant="outline" size="sm" disabled={selected.size === 0} onClick={generate}>
-          Tạo {selected.size} ảnh
-        </Button>
+        <HoldButton
+          tone="outline"
+          size="sm"
+          disabled={selected.size === 0 || estimate === null || disabled}
+          onHold={generate}
+        >
+          Giữ để tạo {selected.size} ảnh
+          {estimate !== null && <ButtonPrice>~{formatCost(estimate)}</ButtonPrice>}
+        </HoldButton>
       </div>
     </div>
   );

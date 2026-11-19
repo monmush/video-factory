@@ -23,7 +23,7 @@ export interface Cue {
 }
 
 /** Most words in one phrase. Phrases are balanced, so 6 words show as 3 + 3. */
-export const MAX_WORDS_PER_CUE = 5;
+const MAX_WORDS_PER_CUE = 5;
 /** Most characters in one phrase (two rows on screen). */
 const MAX_CHARS_PER_CUE = 30;
 /** A phrase longer than this goes on two rows. */
@@ -179,7 +179,7 @@ export function assTime(seconds: number): string {
 }
 
 /** Text safe for an ASS Dialogue line: no override blocks, no hard breaks. */
-export function assText(text: string): string {
+function assText(text: string): string {
   return text
     .replace(/\{[^}]*\}/g, "")
     .replace(/[{}]/g, "")

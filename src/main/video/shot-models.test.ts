@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { VIDEO_MODELS } from "../../shared/video-models";
-import { SHOT_ENDPOINTS, shotEndpoint } from "./shot-models";
+import { shotEndpoint } from "./shot-models";
 
 const REQ = {
   imageUrl: "https://x/i.png",
@@ -12,10 +12,6 @@ const input = (id: string, resolution: "720p" | "1080p" = "720p") =>
   shotEndpoint(id).input({ ...REQ, resolution });
 
 describe("speaking-shot requests", () => {
-  it("every registry model has a request builder", () => {
-    for (const m of VIDEO_MODELS) expect(SHOT_ENDPOINTS[m.id]).toBeDefined();
-  });
-
   it("only models marked as taking a prompt are sent one", () => {
     for (const m of VIDEO_MODELS) expect("prompt" in input(m.id)).toBe(m.takesPrompt);
   });

@@ -176,6 +176,21 @@ describe("rulesShotList", () => {
     expect(shotListErrors(list, CTX, NO_MOTION)).toEqual([]);
   });
 
+  it("sends a product shot without a place down the product route with no picture", () => {
+    const noPlace = { ...CTX, hasPlace: false };
+    const { list: read } = readShotList(answer(), CTX, NO_MOTION);
+    const plan = {
+      ...read.shots,
+      shots: read.shots.shots.map((s, i) =>
+        i === 1 ? { ...s, kind: "listener" as const, characterId: "b" } : s,
+      ),
+    };
+    const list = rulesShotList(noPlace, plan);
+    expect(list.routes[3]).toEqual({ route: "product", picture: null, motion: "" });
+    expect(list.pictures.some((p) => p.kind === "master")).toBe(false);
+    expect(shotListErrors(list, noPlace, NO_MOTION)).toEqual([]);
+  });
+
   it("keeps the problems of a refused plan", () => {
     expect(rulesShotList(CTX, rulesPlan(CTX, ["x"])).shots.problems).toEqual(["x"]);
   });

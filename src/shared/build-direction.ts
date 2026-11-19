@@ -111,6 +111,24 @@ const schemaOf = (role: RoleModel): ModelSchema => ({
   name: role.name,
 });
 
+function shareReferences(groups: Ref[][], budget: number): Ref[] {
+  const taken = groups.map(() => 0);
+  const rotation = [...groups.keys()].slice(1).concat(0);
+  let left = budget;
+  let grew = true;
+  while (left > 0 && grew) {
+    grew = false;
+    for (const i of rotation) {
+      if (left > 0 && (taken[i] ?? 0) < (groups[i]?.length ?? 0)) {
+        taken[i] = (taken[i] ?? 0) + 1;
+        left -= 1;
+        grew = true;
+      }
+    }
+  }
+  return groups.flatMap((g, i) => g.slice(0, taken[i]));
+}
+
 /** The live direction for a shot list and a recipe. Throws when a built request breaks its schema. */
 export function buildDirection(input: BuildInput): LiveDirection {
   const { list, recipe, cast } = input;
@@ -129,24 +147,26 @@ export function buildDirection(input: BuildInput): LiveDirection {
   const max = recipe.stills.maxReferences ?? DEFAULT_MAX_REFERENCES;
 
   const references = (p: Picture): Ref[] => {
-    let refs: Ref[];
-    if (p.kind === "master") {
-      refs = [
-        ...Array.from({ length: Math.min(MASTER_PLACE_PHOTOS, input.placePhotos) }, (_, i) => ({
-          placeholder: `place-${i + 1}`,
-          what: "the place",
-        })),
-        ...cast.flatMap((c) => photos(c.id, MASTER_PERSON_PHOTOS)),
-      ];
-    } else {
-      refs = [
-        ...(master ? [{ placeholder: `keyframe:${master.id}`, what: "the master scene" }] : []),
-        ...p.people.flatMap((id, i) =>
-          photos(id, i === 0 ? MAIN_PERSON_PHOTOS : OTHER_PERSON_PHOTOS),
-        ),
-      ];
+    const placeRefs = Array.from(
+      { length: Math.min(MASTER_PLACE_PHOTOS, input.placePhotos) },
+      (_, i) => ({ placeholder: `place-${i + 1}`, what: "the place" }),
+    );
+    const groups =
+      p.kind === "master"
+        ? [placeRefs, ...cast.map((c) => photos(c.id, MASTER_PERSON_PHOTOS))]
+        : [
+            master ? [{ placeholder: `keyframe:${master.id}`, what: "the master scene" }] : [],
+            ...p.people.map((id, i) =>
+              photos(id, i === 0 ? MAIN_PERSON_PHOTOS : OTHER_PERSON_PHOTOS),
+            ),
+          ];
+    const filled = groups.filter((g) => g.length > 0);
+    if (filled.length > max) {
+      throw new Error(
+        `Picture "${p.id}" needs at least ${filled.length} reference images (one for each person and its scene), but the image model takes ${max}.`,
+      );
     }
-    return refs.slice(0, max);
+    return shareReferences(groups, max);
   };
 
   // Pictures a speaking shot starts from: their people keep the mouth closed.

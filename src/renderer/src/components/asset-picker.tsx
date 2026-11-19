@@ -15,8 +15,6 @@ const LABEL: Record<AssetKind, { title: string }> = {
   environment: { title: "Bối cảnh" },
 };
 
-export const assetLabel = (kind: AssetKind) => LABEL[kind].title;
-
 /**
  * Each kind keeps its own thumbnail shape wherever assets appear together, so
  * they read apart at a glance: round faces, square products, wide places.

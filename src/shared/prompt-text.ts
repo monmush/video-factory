@@ -20,8 +20,8 @@ export function withNoCaptions(input: Record<string, unknown>): Record<string, u
   if (!key || typeof text !== "string" || text.includes(NO_CAPTIONS)) return input;
   return { ...input, [key]: `${text.trim()} ${NO_CAPTIONS}`.trim() };
 }
-export const SHOT_PROMPT = `The person speaks naturally with subtle head movement and natural expression. Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described. ${NO_CAPTIONS}`;
-export const LISTEN_PROMPT = `The person listens silently with the mouth closed, reacting only with the eyes, brows and a slight head movement. Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described. ${NO_CAPTIONS}`;
+const SHOT_PROMPT = `The person speaks naturally with subtle head movement and natural expression. Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described. ${NO_CAPTIONS}`;
+const LISTEN_PROMPT = `The person listens silently with the mouth closed, reacting only with the eyes, brows and a slight head movement. Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described. ${NO_CAPTIONS}`;
 
 /** The place behind the person: the same, but not frozen. */
 export const background = (ambient?: string) =>

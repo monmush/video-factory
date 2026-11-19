@@ -74,6 +74,18 @@ export function isNetworkError(error: unknown): boolean {
   return false;
 }
 
+export const MAX_BUSY_ANSWERS = 5;
+
+export function providerBusy(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current && typeof current === "object"; depth++) {
+    const e = current as ErrorLike;
+    if (typeof e.status === "number") return TRANSIENT_STATUS.has(e.status);
+    current = e.cause;
+  }
+  return false;
+}
+
 /** Shown on the card while a job waits for the connection. */
 export const OFFLINE_MESSAGE = "Mất kết nối, sẽ thử lại";
 

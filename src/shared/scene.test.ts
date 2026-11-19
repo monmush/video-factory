@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { plannedShotSec } from "./live-plan";
-import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "./scene";
+import { sceneBrief, sceneFraming, sceneSeconds, spokenParts } from "./scene";
 
 const KEYFRAMES = [
   { id: "ots", framing: "Over-the-shoulder medium close-up of Ba, from behind An's shoulder" },
@@ -26,12 +26,6 @@ describe("scene framing", () => {
     expect(sceneFraming({ kind: "wide", framing: null, productId: null })).toBe("Toàn cảnh");
     expect(sceneFraming({ kind: "detail", framing: null, productId: "p" })).toBe("Sản phẩm");
     expect(sceneFraming({ kind: "detail", framing: null, productId: null })).toBe("Cận chi tiết");
-  });
-
-  it("moves only on a motion route", () => {
-    expect(sceneMoves({ route: "motion" })).toBe(true);
-    expect(sceneMoves({ route: "still-move" })).toBe(false);
-    expect(sceneMoves({})).toBe(false);
   });
 });
 

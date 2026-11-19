@@ -256,6 +256,8 @@ export async function updateAsset(id: string, input: AssetInput): Promise<Asset>
 
 export function deleteAsset(id: string): Promise<null> {
   return mutate(async (ws) => {
+    if (!ws.assets.some((a) => a.id === id)) throw new Error(`Asset not found: ${id}`);
+    const dir = assetDir(id);
     ws.assets = ws.assets.filter((a) => a.id !== id);
     for (const series of ws.series) {
       series.characterIds = series.characterIds.filter((c) => c !== id);
@@ -268,7 +270,7 @@ export function deleteAsset(id: string): Promise<null> {
         asset.contains = cleanContains(asset.contains.filter((c) => c !== id));
       }
     }
-    await rm(assetDir(id), { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
     return null;
   });
 }

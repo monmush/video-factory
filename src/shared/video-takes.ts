@@ -1,4 +1,4 @@
-import { clearShot, cutOf, FixError, settled } from "./video-fix";
+import { canUseCut, clearShot, cutOf, FixError, settled, withCut } from "./video-fix";
 import {
   costToFinishUsd,
   cutCostUsd,
@@ -34,8 +34,6 @@ export function takeModels(job: VideoJob): string[] {
   return [...order, ...all.filter((m) => !order.includes(m))];
 }
 
-export const hasTakes = (job: VideoJob) => Boolean(job.takes?.length);
-
 /** Another take can be worked on: nothing is with the provider and nothing is running. */
 export const canSwitch = (job: VideoJob) =>
   settled(job) && job.status !== "running" && job.status !== "waiting";
@@ -53,10 +51,9 @@ const park = (job: VideoJob): JobTake => ({
 export function viewTake(job: VideoJob, model: string): VideoJob {
   if (model === workingModel(job)) return job;
   const take = job.takes?.find((t) => t.model === model);
-  if (!take) return job;
+  if (!take || !canUseCut(job, take.cut)) return job;
   return {
-    ...job,
-    ...take.cut,
+    ...withCut(job, take.cut),
     model: take.model,
     resolution: take.resolution,
     status: take.status,
@@ -86,7 +83,7 @@ const cutShots = (cut: Pick<JobCut, "shots">) =>
  * shared part the voice and stills in every cut; trusted only when that adds
  * up to the total (a fix's replaced parts would be missing), else unknown.
  */
-export function ledgerOf(job: VideoJob): TakeLedger {
+function ledgerOf(job: VideoJob): TakeLedger {
   if (job.takeLedger) return job.takeLedger;
   const total = spentUsd(job);
   const working = workingModel(job);
@@ -137,8 +134,7 @@ function swapIn(
 ): VideoJob {
   const total = spentUsd(job);
   const swapped: VideoJob = {
-    ...job,
-    ...next.cut,
+    ...withCut(job, next.cut),
     model: next.model,
     resolution: next.resolution,
     status: next.status,
@@ -181,6 +177,7 @@ export function startTake(job: VideoJob, model: string, now: string): VideoJob {
   const id = videoModel(model).id;
   if (takeModels(job).includes(id)) throw new FixError("Video đã có bản này");
   if (!job.final || job.status !== "done") throw new FixError("Video chưa xong");
+  if (job.live) throw new FixError("Video dựng theo kế hoạch cảnh không làm bản với mẫu khác");
   if (!canSwitch(job)) throw new FixError("Đợi video đang tạo xong rồi thử lại");
   const resolution = fitResolution(id, job.resolution ?? "720p");
   const sameSize = resolution === (job.resolution ?? "720p");

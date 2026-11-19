@@ -11,10 +11,16 @@ import {
 } from "../../shared/direction";
 import type { Asset, Script } from "../../shared/ipc";
 import { mediaLevel } from "../../shared/media-level";
-import { isNetworkError } from "../../shared/net-error";
+import { isNetworkError, providerBusy } from "../../shared/net-error";
 import { followProduct } from "../../shared/product-follow";
 import { cutoutsToMake } from "../../shared/product-shot";
 import { assertCommitted, committedIds, NOT_COMMITTED } from "../../shared/ready-check";
+import {
+  downloadFailedMessage,
+  requestOverdue,
+  timedOutMessage,
+  unreadableResultMessage,
+} from "../../shared/request-deadline";
 import { reconcileJob, withSending } from "../../shared/request-reconcile";
 import {
   castOf,
@@ -35,6 +41,7 @@ import {
 } from "../../shared/video-fix";
 import {
   actionKey,
+  addUsd,
   applyLivePlan,
   applyPlan,
   backOnline,
@@ -55,7 +62,6 @@ import {
   nextAverage,
   pickNext,
   plannedFrame,
-  repairNetworkFailure,
   resumeJob,
   resumesOnStart,
   retryNetworkNow,
@@ -75,13 +81,14 @@ import {
   wentOffline,
   withShotAudio,
 } from "../../shared/video-job";
-import { DEFAULT_VIDEO_MODEL, fitResolution, videoModel } from "../../shared/video-models";
+import { DEFAULT_VIDEO_MODEL, fitResolution } from "../../shared/video-models";
 import { chooseTake, chosenView, deleteTake, focusTake, startTake } from "../../shared/video-takes";
 import { getBoard, onBoardChanged } from "../board";
 import { assetDir } from "../media";
 import { dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
 import { getWorkspace } from "../store";
+import { textAiIsOwn } from "../text-ai";
 import { openFalRequests } from "../usage";
 import { checkStill } from "./checks";
 import { directJob } from "./director";
@@ -100,8 +107,10 @@ import {
   stillClip,
 } from "./ffmpeg";
 import { lookPath, lookStill, readLook, saveLook } from "./look";
-import { productClip, productCutout, productStillOn } from "./product-shot";
+import { CutoutStopped, productClip, productCutout, productStillOn } from "./product-shot";
 import {
+  cancelFrame,
+  cancelShot,
   coverFrame,
   download,
   type FrameInputs,
@@ -111,6 +120,7 @@ import {
   pollLiveFrame,
   pollLiveShot,
   pollShot,
+  type StepPoll,
   submitFrame,
   submitLiveFrame,
   submitLiveShot,
@@ -190,23 +200,25 @@ async function update(key: string, change: (job: VideoJob) => VideoJob): Promise
   if (!current) return null; // Session deleted meanwhile.
   const next = settle({ ...change(current), updatedAt: nowIso() });
   jobs.set(key, next);
-  const previous = writes.get(key) ?? Promise.resolve();
-  const write = previous
-    .catch(() => undefined)
-    .then(() =>
-      jobs.has(key) ? writeJsonAtomic(join(jobDir(next), JOB_FILE), jobs.get(key)) : null,
-    );
-  writes.set(key, write);
-  await write;
+  await save(key, next);
   emit(next);
   schedule();
   return next;
 }
 
+function save(key: string, job: VideoJob): Promise<unknown> {
+  const write = (writes.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() =>
+      jobs.has(key) ? writeJsonAtomic(join(jobDir(job), JOB_FILE), jobs.get(key)) : null,
+    );
+  writes.set(key, write);
+  return write;
+}
+
 async function loadAll(): Promise<void> {
   await loadAverages();
   const ws = await getWorkspace();
-  const repair = repairOf(ws.assets);
   // Paid requests fal accepted whose ids never reached job.json (closed mid-send).
   const open = await openFalRequests();
   for (const session of ws.sessions) {
@@ -223,8 +235,7 @@ async function loadAll(): Promise<void> {
         continue; // Not a job folder.
       }
       try {
-        // A job that failed only because the connection was gone continues from where it was.
-        let job = repair(migrateJob(JSON.parse(raw)));
+        let job = migrateJob(JSON.parse(raw));
         // A plan interrupted by a restart is made again when asked.
         delete job.planning;
         delete job.planningSteps;
@@ -243,13 +254,6 @@ async function loadAll(): Promise<void> {
     }
   }
 }
-
-/** Undoes failures and fallbacks that were only network trouble (src/shared/video-job.ts). */
-const repairOf = (all: readonly Asset[]) => (job: VideoJob) =>
-  repairNetworkFailure(job, (id) => {
-    const product = all.find((a) => a.id === id);
-    return product ? cutoutsToMake(product) : 0;
-  });
 
 function ensureLoaded() {
   loaded ??= loadAll();
@@ -323,6 +327,7 @@ function scheduleAutoPlan(sessionId: string) {
  * dựng" stays as the way to try again after a failure.
  */
 async function autoPlan(sessionId: string) {
+  if (!textAiIsOwn()) return;
   await ensureLoaded();
   const board = await getBoard(sessionId);
   for (const script of board.scripts) {
@@ -357,6 +362,7 @@ async function createJob(
   status?: "idle",
   /** The operator's direction, kept when the job is made again. */
   direction?: DirectionEntry[],
+  replaces: (current: VideoJob | undefined) => boolean = (current) => !current,
 ): Promise<VideoJob> {
   const ws = await getWorkspace();
   const session = ws.sessions.find((s) => s.id === sessionId);
@@ -401,17 +407,33 @@ async function createJob(
   // The pause ends for good once a video of the series has been kept (downloaded).
   if (test && !(await readLook(job.seriesId))) job.pause = true;
   await mkdir(jobDir(job), { recursive: true });
-  await writeJsonAtomic(join(jobDir(job), JOB_FILE), job);
-  jobs.set(jobKey(job), job);
+  const key = jobKey(job);
+  if (!replaces(jobs.get(key))) throw new JobInUse();
+  jobs.set(key, job);
+  await save(key, job);
   emit(job);
   return job;
 }
+
+class JobInUse extends Error {
+  constructor() {
+    super("Video đã bắt đầu tạo");
+  }
+}
+
+const freeToReplace = (current: VideoJob | undefined) => !current || unstarted(current);
+
+const ignoreInUse = (error: unknown) => {
+  if (!(error instanceof JobInUse)) throw error;
+};
 
 /** Jobs for newly committed scripts; scripts that already have one are left alone. */
 export async function enqueue(sessionId: string, scriptIds: string[]): Promise<void> {
   await ensureLoaded();
   const fresh = scriptIds.filter((id) => !jobs.has(keyOf(sessionId, id)));
-  for (const scriptId of fresh) await createJob(sessionId, scriptId, fresh.length === 1);
+  for (const scriptId of fresh) {
+    await createJob(sessionId, scriptId, fresh.length === 1).catch(ignoreInUse);
+  }
   schedule();
 }
 
@@ -427,9 +449,8 @@ export async function start(sessionId: string, scriptId: string): Promise<null> 
     await update(key, (job) => retryNetworkNow(job, Date.now()));
     return null;
   }
-  if (!current) await createJob(sessionId, scriptId, true);
-  const repair = repairOf(await assets());
-  await update(key, (job) => resumeJob(repair(job), nowIso()));
+  if (!current) await createJob(sessionId, scriptId, true).catch(ignoreInUse);
+  await update(key, (job) => resumeJob(job, nowIso()));
   return null;
 }
 
@@ -442,12 +463,13 @@ export async function planOnly(sessionId: string, scriptId: string): Promise<nul
   await ensureLoaded();
   const key = keyOf(sessionId, scriptId);
   const had = jobs.get(key);
-  // No job yet, or staging failed with nothing made: (re)made idle, wishes kept.
-  if (!had || (had.status === "failed" && !had.plan && !had.dialogue && spentUsd(had) === 0)) {
-    await createJob(sessionId, scriptId, true, "idle", had?.direction);
+  if (!had || failedUnpaid(had)) {
+    await createJob(sessionId, scriptId, true, "idle", had?.direction, (current) =>
+      Boolean(!current || failedUnpaid(current)),
+    ).catch(ignoreInUse);
   }
-  const job = jobs.get(key) as VideoJob;
-  if (job.plan || job.planning || job.status !== "idle") return null;
+  const job = jobs.get(key);
+  if (!job || job.plan || job.planning || job.status !== "idle") return null;
   const planning = await update(key, (j) => ({ ...j, planning: true }));
   if (!planning) return null;
   try {
@@ -463,11 +485,15 @@ export async function planOnly(sessionId: string, scriptId: string): Promise<nul
   return null;
 }
 
+const failedUnpaid = (job: VideoJob) =>
+  job.status === "failed" && !job.plan && !job.dialogue && spentUsd(job) === 0;
+
 /**
  * Plans newly committed scripts that have none yet, in the background (free:
  * the user's own AI; the text AI's own limit caps how many at once).
  */
 export function planCommitted(sessionId: string, scriptIds: string[]): void {
+  if (!textAiIsOwn()) return;
   for (const scriptId of scriptIds) {
     void planOnly(sessionId, scriptId).catch((error) =>
       console.warn("[video] planning after approval:", (error as Error).message),
@@ -491,7 +517,7 @@ export async function direct(
   if (current?.planning) throw new Error("Đang lên dàn dựng");
   if (current && !unstarted(current)) throw new Error("Video đã bắt đầu tạo");
   const direction = setDirection(current?.direction, change, nowIso());
-  await createJob(sessionId, scriptId, true, "idle", direction);
+  await createJob(sessionId, scriptId, true, "idle", direction, freeToReplace);
   void planOnly(sessionId, scriptId).catch((error) =>
     console.warn("[video] planning after a direction:", (error as Error).message),
   );
@@ -519,6 +545,7 @@ export async function dropPlan(sessionId: string, scriptId: string): Promise<nul
     true,
     "idle",
     anchoredDirection(job.direction, script?.lines ?? []),
+    freeToReplace,
   );
   autoTried.delete(keyOf(sessionId, scriptId));
   scheduleAutoPlan(sessionId);
@@ -536,7 +563,7 @@ async function committedOrThrow(sessionId: string, scriptId: string) {
 /** A job nothing was spent on goes, with its folder. */
 async function removeJob(key: string) {
   const job = jobs.get(key);
-  if (!job) return;
+  if (!job || !unstarted(job)) return;
   jobs.delete(key);
   await writes.get(key)?.catch(() => undefined);
   writes.delete(key);
@@ -625,8 +652,8 @@ async function followScriptNow(
     if (!otherLevel && !jobStale(job, script) && !job.plan) return;
     const direction = anchoredDirection(job.direction, script.lines);
     // A script that can no longer be planned (no spoken line left) has no video.
-    await createJob(job.sessionId, job.scriptId, true, "idle", direction).catch(() =>
-      removeJob(key),
+    await createJob(job.sessionId, job.scriptId, true, "idle", direction, freeToReplace).catch(
+      (error) => (error instanceof JobInUse ? undefined : removeJob(key)),
     );
   } catch (error) {
     console.warn("[video] could not follow the script:", (error as Error).message);
@@ -699,11 +726,10 @@ export async function runAll(sessionId: string): Promise<null> {
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
   const board = await getBoard(sessionId);
-  const repair = repairOf(ws.assets);
   for (const scriptId of committedIds(session, board.scripts)) {
     const key = keyOf(sessionId, scriptId);
-    if (!jobs.has(key)) await createJob(sessionId, scriptId);
-    await update(key, (job) => runThrough(repair(job), nowIso()));
+    if (!jobs.has(key)) await createJob(sessionId, scriptId).catch(ignoreInUse);
+    await update(key, (job) => runThrough(job, nowIso()));
   }
   return null;
 }
@@ -755,16 +781,6 @@ export async function restore(sessionId: string, scriptId: string, take?: string
   const run = (j: VideoJob) => restorePrevious(take ? focusTake(j, take, nowIso()) : j, nowIso());
   run(job);
   await update(keyOf(sessionId, scriptId), run);
-  return null;
-}
-
-/** This video's own model, before any shot is sent; it then no longer follows the batch. */
-export async function setModel(sessionId: string, scriptId: string, model: string): Promise<null> {
-  const job = await jobOf(sessionId, scriptId);
-  if (modelLocked(job)) throw new Error("Video đã quay; dùng Thử mô hình khác");
-  await update(keyOf(sessionId, scriptId), (j) =>
-    modelLocked(j) ? j : { ...j, ownModel: videoModel(model).id },
-  );
   return null;
 }
 
@@ -1147,6 +1163,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
   if (!frame) return;
   const patchFrame = patchFrameOf(key, frameId);
   const dir = jobDir(job);
+  const running = () => jobs.get(key)?.status === "running";
   try {
     await mkdir(dir, { recursive: true });
     const all = await assets();
@@ -1161,15 +1178,14 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
         let cutout = frame.cutout;
         if (!cutout) {
           // Never a reason to fail the video: without a cut-out the photo is used.
-          const made = await productCutout(product, dir).catch((error) => {
-            // No connection: try the cut-out again later, never settle for the photo.
-            if (isNetworkError(error)) throw error;
+          const made = await productCutout(product, dir, running).catch((error) => {
+            if (isNetworkError(error) || error instanceof CutoutStopped) throw error;
             console.warn("[video] product cut-out failed:", (error as Error).message);
             return null;
           });
           if (made) {
             cutout = made.file;
-            await patchFrame({ cutout, costUsd: (frame.costUsd ?? 0) + made.costUsd });
+            await patchFrame({ cutout, costUsd: addUsd(frame.costUsd, made.costUsd) });
           } else {
             await patchFrame({ noCutout: true });
           }
@@ -1213,7 +1229,11 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
     await sendMarked(key, job, frameId, inputs);
     await online(key);
   } catch (error) {
-    // No connection: not an attempt; the still is sent again once it is back.
+    if (error instanceof CutoutStopped) return;
+    if (providerBusy(error)) {
+      await update(key, (j) => stepThrew(j, { frame: frameId }, error, Date.now()));
+      return;
+    }
     if (isNetworkError(error)) {
       await offline(key, error);
       return;
@@ -1274,15 +1294,18 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
   const patchFrame = patchFrameOf(key, frameId);
   let url = frame.resultUrl;
   if (!url) {
-    // Always the endpoint the request went to.
-    // Network trouble: the saved request is asked again later, never sent again.
-    const result = await (frame.endpoint ? pollLiveFrame(job, frame) : pollFrame(job, frame)).catch(
-      async (error) => {
-        if (!(await offline(key, error))) console.warn("[video] poll-frame:", error);
-        return null;
-      },
-    );
-    if (!result) return;
+    if (requestOverdue("still", frame.submittedAt, Date.now())) {
+      await cancelFrame(frame);
+      await frameFailed(key, frameId, timedOutMessage("still"));
+      return;
+    }
+    let result: StepPoll;
+    try {
+      result = await (frame.endpoint ? pollLiveFrame(job, frame) : pollFrame(job, frame));
+    } catch (error) {
+      await pollThrew(key, { frame: frameId }, error);
+      return;
+    }
     await online(key);
     if (result.state === "pending") return;
     if (result.state === "failed") {
@@ -1290,43 +1313,42 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
       return;
     }
     url = result.url;
-    await patchFrame({ resultUrl: url, costUsd: (frame.costUsd ?? 0) + result.costUsd });
+    await patchFrame({ resultUrl: url, costUsd: addUsd(frame.costUsd, result.costUsd) });
     measured("frame", (Date.now() - Date.parse(frame.submittedAt ?? nowIso())) / 1000);
   }
-  // A product shot's result is its plate; the still is the cut-out composited on it.
   const plate =
     frame.kind === "product"
       ? revFile(job, `plate-${frame.id.replace(/[^a-z0-9-]+/gi, "-")}`, "png")
       : undefined;
   const file = frameFile(job, frame);
   const path = join(jobDir(job), plate ?? file);
+  let problem: string | null;
   try {
     await download(url, path, { framePath: await fixtureStill(job, frame) });
+    await online(key);
+    problem = job.plan ? await checkStill(frame, path, job.plan, job.sessionId) : null;
+    if (problem && !frame.redone && jobs.get(key)?.status === "running") {
+      await patchFrame({
+        redone: true,
+        check: problem,
+        requestId: undefined,
+        resultUrl: undefined,
+        submittedAt: undefined,
+      });
+      return;
+    }
+    if (plate) {
+      await productStillOn(
+        path,
+        join(jobDir(job), frame.cutout as string),
+        join(jobDir(job), file),
+        outputSize(job.resolution),
+      );
+    }
   } catch (error) {
-    // Paid and on record: only the download is tried again.
     if (await offline(key, error)) return;
-    throw error;
-  }
-  await online(key);
-  // Layer C: compare with the plan; one free-of-thought redo for cents.
-  const problem = job.plan ? await checkStill(frame, path, job.plan, job.sessionId) : null;
-  if (problem && !frame.redone && jobs.get(key)?.status === "running") {
-    await patchFrame({
-      redone: true,
-      check: problem,
-      requestId: undefined,
-      resultUrl: undefined,
-      submittedAt: undefined,
-    });
+    await frameFailed(key, frameId, resultFailure(error));
     return;
-  }
-  if (plate) {
-    await productStillOn(
-      path,
-      join(jobDir(job), frame.cutout as string),
-      join(jobDir(job), file),
-      outputSize(job.resolution),
-    );
   }
   await update(key, (j) => {
     const done = {
@@ -1345,6 +1367,18 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
     };
     return jobPhase(done) === "shots" ? { ...done, phaseStartedAt: nowIso() } : done;
   });
+}
+
+async function pollThrew(key: string, step: JobStep, error: unknown) {
+  if (await offline(key, error)) return;
+  console.warn("[video] poll:", error);
+  await update(key, (j) => stepReportedFailure(j, step, (error as Error).message || String(error)));
+}
+
+function resultFailure(error: unknown): string {
+  const status = (error as { status?: unknown }).status;
+  if (typeof status === "number") return downloadFailedMessage(status);
+  return unreadableResultMessage((error as Error).message || String(error));
 }
 
 /**
@@ -1478,7 +1512,7 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
   } catch (error) {
     // No connection: not an attempt; sent once it is back. Refused at
     // submission (nothing charged): counts as a failed attempt.
-    if (isNetworkError(error)) await offline(key, error);
+    if (isNetworkError(error) && !providerBusy(error)) await offline(key, error);
     else await update(key, (j) => stepThrew(j, { shot: index }, error, Date.now()));
   }
 }
@@ -1489,15 +1523,18 @@ async function runPollShot(key: string, job: VideoJob, index: number) {
   const dir = jobDir(job);
   let url = shot.resultUrl;
   if (!url) {
-    // Network trouble: try again on a later tick.
-    // Always the endpoint the request went to.
-    const result = await (shot.endpoint ? pollLiveShot(job, shot) : pollShot(job, shot)).catch(
-      async (error) => {
-        if (!(await offline(key, error))) console.warn("[video] poll-shot:", error);
-        return null;
-      },
-    );
-    if (!result) return;
+    if (requestOverdue("clip", shot.submittedAt, Date.now())) {
+      await cancelShot(job, shot);
+      await update(key, (j) => stepReportedFailure(j, { shot: index }, timedOutMessage("clip")));
+      return;
+    }
+    let result: StepPoll;
+    try {
+      result = await (shot.endpoint ? pollLiveShot(job, shot) : pollShot(job, shot));
+    } catch (error) {
+      await pollThrew(key, { shot: index }, error);
+      return;
+    }
     await online(key);
     if (result.state === "pending") return;
     if (result.state === "failed") {
@@ -1505,28 +1542,29 @@ async function runPollShot(key: string, job: VideoJob, index: number) {
       return;
     }
     url = result.url;
-    // Cost is on record from here; a failed download only retries the download.
+    const costUsd = result.costUsd;
     await update(key, (j) => ({
       ...j,
       shots: j.shots.map((s) =>
-        s.index === index ? { ...s, resultUrl: result.url, costUsd: result.costUsd } : s,
+        s.index === index ? { ...s, resultUrl: url, costUsd: addUsd(s.costUsd, costUsd) } : s,
       ),
     }));
     measured("shot", (Date.now() - Date.parse(shot.submittedAt ?? nowIso())) / 1000);
   }
   const clip = revFile(job, `shot-${String(index + 1).padStart(2, "0")}`, "mp4");
+  let clipSec: number;
   try {
     await download(url, join(dir, clip), {
       audioPath: shot.audio ? join(dir, shot.audio) : undefined,
       size: outputSize(job.resolution),
     });
+    await online(key);
+    clipSec = await probeSeconds(join(dir, clip));
   } catch (error) {
-    // Paid and on record: only the download is tried again.
     if (await offline(key, error)) return;
-    throw error;
+    await update(key, (j) => stepReportedFailure(j, { shot: index }, resultFailure(error)));
+    return;
   }
-  await online(key);
-  const clipSec = await probeSeconds(join(dir, clip));
   await update(key, (j) => {
     const done = {
       ...j,

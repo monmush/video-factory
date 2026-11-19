@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { app } from "electron";
+import { childPath } from "./safe-path";
 
 /**
  * Everything the app persists lives under one folder:
@@ -21,7 +22,9 @@ export function dataDir(): string {
 export const dataFile = (name: string) => join(dataDir(), name);
 
 export const mediaDir = (seriesId: string, sessionId?: string) =>
-  sessionId ? join(dataDir(), "media", seriesId, sessionId) : join(dataDir(), "media", seriesId);
+  sessionId
+    ? childPath(join(dataDir(), "media"), seriesId, sessionId)
+    : childPath(join(dataDir(), "media"), seriesId);
 
 /**
  * Write-then-rename so a crash mid-write never leaves a truncated JSON file:

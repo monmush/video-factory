@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { estimateSeconds, syllables } from "./board";
-import { cleanCues, endsWithCue, voiceText } from "./cues";
+import { cleanCues, voiceText } from "./cues";
 import { lineWords } from "./subtitles";
 
 describe("sounds without words", () => {
@@ -12,8 +12,6 @@ describe("sounds without words", () => {
     expect(cleanCues("Ông [cười] nói đùa thôi.")).toBe("Ông nói đùa thôi.");
     expect(cleanCues("Ông nói đùa thôi. [hát]")).toBe("Ông nói đùa thôi.");
     expect(cleanCues("[cười]")).toBe("");
-    expect(endsWithCue("Thôi. [thở dài]")).toBe(true);
-    expect(endsWithCue("Thôi.")).toBe(false);
   });
 
   it("is voiced as the voice model's own tag, never subtitled or counted as a word", () => {

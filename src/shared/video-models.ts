@@ -179,7 +179,7 @@ export const videoModel = (id?: string | null): VideoModel =>
   byId.get(legacyModel(id)?.id ?? id ?? "") ?? (byId.get(DEFAULT_VIDEO_MODEL) as VideoModel);
 
 /** The model can make 1080p clips; otherwise a 1080p video would only enlarge them. */
-export const makes1080p = (id?: string | null): boolean =>
+const makes1080p = (id?: string | null): boolean =>
   videoModel(id).outputs["1080p"].resolution === "1080p";
 
 /** The output size a video with this model is made at: 1080p only when the model makes it. */
@@ -207,10 +207,6 @@ export function clipUsd(model: VideoModel, seconds: number, output?: string | nu
   const factor = model.longClip && billed > model.longClip.overSec ? model.longClip.factor : 1;
   return billed * modelOutput(model, output).usdPerSec * factor;
 }
-
-/** The suggested model of each level. */
-export const levelPick = (level: VideoLevel): VideoModel =>
-  VIDEO_MODELS.find((m) => m.level === level && "pick" in m && m.pick) ?? videoModel();
 
 /** The picker's groups: each level with its models, the suggested one first. */
 export const modelGroups = (): { level: VideoLevel; label: string; models: VideoModel[] }[] =>

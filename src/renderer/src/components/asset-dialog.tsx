@@ -27,6 +27,7 @@ import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { api } from "@/lib/api";
 import { ASSET_KINDS } from "@/lib/asset-kinds";
 import { errorMessage } from "@/lib/errors";
+import { usePaidTextAi } from "@/lib/text-ai";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
 import { ANGLE_LABELS, AngleGenerator, PendingAngleTile } from "./angle-generator";
@@ -212,6 +213,8 @@ function CharacterForm({
   const [describeNote, setDescribeNote] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [saving, setSaving] = useState(false);
+  const createdId = useRef<string | null>(null);
+  const paidText = usePaidTextAi();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAngles, setPendingAngles] = useState<CoreAngle[]>([]);
@@ -451,7 +454,7 @@ function CharacterForm({
         result.source === "fixture"
           ? "Chế độ thử: ảnh mẫu là bản sao ảnh gốc, chưa gọi API."
           : result.cost !== null
-            ? `Đã dùng khoảng ${formatCost(result.cost)} trên fal.`
+            ? `Đã dùng khoảng ${formatCost(result.cost)}.`
             : null,
         failed ? `Không tạo được: ${failed}.` : null,
         result.images.length ? "Bỏ ảnh nào chưa đạt trước khi lưu." : null,
@@ -551,7 +554,7 @@ function CharacterForm({
           : result.source === "claude-code"
             ? "Viết bằng Claude trên máy này, tính vào gói Claude của bạn."
             : result.cost !== null
-              ? `Đã dùng ${formatCost(result.cost)} trên fal.`
+              ? `Đã dùng ${formatCost(result.cost)}.`
               : null,
       );
     } catch (e) {
@@ -574,10 +577,11 @@ function CharacterForm({
       voiceId: kind === "character" ? voiceId : undefined,
     };
     try {
-      if (character) await api.invoke("assets:update", character.id, input);
+      const id = character?.id ?? createdId.current;
+      if (id) await api.invoke("assets:update", id, input);
       else {
         const created = await api.invoke("assets:create", input);
-        await refreshWorkspace();
+        createdId.current = created.id;
         onCreated?.(created);
       }
       await refreshWorkspace();
@@ -987,22 +991,34 @@ function CharacterForm({
               placeholder={copy.descriptionPlaceholder}
             />
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={images.length === 0 || describing || adding || saving}
-                title={
-                  images.length === 0
-                    ? "Thêm ảnh để tạo mô tả"
-                    : adding
-                      ? "Đợi thêm ảnh xong"
-                      : undefined
-                }
-                onClick={describe}
-              >
-                {describing ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                {describing ? "Đang mô tả…" : "Tạo mô tả từ ảnh"}
-              </Button>
+              {paidText ? (
+                <HoldButton
+                  tone="outline"
+                  size="sm"
+                  disabled={images.length === 0 || describing || adding || saving}
+                  onHold={describe}
+                >
+                  {describing ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                  {describing ? "Đang mô tả…" : "Giữ để tạo mô tả từ ảnh"}
+                </HoldButton>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={images.length === 0 || describing || adding || saving}
+                  title={
+                    images.length === 0
+                      ? "Thêm ảnh để tạo mô tả"
+                      : adding
+                        ? "Đợi thêm ảnh xong"
+                        : undefined
+                  }
+                  onClick={describe}
+                >
+                  {describing ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                  {describing ? "Đang mô tả…" : "Tạo mô tả từ ảnh"}
+                </Button>
+              )}
               {previousDescription !== null && !describing && (
                 <Button
                   variant="ghost-muted"

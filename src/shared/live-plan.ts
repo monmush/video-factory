@@ -4,8 +4,7 @@ import type { MediaLevel, MediaLevelId } from "./media-level";
 import {
   type DirectorAnswer,
   estimatePartSec,
-  namedPackaging,
-  namedProduct,
+  namedInRequest,
   type PlanContext,
   readDirectorAnswer,
   type ShotPlan,
@@ -19,9 +18,9 @@ import {
 // recorded in the session (`ToolRecord`), never from the director's own sums.
 
 export type Route = "lip-sync" | "motion" | "still-move" | "product";
-export const ROUTES: Route[] = ["lip-sync", "motion", "still-move", "product"];
+const ROUTES: Route[] = ["lip-sync", "motion", "still-move", "product"];
 /** Routes that send a paid request. */
-export const PAID_ROUTES: Route[] = ["lip-sync", "motion"];
+const PAID_ROUTES: Route[] = ["lip-sync", "motion"];
 
 export type KeyframeKind = "master" | "character" | "action" | "plate";
 const KEYFRAME_KINDS: KeyframeKind[] = ["master", "character", "action", "plate"];
@@ -409,7 +408,7 @@ function textsIn(value: unknown): string[] {
 export const DURATION_FIELDS = ["duration", "duration_seconds", "seconds", "num_seconds"];
 
 /** The input's requested length in seconds, else the schema's default; undefined when it has none. */
-export function requestedSeconds(schema: ModelSchema, input: Input): number | undefined {
+function requestedSeconds(schema: ModelSchema, input: Input): number | undefined {
   for (const name of DURATION_FIELDS) {
     const param = schema.params.find((p) => p.name === name);
     if (!param) continue;
@@ -474,25 +473,10 @@ export function inputErrors(
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-/** Sentences that ask for something, not the ones that rule something out. */
-export const affirmed = (text: string) =>
-  text.split(/(?<=[.!?;])\s+/).filter((s) => !/\b(no|not|never|without|nor|avoid)\b/i.test(s));
 const norm = (s: unknown) =>
   String(s ?? "")
     .replace(/\s+/g, " ")
     .trim();
-
-/**
- * The product or packaging a request text asks for: a product's name
- * anywhere, packaging only where it is wanted ("no labels or packaging" is
- * what every request should say).
- */
-export const namedInRequest = (text: string, productNames: readonly string[]): string | null =>
-  namedProduct(text, productNames) ??
-  affirmed(text)
-    .map(namedPackaging)
-    .find((w): w is string => Boolean(w)) ??
-  null;
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -769,7 +753,7 @@ export function evidenceMinimumSec(evidence: string, endpoint: string): number |
 }
 
 /** The rate of one endpoint, from the record and the plan's verified billing rule. */
-export function rateOf(record: ToolRecord, endpoint: string, billing?: Billing): Rate {
+function rateOf(record: ToolRecord, endpoint: string, billing?: Billing): Rate {
   const recorded = record.prices[endpoint];
   const schema = record.schemas[endpoint];
   let usd = recorded?.usd ?? null;
@@ -860,7 +844,7 @@ export function fitDuration(
  * Seconds a lip-sync request is sent and billed: its audio, never under the
  * model's minimum (shorter audio is padded with silence and trimmed later).
  */
-export const lipSyncSeconds = (rate: Rate | undefined, audioSec: number) =>
+const lipSyncSeconds = (rate: Rate | undefined, audioSec: number) =>
   Math.max(MIN_AUDIO_SEC, audioSec, rate?.minSeconds ?? 0);
 
 /** One paid request's price and quantity. */
@@ -923,7 +907,7 @@ export const ROUTE_LABEL: Record<Route, string> = {
 };
 
 /** Rates and schemas of the endpoints a plan uses: all a job needs to price and send it. */
-export function planRates(
+function planRates(
   plan: LivePlan,
   record: ToolRecord,
 ): { rates: Record<string, Rate>; schemas: Record<string, ModelSchema> } {
@@ -1111,7 +1095,7 @@ export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[
  * The guide is the typical price of a video of this length, so a plan near it
  * is normal: only one clearly above it (a quarter more) is called out.
  */
-export const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
+const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
   table.knownUsd > table.budgetUsd * 1.25;
 
 /** Steps the table could not price. */

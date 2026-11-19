@@ -76,21 +76,6 @@ export async function probeSeconds(path: string): Promise<number> {
   return seconds;
 }
 
-export async function hasAudio(path: string): Promise<boolean> {
-  const out = await run(await find("ffprobe"), [
-    "-v",
-    "error",
-    "-select_streams",
-    "a",
-    "-show_entries",
-    "stream=index",
-    "-of",
-    "csv=p=0",
-    path,
-  ]);
-  return out.trim().length > 0;
-}
-
 /**
  * One line of the dialogue, re-encoded so the cut is sample-accurate, padded
  * with silence to at least `minSec`.
@@ -175,50 +160,6 @@ export async function loopAudio(source: string, seconds: number, out: string): P
 export const OUTPUT = { fps: 30, sampleRate: 44100 };
 
 export type Size = { width: number; height: number };
-
-/**
- * Same size, frame rate and audio format for every clip so they concatenate
- * cleanly. The clip's own audio is used; a clip without audio gets the line's.
- */
-export async function normaliseClip(
-  clip: string,
-  lineAudio: string | null,
-  out: string,
-  { width, height }: Size,
-): Promise<void> {
-  const { fps, sampleRate } = OUTPUT;
-  const audioFromClip = await hasAudio(clip);
-  const inputs = audioFromClip || !lineAudio ? ["-i", clip] : ["-i", clip, "-i", lineAudio];
-  const audioMap = audioFromClip ? "0:a" : lineAudio ? "1:a" : null;
-  await ffmpeg([
-    ...inputs,
-    ...(audioMap ? [] : ["-f", "lavfi", "-i", `anullsrc=r=${sampleRate}:cl=stereo`]),
-    "-map",
-    "0:v",
-    "-map",
-    audioMap ?? "1:a",
-    "-vf",
-    `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},setsar=1,format=yuv420p`,
-    "-af",
-    `aresample=${sampleRate},aformat=channel_layouts=stereo`,
-    "-shortest",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "19",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "160k",
-    "-ar",
-    String(sampleRate),
-    "-ac",
-    "2",
-    out,
-  ]);
-}
 
 // ---------------------------------------------------------------------------
 // Shot plans (docs/DIRECTING_RULES.md): stills moved locally, exact-length
@@ -590,61 +531,6 @@ export async function assembleOverDialogue(
       `aresample=${OUTPUT.sampleRate},aformat=channel_layouts=stereo`,
       "-t",
       totalSec.toFixed(3),
-      "-c:v",
-      "libx264",
-      "-preset",
-      "medium",
-      "-crf",
-      "19",
-      "-pix_fmt",
-      "yuv420p",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "160k",
-      "-movflags",
-      "+faststart",
-      "-progress",
-      "pipe:1",
-      "-nostats",
-      out,
-    ],
-    (chunk) => {
-      const match = /out_time_us=(\d+)/.exec(chunk);
-      if (match && totalSec > 0) onProgress(Math.min(1, Number(match[1]) / 1e6 / totalSec));
-    },
-  );
-}
-
-/**
- * Concatenates normalised clips and burns the subtitles in one encode.
- * `onProgress` gets 0–1 from FFmpeg's own progress output.
- */
-export async function assembleFinal(
-  clips: string[],
-  assFile: string,
-  listFile: string,
-  out: string,
-  totalSec: number,
-  onProgress: (share: number) => void,
-): Promise<void> {
-  await writeFile(
-    listFile,
-    clips.map((c) => `file '${c.replace(/'/g, "'\\''")}'`).join("\n"),
-    "utf8",
-  );
-  // The ass filter's path is filter syntax: escape the characters it treats specially.
-  const assPath = assFile.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
-  await ffmpeg(
-    [
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      listFile,
-      "-vf",
-      `ass='${assPath}'`,
       "-c:v",
       "libx264",
       "-preset",

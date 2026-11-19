@@ -1,4 +1,4 @@
-import { copyFile, writeFile } from "node:fs/promises";
+import { access, copyFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Asset } from "../../shared/ipc";
 import {
@@ -12,8 +12,9 @@ import {
   toneGains,
   usableCutout,
 } from "../../shared/product-shot";
+import { requestOverdue, timedOutMessage } from "../../shared/request-deadline";
 import { openCutout } from "../../shared/request-reconcile";
-import { falCall, falPoll, falSubmit } from "../fal";
+import { falCall, falCancel, falPoll, falSubmit } from "../fal";
 import { uploadImages } from "../fal-upload";
 import { assetDir } from "../media";
 import { falClient, providerMode } from "../providers";
@@ -38,27 +39,29 @@ const CUTOUT_PROMPT = "only the product package, without the hand holding it";
 
 const cutoutFile = (imageId: string) => `${imageId}.cutout.png`;
 
-/** One cut-out run per product at a time, so two shots never pay twice. */
 const running = new Map<string, Promise<CutoutResult | null>>();
+const cutting = new Map<string, Promise<{ usable: boolean; paid: boolean }>>();
+
+export class CutoutStopped extends Error {
+  constructor() {
+    super("Video đã dừng");
+  }
+}
 
 export interface CutoutResult {
-  /** The cut-out, copied into the job folder. */
   file: string;
-  /** Charged now (0 when it was kept from before). */
   costUsd: number;
 }
 
-/**
- * The product's usable cut-out in the job folder, made if missing: the
- * photos are tried in order, each cut out once ever and recorded on the
- * asset, until one shows the product alone. Null when none does. Fixture
- * mode simulates one in the job folder only (never recorded on the asset).
- */
-export function productCutout(product: Asset, dir: string): Promise<CutoutResult | null> {
+export function productCutout(
+  product: Asset,
+  dir: string,
+  alive: () => boolean,
+): Promise<CutoutResult | null> {
   const key = `${product.id}|${dir}`;
   const current = running.get(key);
   if (current) return current;
-  const task = makeCutout(product, dir).finally(() => running.delete(key));
+  const task = makeCutout(product, dir, alive).finally(() => running.delete(key));
   running.set(key, task);
   return task;
 }
@@ -91,21 +94,30 @@ export async function removeBackground(
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const CUTOUT_POLL_MS = 2000;
 
-/**
- * A video's cut-out of one photo, through fal's queue so it survives a
- * restart: the request is recorded in requests.jsonl (with the photo and its
- * file) the moment fal accepts it, and a later run finds a request that was
- * never read and polls it instead of paying again (src/shared/request-reconcile.ts).
- * Network trouble throws; the next try picks the same request up.
- */
+async function fetchTo(url: string | undefined, out: string): Promise<void> {
+  if (!url?.startsWith("https:")) throw new Error("Không nhận được ảnh tách nền");
+  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  if (!res.ok) {
+    throw Object.assign(new Error(`Không tải được ảnh tách nền (${res.status})`), {
+      status: res.status,
+    });
+  }
+  const part = `${out}.part`;
+  await writeFile(part, Buffer.from(await res.arrayBuffer()));
+  await rename(part, out);
+}
+
 async function queuedCutout(
   productId: string,
   photo: { id: string; file: string },
   source: string,
   out: string,
+  alive: () => boolean,
 ): Promise<void> {
   const client = await falClient();
-  let requestId = openCutout(await openFalRequests(), productId, photo.id, photo.file)?.requestId;
+  const open = openCutout(await openFalRequests(), productId, photo.id, photo.file);
+  let requestId = open?.requestId;
+  let sentAt = open?.at ?? new Date().toISOString();
   if (!requestId) {
     const [url] = await uploadImages(client, [source]);
     requestId = await falSubmit(
@@ -114,25 +126,55 @@ async function queuedCutout(
       { image_url: url, prompt: CUTOUT_PROMPT },
       { purpose: "product-cutout", productId, photoId: photo.id, photoFile: photo.file },
     );
+    sentAt = new Date().toISOString();
   }
   for (;;) {
+    if (!alive()) throw new CutoutStopped();
+    if (requestOverdue("cutout", sentAt, Date.now())) {
+      await falCancel(client, CUTOUT_ENDPOINT, requestId);
+      throw new Error(timedOutMessage("cutout"));
+    }
     const result = await falPoll<{ image?: { url?: string } }>(client, CUTOUT_ENDPOINT, requestId, {
       purpose: "product-cutout",
       productId,
       cost: () => CUTOUT_USD,
+      keep: (data) => fetchTo(data.image?.url, out),
     });
-    if (result.state === "pending") {
-      await wait(CUTOUT_POLL_MS);
-      continue;
-    }
+    if (result.state === "done") return;
     if (result.state === "failed") throw new Error(result.message);
-    const url = result.data.image?.url;
-    if (!url?.startsWith("https:")) throw new Error("Không nhận được ảnh tách nền");
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-    if (!res.ok) throw new Error(`Không tải được ảnh tách nền (${res.status})`);
-    await writeFile(out, Buffer.from(await res.arrayBuffer()));
-    return;
+    await wait(CUTOUT_POLL_MS);
   }
+}
+
+function photoCutout(
+  productId: string,
+  photo: { id: string; file: string },
+  alive: () => boolean,
+): Promise<{ usable: boolean; paid: boolean }> {
+  const key = `${productId}|${photo.id}`;
+  const current = cutting.get(key);
+  if (current) return current;
+  const task = (async () => {
+    const name = cutoutFile(photo.id);
+    const path = join(assetDir(productId), name);
+    const kept = await access(path).then(
+      () => true,
+      () => false,
+    );
+    if (!kept) {
+      await queuedCutout(productId, photo, join(assetDir(productId), photo.file), path, alive);
+    }
+    const usable = await isUsableCutout(path);
+    await mutate((ws) => {
+      const image = ws.assets
+        .find((a) => a.id === productId)
+        ?.images.find((i) => i.id === photo.id);
+      if (image) image.cutout = { file: name, usable };
+    });
+    return { usable, paid: !kept };
+  })().finally(() => cutting.delete(key));
+  cutting.set(key, task);
+  return task;
 }
 
 /** Whether a cut-out shows the product alone (src/shared/product-shot.ts, usableCutout). */
@@ -145,7 +187,11 @@ export async function isUsableCutout(path: string): Promise<boolean> {
   );
 }
 
-async function makeCutout(product: Asset, dir: string): Promise<CutoutResult | null> {
+async function makeCutout(
+  product: Asset,
+  dir: string,
+  alive: () => boolean,
+): Promise<CutoutResult | null> {
   const file = `cutout-${product.id}.png`;
   const photos = originals(product);
   if (!photos.length) return null;
@@ -161,23 +207,9 @@ async function makeCutout(product: Asset, dir: string): Promise<CutoutResult | n
     const saved = photo.cutout;
     if (saved && !saved.usable) continue;
     if (!saved) {
-      const name = cutoutFile(photo.id);
-      await queuedCutout(
-        product.id,
-        photo,
-        join(assetDir(product.id), photo.file),
-        join(assetDir(product.id), name),
-      );
-      spent += CUTOUT_USD;
-      const usable = await isUsableCutout(join(assetDir(product.id), name));
-      // Recorded on the photo, so no later video pays for it again.
-      await mutate((ws) => {
-        const image = ws.assets
-          .find((a) => a.id === product.id)
-          ?.images.find((i) => i.id === photo.id);
-        if (image) image.cutout = { file: name, usable };
-      });
-      if (!usable) continue;
+      const made = await photoCutout(product.id, photo, alive);
+      if (made.paid) spent += CUTOUT_USD;
+      if (!made.usable) continue;
     }
     await copyFile(
       join(assetDir(product.id), saved?.file ?? cutoutFile(photo.id)),

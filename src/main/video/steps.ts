@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, writeFile } from "node:fs/promises";
+import { access, copyFile, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { app } from "electron";
 import { outputResolution, outputSize } from "../../shared/batch-settings";
@@ -30,7 +30,7 @@ import {
 import { clipUsd, type VideoModel } from "../../shared/video-models";
 import { resolveVoice, takenVoiceIds } from "../../shared/voices";
 import { DEFAULT_IMAGE_MODEL, estimateAngles, MODELS } from "../angles";
-import { type Fal, falPoll, falSubmit } from "../fal";
+import { type Fal, falCancel, falPoll, falSubmit } from "../fal";
 import { uploadFile, uploadImages } from "../fal-upload";
 import { assetDir } from "../media";
 import { elevenLabsClient, falClient, providerMode } from "../providers";
@@ -108,6 +108,9 @@ export async function generateVoice(
     return { seconds: at + 0.3, spans, costUsd: chars * VOICE_USD_PER_CHAR, chars };
   }
 
+  const saved = await savedVoice(out, inputs);
+  if (saved) return finishVoice(out, saved, inputs.length);
+
   const client = await elevenLabsClient();
   const { data, rawResponse } = await client.textToDialogue
     .convertWithTimestamps(
@@ -123,41 +126,73 @@ export async function generateVoice(
     .withRawResponse();
   const bytes = Buffer.from(data.audioBase64, "base64");
   if (!bytes.length) throw new Error("Không nhận được giọng đọc");
-  // Billed characters as the provider reports them, else what was sent.
   const billed = Number(rawResponse.headers.get("x-character-count")) || chars;
-  const costUsd = billed * VOICE_USD_PER_CHAR;
+  const record: SavedVoice = {
+    inputs,
+    billed,
+    costUsd: billed * VOICE_USD_PER_CHAR,
+    voiceSegments: data.voiceSegments ?? [],
+    alignment: data.alignment,
+    normalizedAlignment: data.normalizedAlignment,
+  };
+  await writeFile(`${out}.part`, bytes);
+  await rename(`${out}.part`, out);
+  await writeFile(`${out}.timing.json.part`, JSON.stringify(record));
+  await rename(`${out}.timing.json.part`, `${out}.timing.json`);
   await logUsage({
     provider: "elevenlabs",
     purpose: "video-voice",
     model: VOICE_MODEL,
     requestId: rawResponse.headers.get("request-id") ?? undefined,
     characters: billed,
-    cost: costUsd,
+    cost: record.costUsd,
     costIsEstimate: true,
     sessionId: job.sessionId,
     scriptId: job.scriptId,
   });
-  await writeFile(out, bytes);
-  // Keep the provider's full timing (per character and per segment) beside the
-  // audio: animated word-by-word subtitles can be added later without paying
-  // for the voice again.
-  await writeFile(
-    `${out}.timing.json`,
-    JSON.stringify({
-      voiceSegments: data.voiceSegments,
-      alignment: data.alignment,
-      normalizedAlignment: data.normalizedAlignment,
-    }),
-  );
+  return finishVoice(out, record, inputs.length);
+}
+
+interface SavedVoice {
+  inputs: { text: string; voiceId: string }[];
+  billed: number;
+  costUsd: number;
+  voiceSegments: {
+    dialogueInputIndex: number;
+    characterStartIndex: number;
+    characterEndIndex: number;
+    startTimeSeconds: number;
+    endTimeSeconds: number;
+  }[];
+  alignment?: Alignment | null;
+  normalizedAlignment?: unknown;
+}
+
+async function savedVoice(out: string, inputs: SavedVoice["inputs"]): Promise<SavedVoice | null> {
+  try {
+    const saved = JSON.parse(await readFile(`${out}.timing.json`, "utf8")) as SavedVoice;
+    if (JSON.stringify(saved.inputs) !== JSON.stringify(inputs)) return null;
+    await access(out);
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+async function finishVoice(
+  out: string,
+  voice: SavedVoice,
+  lineCount: number,
+): Promise<VoiceResult> {
   const seconds = await probeSeconds(out);
-  const spans = lineSpans(data.voiceSegments ?? [], inputs.length);
+  const spans = lineSpans(voice.voiceSegments, lineCount);
   if (!spans) throw new Error("Giọng đọc thiếu mốc thời gian từng câu");
   return {
     seconds,
     spans,
-    costUsd,
-    chars: billed,
-    timing: timingOf(data.alignment, data.voiceSegments ?? [], inputs.length),
+    costUsd: voice.costUsd,
+    chars: voice.billed,
+    timing: timingOf(voice.alignment, voice.voiceSegments, lineCount),
   };
 }
 
@@ -385,7 +420,7 @@ export async function submitFrame(
 export type StepPoll =
   | { state: "pending" }
   | { state: "failed"; message: string }
-  | { state: "done"; url: string; costUsd: number; seconds?: number };
+  | { state: "done"; url: string; costUsd: number | null; seconds?: number };
 
 const FIXTURE_FRAME_MS = 3000;
 
@@ -515,6 +550,25 @@ export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> 
   return { state: "done", url, costUsd: clipUsd(model, seconds, job.resolution), seconds };
 }
 
+export async function cancelFrame(frame: JobFrame): Promise<void> {
+  if (isFixture() || !frame.requestId) return;
+  const endpoint = frame.endpoint ?? MODELS[DEFAULT_IMAGE_MODEL].endpoint;
+  await cancel(endpoint, frame.requestId);
+}
+
+async function cancel(endpoint: string, requestId: string) {
+  try {
+    await falCancel(await fal(), endpoint, requestId);
+  } catch (error) {
+    console.warn("[video] cancel:", (error as Error).message);
+  }
+}
+
+export async function cancelShot(job: VideoJob, shot: JobShot): Promise<void> {
+  if (isFixture() || !shot.requestId) return;
+  await cancel(shot.endpoint ?? shotModel(job, shot).endpoint, shot.requestId);
+}
+
 /** Fetches a finished result into the job folder (fixture results are made locally). */
 export async function download(
   url: string,
@@ -538,7 +592,9 @@ export async function download(
   const parsed = new URL(url);
   if (parsed.protocol !== "https:") throw new Error("Đường dẫn tải không hợp lệ");
   const res = await fetch(parsed, { signal: AbortSignal.timeout(180_000) });
-  if (!res.ok) throw new Error(`Không tải được (${res.status})`);
+  if (!res.ok) {
+    throw Object.assign(new Error(`Không tải được (${res.status})`), { status: res.status });
+  }
   await writeFile(out, Buffer.from(await res.arrayBuffer()));
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeconds, estimateUsd, levelEstimateUsd, perVideo, TYPICAL_LINES } from "./board";
+import { estimateSeconds, estimateUsd, levelEstimateUsd, TYPICAL_LINES } from "./board";
 import {
   DEFAULT_MEDIA_LEVEL,
   levelMediaUsd,
@@ -10,11 +10,6 @@ import {
 import { builtinRecipe } from "./recipe";
 
 describe("mediaLevel", () => {
-  it("offers Nhanh and Cân bằng only", () => {
-    expect(OFFERED_LEVELS.map((l) => l.id)).toEqual(["fast", "balanced"]);
-    expect(OFFERED_LEVELS.map((l) => l.label)).toEqual(["Nhanh", "Cân bằng"]);
-  });
-
   it("reads a level no longer offered as the one that makes the same video", () => {
     expect(mediaLevel("fastest").id).toBe("fast");
     expect(mediaLevel("detailed").id).toBe("balanced");
@@ -68,9 +63,9 @@ describe("levelEstimateUsd", () => {
   it("is what the batch button shows for a typical script, and follows the level", () => {
     const opts = (level: string) => ({ frames: true, level });
     for (const level of OFFERED_LEVELS) {
-      const typical = perVideo([], opts(level.id));
-      expect(typical.usd).toBeCloseTo(estimateUsd(TYPICAL_LINES, opts(level.id)));
-      expect(typical.usd).toBeCloseTo(levelEstimateUsd(level, estimateSeconds(TYPICAL_LINES)));
+      expect(estimateUsd(TYPICAL_LINES, opts(level.id))).toBeCloseTo(
+        levelEstimateUsd(level, estimateSeconds(TYPICAL_LINES)),
+      );
     }
     expect(estimateUsd(TYPICAL_LINES, opts("balanced"))).toBeGreaterThan(
       estimateUsd(TYPICAL_LINES, opts("fast")),

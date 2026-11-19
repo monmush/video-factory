@@ -4,9 +4,9 @@ import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from 
 import { stagingState } from "@shared/session-steps";
 import { type JobShot, spentUsd, type VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, X } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { errorMessage } from "@/lib/errors";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
@@ -69,17 +69,9 @@ export function ShotBrief({
   const jobs = useVideoJobs(sessionId);
   const { assets } = useWorkspace();
   const job = given !== undefined ? given : (jobs?.jobs.get(script.id) ?? null);
-  const [error, setError] = useState<string | null>(null);
+  const { error, run } = useAction();
   const [editing, setEditing] = useState<number | null>(null);
   const ids = { sessionId, scriptId: script.id };
-  const run = async (action: () => Promise<unknown>) => {
-    setError(null);
-    try {
-      await action();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
 
   if (script.status !== "ready") return null;
   const staging = script.staging?.trim();
@@ -244,27 +236,11 @@ function Scene({
         )}
       </p>
       {editing ? (
-        <Textarea
-          autoFocus
-          rows={1}
-          defaultValue={brief ?? ""}
-          aria-label={`Cảnh ${shot.index + 1}`}
-          className="field-sizing-content -mx-1.5 w-[calc(100%+--spacing(3))] px-1.5 py-1 text-sm"
-          onFocus={(e) => {
-            const end = e.currentTarget.value.length;
-            e.currentTarget.setSelectionRange(end, end);
-          }}
-          onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              onSave(e.currentTarget.value);
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              e.stopPropagation();
-              onCancel();
-            }
-          }}
-          onBlur={onCancel}
+        <SceneEditor
+          label={`Cảnh ${shot.index + 1}`}
+          initial={brief ?? ""}
+          onSave={onSave}
+          onCancel={onCancel}
         />
       ) : editable ? (
         <button
@@ -284,6 +260,50 @@ function Scene({
         </p>
       )}
     </li>
+  );
+}
+
+function SceneEditor({
+  label,
+  initial,
+  onSave,
+  onCancel,
+}: {
+  label: string;
+  initial: string;
+  onSave: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const done = useRef(false);
+  const finish = (value: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    if (value === null) onCancel();
+    else onSave(value);
+  };
+  return (
+    <Textarea
+      autoFocus
+      rows={1}
+      defaultValue={initial}
+      aria-label={label}
+      className="field-sizing-content -mx-1.5 w-[calc(100%+--spacing(3))] px-1.5 py-1 text-sm"
+      onFocus={(e) => {
+        const end = e.currentTarget.value.length;
+        e.currentTarget.setSelectionRange(end, end);
+      }}
+      onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          finish(e.currentTarget.value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(null);
+        }
+      }}
+      onBlur={(e) => finish(e.currentTarget.value)}
+    />
   );
 }
 

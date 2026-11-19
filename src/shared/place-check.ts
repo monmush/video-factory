@@ -18,7 +18,7 @@ export function findingLabel(finding: PlaceFinding | null | undefined): string |
 }
 
 /** A place's photos whose check found something. */
-export const flaggedImages = (place: Pick<Asset, "images">): AssetImage[] =>
+const flaggedImages = (place: Pick<Asset, "images">): AssetImage[] =>
   place.images.filter((i) => isFlagged(i.placeCheck));
 
 /** The series' places that still have a flagged photo, in the series' order. */
@@ -72,7 +72,7 @@ export function cleanPrompt(finding: PlaceFinding): string {
 }
 
 /** Longest side asked of the image model for a cleaned photo. */
-export const CLEAN_LONG_SIDE = 1536;
+const CLEAN_LONG_SIDE = 1536;
 
 /**
  * The output size for a cleaned photo: the original's aspect ratio (within

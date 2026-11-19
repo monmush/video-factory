@@ -1,6 +1,7 @@
-import { type KeyframeKind, namedInRequest, type Route } from "./live-plan";
+import type { KeyframeKind, Route } from "./live-plan";
 import {
   type DirectorAnswer,
+  namedInRequest,
   type PlanContext,
   productFreeProps,
   readDirectorAnswer,
@@ -318,6 +319,7 @@ export function rulesShotList(ctx: PlanContext, plan: ShotPlan = rulesPlan(ctx))
         motion: "",
       };
     }
+    if (shot.productId && !ctx.hasPlace) return { route: "product", picture: null, motion: "" };
     if (shot.kind === "wide" || !ctx.hasPlace)
       return { route: "still-move", picture: master, motion: "" };
     const visual = withoutProducts(shot.visual, productNames);

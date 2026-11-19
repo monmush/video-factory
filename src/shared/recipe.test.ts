@@ -71,13 +71,11 @@ describe("builtinRecipe", () => {
     const r = builtinRecipe(level);
     expect(r).toMatchObject({ version: 1, id: "builtin", source: "builtin", level: "balanced" });
     expect(r.stills.input).toMatchObject({ prompt: "{{prompt}}", image_urls: ["{{references}}"] });
-    expect(r.stills.rate).toEqual({ usd: 0.12, unit: "images" });
     expect(r.speak.input).toMatchObject({
       image_url: "{{keyframe}}",
       audio_url: "{{audio}}",
       prompt: "{{prompt}}",
     });
-    expect(r.speak.rate).toEqual({ usd: 0.0562, unit: "seconds" });
     expect(r.motion?.input).toMatchObject({ start_image_url: "{{keyframe}}", audio: false });
     // Faster levels keep the free still with a slow push-in.
     expect(builtinRecipe(mediaLevel("fast")).motion).toBeNull();

@@ -1,9 +1,8 @@
-import { type OutputResolution, RESOLUTIONS } from "@shared/batch-settings";
+import type { OutputResolution } from "@shared/batch-settings";
 import { formatSeconds } from "@shared/board";
 import { formatCost } from "@shared/credits";
 import type { MediaLevelId } from "@shared/media-level";
 import {
-  fitResolution,
   minutesFor45,
   modelGroups,
   modelOutput,
@@ -174,44 +173,6 @@ function ModelCard({ model, resolution }: { model: VideoModel; resolution: Outpu
   );
 }
 
-/**
- * Output size of the final video: 720p or 1080p. 1080p is unavailable with a
- * model that cannot make it, and 720p shows as chosen.
- */
-export function ResolutionPicker({
-  value,
-  model,
-  onChange,
-}: {
-  value: OutputResolution;
-  /** The chosen model; absent means the default. */
-  model?: string;
-  onChange: (value: OutputResolution) => void;
-}) {
-  const shown = fitResolution(model, value);
-  return (
-    <fieldset className="flex rounded-[var(--control-radius)] border p-0.5">
-      <legend className="sr-only">Độ phân giải</legend>
-      {(Object.keys(RESOLUTIONS) as OutputResolution[]).map((r) => (
-        <Button
-          key={r}
-          size="xs"
-          variant={shown === r ? "default" : "ghost-muted"}
-          aria-pressed={shown === r}
-          disabled={fitResolution(model, r) !== r}
-          onClick={() => onChange(r)}
-        >
-          {r}
-        </Button>
-      ))}
-    </fieldset>
-  );
-}
-
-/**
- * A series' output settings, the defaults for its batches; laid out like the
- * asset rows. Experiment branch: the Media level ("Chất lượng") only.
- */
 export function SeriesOutputFields({
   mediaLevel,
   onMediaLevel,

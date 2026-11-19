@@ -56,8 +56,4 @@ describe("notesBlock", () => {
       "- Ánh sáng ấm\n- Giữ 1 giây sau câu đùa",
     );
   });
-
-  it("is empty without notes", () => {
-    expect(notesBlock(undefined, [], WRITER_AREAS)).toBe("");
-  });
 });

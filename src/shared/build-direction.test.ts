@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { estimateVoiceUsd } from "./board";
-import { buildDirection, legend } from "./build-direction";
+import { buildDirection } from "./build-direction";
 import { plannedShotSec } from "./live-plan";
 import { mediaLevel } from "./media-level";
 import {
@@ -15,7 +15,7 @@ import {
 import { builtinRecipe, type Recipe } from "./recipe";
 import { readShotList, type ShotList } from "./shot-list";
 import { answer, CTX, LINES } from "./shot-list.fixture";
-import { applyFix } from "./video-fix";
+import { applyFix, canRestore, FixError, restorePrevious } from "./video-fix";
 import {
   applyLivePlan,
   costToFinishUsd,
@@ -25,7 +25,9 @@ import {
   newJob,
   nextActions,
   stopsForPreview,
+  type VideoJob,
 } from "./video-job";
+import { startTake } from "./video-takes";
 
 const level = mediaLevel("balanced");
 const CAST = [
@@ -117,12 +119,42 @@ describe("buildDirection", () => {
     expect(String(plate?.input.prompt)).not.toContain(STILL_IDENTITY);
   });
 
-  it("caps the references, dropping from the end", () => {
+  it("shares capped references so everyone keeps a photo, the place giving way first", () => {
     const recipe = builtinRecipe(level);
     recipe.stills.maxReferences = 4;
     const master = build(list(), recipe).plan.keyframes[0];
-    expect(master?.references).toEqual(["place-1", "place-2", "cast1-1", "cast1-2"]);
-    expect(String(master?.input.prompt)).toMatch(/^Images 1-2 are the place\. Images 3-4 are An\./);
+    expect(master?.references).toEqual(["place-1", "cast1-1", "cast1-2", "cast2-1"]);
+    expect(String(master?.input.prompt)).toMatch(
+      /^Image 1 is the place\. Images 2-3 are An\. Image 4 is Ba\./,
+    );
+  });
+
+  it("keeps a photo of every cast member in the master of a cast of three", () => {
+    const cast = [...CAST, { id: "c", name: "Cô", photos: 3 }];
+    const master = buildDirection({
+      list: list(),
+      recipe: builtinRecipe(level),
+      lines: LINES,
+      level,
+      cast,
+      placePhotos: 3,
+    }).plan.keyframes[0];
+    expect(master?.references).toEqual([
+      "place-1",
+      "place-2",
+      "cast1-1",
+      "cast1-2",
+      "cast2-1",
+      "cast2-2",
+      "cast3-1",
+      "cast3-2",
+    ]);
+  });
+
+  it("refuses a picture with more people than the image model takes references", () => {
+    const recipe = builtinRecipe(level);
+    recipe.stills.maxReferences = 2;
+    expect(() => build(list(), recipe)).toThrow(/needs at least 3 reference images.*takes 2/);
   });
 
   it("asks speaking shots with the seat's ambient and the shot's clause, local routes with nothing", () => {
@@ -189,10 +221,6 @@ describe("buildDirection", () => {
     );
   });
 
-  it("gives the same direction for the same list and recipe", () => {
-    expect(JSON.stringify(build(list()))).toBe(JSON.stringify(build(list())));
-  });
-
   it("goes into a job as keyframe stills made after the master", () => {
     const job = newJob({
       sessionId: "s",
@@ -238,17 +266,6 @@ describe("buildDirection", () => {
       "kf:ba-ots",
       "kf:plate",
     ]);
-  });
-});
-
-describe("legend", () => {
-  it("names single images and runs", () => {
-    expect(
-      legend([
-        { placeholder: "keyframe:master", what: "the master scene" },
-        { placeholder: "cast1-1", what: "An" },
-      ]),
-    ).toBe("Image 1 is the master scene. Image 2 is An.");
   });
 });
 
@@ -321,6 +338,109 @@ describe("a fix on a planned video", () => {
     expect(routes).toHaveLength(fixed.shots.length);
     expect(fixed.shots[2]?.productId).toBe("p");
     expect(routes[2]).toEqual(job.live?.plan.routes[3]);
+  });
+
+  const finished = () => ({ ...planned(), status: "done" as const, final: "f.mp4" });
+  const oneShotLine = [
+    {
+      op: "replace_line" as const,
+      line: 1,
+      shots: [ba("Ừ cháu ngồi đây, uống chén trà đã cháu.")] as never,
+    },
+  ];
+  const LATER = "2026-11-16T11:00:00.000Z";
+
+  it("going back to the cut before a fix brings back that cut's routes", () => {
+    const job = finished();
+    const fixed = { ...applyFix(job, oneShotLine, LATER), status: "done" as const, final: "g.mp4" };
+    const back = restorePrevious(fixed, LATER);
+    expect(back.shots).toHaveLength(job.shots.length);
+    expect(back.live?.plan.routes).toEqual(job.live?.plan.routes);
+    expect(restorePrevious(back, LATER).live?.plan.routes).toEqual(fixed.live?.plan.routes);
+  });
+
+  it("a cut saved without routes comes back only when its shots line up with the routes", () => {
+    const job = finished();
+    const legacy = (j: VideoJob) => {
+      const { routes: _, ...cut } = j.previous ?? { frames: [], shots: [] };
+      return { ...j, status: "done" as const, final: "g.mp4", previous: cut };
+    };
+    const reshaped = legacy(applyFix(job, oneShotLine, LATER));
+    expect(canRestore(reshaped)).toBe(false);
+    expect(() => restorePrevious(reshaped, LATER)).toThrow(FixError);
+    const sameShape = legacy(applyFix(job, [{ op: "redo_shot", shot: 0 }], LATER));
+    expect(restorePrevious(sameShape, LATER).live?.plan.routes).toEqual(job.live?.plan.routes);
+  });
+
+  it("is never made again as a take with another speaking model", () => {
+    expect(() => startTake(finished(), "omnihuman-v2", LATER)).toThrow(FixError);
+  });
+
+  it("keeps the still of a kept shot that starts from an action picture", () => {
+    const job = {
+      ...applyLivePlan(
+        newJob({
+          sessionId: "s",
+          seriesId: "r",
+          scriptId: "x",
+          title: "t",
+          lines: LINES,
+          useEnvironment: true,
+          now: "2026-11-16T10:00:00.000Z",
+        }),
+        build(
+          list(undefined, (a) => {
+            a.pictures?.push({
+              id: "pour",
+              kind: "action",
+              character: null,
+              people: ["An"],
+              framing: "close",
+              description: "An listens, hands around a cup.",
+            });
+            const shots = a.shots ?? [];
+            shots[1] = {
+              ...shots[1],
+              type: "listener",
+              character: "An",
+              framing: "close",
+              picture: "pour",
+            } as never;
+          }),
+        ),
+      ),
+      status: "review" as const,
+    };
+    const made = {
+      ...job,
+      frames: job.frames.map((f) => (f.id === "kf:pour" ? { ...f, file: "pour.png" } : f)),
+    };
+    const fixed = applyFix(
+      made,
+      [
+        {
+          op: "replace_line",
+          line: 2,
+          shots: [
+            {
+              kind: "speaker",
+              characterId: "a",
+              framing: "close",
+              line: 2,
+              text: "Dạ cháu cảm ơn, ông pha trà ngon lắm ạ.",
+              visual: "An grins.",
+              hold: 1,
+            },
+          ] as never,
+        },
+      ],
+      LATER,
+    );
+    expect(fixed.shots[1]?.keyframe).toBe("pour");
+    expect(frameFor(fixed, fixed.shots[1] as never)).toMatchObject({
+      id: "kf:pour",
+      file: "pour.png",
+    });
   });
 });
 

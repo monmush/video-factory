@@ -299,10 +299,15 @@ function passing(): DirectorAnswer {
 }
 
 describe("products are never generated", () => {
-  it("finds a product by its whole name or two of its words, with or without accents", () => {
+  it("finds a product by its whole name only, with or without accents", () => {
     const names = ["Bạch Trà Shan Tuyết"];
     expect(namedProduct("A Bach Tra Shan Tuyet pouch", names)).toBe("Bạch Trà Shan Tuyết");
-    expect(namedProduct("the shan tuyết tea bag", names)).toBe("Bạch Trà Shan Tuyết");
+    expect(namedProduct("the shan tuyết tea", names)).toBeNull();
+    expect(namedProduct("a cup of green tea", ["Mountain Green Tea"])).toBeNull();
+    expect(namedProduct("MOUNTAIN green tea on the shelf", ["Mountain Green Tea"])).toBe(
+      "Mountain Green Tea",
+    );
+    expect(namedProduct("the mountain green teapot", ["Mountain Green Tea"])).toBeNull();
     expect(namedProduct("A terracotta teapot and a cup of tea", names)).toBeNull();
     expect(namedProduct("Sơn Trà on the shelf", ["Sơn Trà"])).toBe("Sơn Trà");
   });
@@ -317,6 +322,17 @@ describe("products are never generated", () => {
     );
   });
 
+  it("a sentence that rules packaging out is neither a fault nor dropped", () => {
+    const text = "Tea cups on a wooden table. No packaging or labels in view.";
+    expect(withoutProducts(text, [])).toBe(text);
+    const answer = passing();
+    (answer.shots as { visual?: string }[])[1] = {
+      ...(answer.shots?.[1] as object),
+      visual: text,
+    };
+    expect(readDirectorAnswer(answer, CTX).errors).toEqual([]);
+  });
+
   it("a prop or a visual outside a product detail shot that names a product fails", () => {
     const answer = passing();
     answer.props = [
@@ -325,7 +341,7 @@ describe("products are never generated", () => {
     ];
     (answer.shots as { visual?: string }[])[1] = {
       ...(answer.shots?.[1] as object),
-      visual: "The two at the table, the Shan Tuyet pouch between them.",
+      visual: "The two at the table, Bach Tra Shan Tuyet between them.",
     };
     // The product's own detail shot may name it.
     (answer.shots as { visual?: string }[])[2] = {
@@ -350,7 +366,10 @@ describe("products are never generated", () => {
       ),
     ).toEqual([{ name: "teapot", where: "centre" }]);
     expect(
-      withoutProducts("The pair sit at the table. The Shan Tuyết bag stands by the pot.", names),
+      withoutProducts(
+        "The pair sit at the table. The Bạch Trà Shan Tuyết bag stands by the pot.",
+        names,
+      ),
     ).toBe("The pair sit at the table.");
   });
 });

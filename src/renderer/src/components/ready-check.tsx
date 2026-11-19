@@ -1,5 +1,6 @@
 import { batchMediaLevel, type OutputResolution } from "@shared/batch-settings";
-import { boardOrder, formatSeconds } from "@shared/board";
+import { boardOrder, estimateUsd, formatSeconds } from "@shared/board";
+import { formatCost } from "@shared/credits";
 import type { Asset, Script } from "@shared/ipc";
 import { type MediaLevelId, mediaLevel } from "@shared/media-level";
 import { findingLabel, placeFinding } from "@shared/place-check";
@@ -8,10 +9,10 @@ import { needsAttention, readyCheck, type ScriptCheck } from "@shared/ready-chec
 import { DEFAULT_VIDEO_MODEL, fitResolution } from "@shared/video-models";
 import { voiceById } from "@shared/voices";
 import { ChevronDown, Plus } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, requestChatFocus, useBoard } from "@/lib/board";
-import { errorMessage } from "@/lib/errors";
+import { useAction } from "@/lib/use-action";
 import { useWorkspace } from "@/lib/workspace";
 import { AssetDialog } from "./asset-dialog";
 import { AssetThumb } from "./asset-picker";
@@ -24,36 +25,8 @@ import {
   DialogPopup,
   DialogTitle,
 } from "./ui/dialog";
+import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
-
-// The ready check (docs/VIDEO_COMMIT_DECISIONS.md) opens only when something
-// needs the operator: a video that cannot be made, a warning, or a balance
-// that does not cover the batch. Each problem is fixable here. With nothing
-// to fix, the make button is held for three seconds instead and no dialog
-// opens. Committing starts the videos.
-
-/**
- * Prepaid balance in USD, or null when unknown (no key, no permission, error,
- * still loading). Read once per opening; never blocks the check.
- */
-export function useBalance(): number | null {
-  const [balance, setBalance] = useState<number | null>(null);
-  useEffect(() => {
-    let live = true;
-    api
-      .invoke("usage:balances")
-      .then(({ fal }) => {
-        if (live && fal.status === "ok" && fal.currency.toUpperCase() === "USD") {
-          setBalance(fal.balance);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, []);
-  return balance;
-}
 
 /**
  * Whether the series needs new start frames (it has an environment with
@@ -73,16 +46,6 @@ export function useSeriesPlaceIds(sessionId: string): string[] {
   return series.find((s) => s.id === session?.seriesId)?.environmentIds ?? [];
 }
 
-/**
- * The batch's speaking-shot model (its own, else the series', else the
- * default), so every price before spending uses its rate.
- */
-export function useBatchVideoModel(_sessionId: string): { id: string; inherited: boolean } {
-  // Experiment branch: no model choice; the fixed pipeline uses the default.
-  return { id: DEFAULT_VIDEO_MODEL, inherited: true };
-}
-
-/** Experiment branch: the batch's Media level (its own, else the series', else the default). */
 export function useBatchMediaLevel(sessionId: string): { id: MediaLevelId; inherited: boolean } {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
@@ -92,20 +55,32 @@ export function useBatchMediaLevel(sessionId: string): { id: MediaLevelId; inher
   );
 }
 
-/** The batch's output size (its own, else the series', else 720p): some models cost more at 1080p. */
-export function useBatchResolution(sessionId: string): {
-  id: OutputResolution;
-  inherited: boolean;
-} {
+function useBatchResolution(sessionId: string): OutputResolution {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
-  const own = series.find((s) => s.id === session?.seriesId);
-  // Experiment branch: the Media level's size, as the fixed pipeline's default model makes it.
-  const level = batchMediaLevel(session, own);
-  return {
-    id: fitResolution(DEFAULT_VIDEO_MODEL, mediaLevel(level.id).output),
-    inherited: level.inherited,
-  };
+  const level = batchMediaLevel(
+    session,
+    series.find((s) => s.id === session?.seriesId),
+  );
+  return fitResolution(DEFAULT_VIDEO_MODEL, mediaLevel(level.id).output);
+}
+
+function useEstimateOpts(sessionId: string) {
+  const { assets } = useWorkspace();
+  const frames = useNeedsFrames(sessionId);
+  const resolution = useBatchResolution(sessionId);
+  const level = useBatchMediaLevel(sessionId).id;
+  const placeIds = useSeriesPlaceIds(sessionId);
+  const opts = { frames, model: DEFAULT_VIDEO_MODEL, resolution, level, placeIds };
+  const estimate = (script: Pick<Script, "lines" | "productIds">) =>
+    estimateUsd(script.lines, { ...opts, cutoutUsd: cutoutUsd(script.productIds, assets) });
+  return { opts, estimate };
+}
+
+export interface Spend {
+  extraUsd: number;
+  extraCount: number;
+  run: (ids: string[]) => Promise<unknown>;
 }
 
 /**
@@ -128,40 +103,26 @@ export function useMakeVideos({
 }) {
   const board = useBoard(sessionId);
   const { assets } = useWorkspace();
-  // Experiment branch: sending spends nothing; the balance matters at each video's hold.
-  const frames = useNeedsFrames(sessionId);
-  const model = useBatchVideoModel(sessionId).id;
-  const resolution = useBatchResolution(sessionId).id;
-  const level = useBatchMediaLevel(sessionId).id;
-  const placeIds = useSeriesPlaceIds(sessionId);
-  // The batch as videos that have not been planned yet follow it.
-  const batch = { model, resolution, level };
+  const { opts, estimate } = useEstimateOpts(sessionId);
+  const batch = { model: opts.model, resolution: opts.resolution, level: opts.level };
   const [scope, setScope] = useState<string[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const action = useAction();
 
   const checkFor = (ids: string[]) =>
-    board
-      ? readyCheck(board.scripts, ids, assets, null, {
-          frames,
-          model,
-          resolution,
-          level,
-          placeIds,
-        })
-      : null;
+    board ? readyCheck(board.scripts, ids, assets, null, opts) : null;
 
   const needsCheck = (ids: string[]) => {
     const check = checkFor(ids);
     return !check || needsAttention(check) || check.toMake.length === 0;
   };
 
-  /** Opens the ready check for these scripts. */
   const open = (ids: string[]) => {
-    setError(null);
+    action.clear();
     setScope(ids);
   };
 
-  /** Commits what the check allows (after a completed hold). */
+  const close = () => setScope(null);
+
   const make = async (ids: string[]) => {
     const check = checkFor(ids);
     if (!check || waiting) return;
@@ -169,17 +130,14 @@ export function useMakeVideos({
       open(ids);
       return;
     }
-    setError(null);
-    try {
-      await api.invoke(
+    const ok = await action.run(() =>
+      api.invoke(
         "session:approve",
         sessionId,
         check.toMake.map((c) => c.script.id),
-      );
-      await onStarted?.();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
+      ),
+    );
+    if (ok) await action.run(async () => onStarted?.());
   };
 
   const dialog = (
@@ -190,31 +148,26 @@ export function useMakeVideos({
       approveOnly={approveOnly}
       open={scope !== null}
       onOpenChange={(next) => {
-        if (!next) setScope(null);
+        if (!next) close();
       }}
       onApproved={() => onStarted?.()}
     />
   );
 
-  /** What a script's products still need cut out (once ever), for its price. */
-  const cutouts = (script: Pick<Script, "productIds">) => cutoutUsd(script.productIds, assets);
-
   return {
     needsCheck,
     open,
+    close,
+    scope,
     make,
-    error,
-    frames,
-    model,
-    resolution,
-    level,
+    error: action.error,
+    estimate,
+    level: opts.level,
     batch,
-    cutouts,
     dialog,
   };
 }
 
-/** "Giữ để tạo ~$X", "Giữ để tạo cả N video ~$X", "Giữ để tạo thử ~$X". */
 /**
  * `remaining`: some scripts on the board already have videos, so the label
  * says which this makes ("video #2", "2 video còn lại"); `number` is the
@@ -240,17 +193,19 @@ export function ReadyCheckDialog({
   onApproved,
   waiting,
   approveOnly,
+  spend,
 }: {
   sessionId: string;
   /** Script ids this click would make. */
   scope: string[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onApproved: () => void | Promise<void>;
+  onApproved?: () => void | Promise<void>;
   /** Writing or a chat turn is still running: the scripts may change. */
   waiting?: boolean;
   /** Reads "Duyệt N kịch bản": the click only sends scripts to the Video tab. */
   approveOnly?: boolean;
+  spend?: Spend;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -261,9 +216,10 @@ export function ReadyCheckDialog({
             scope={scope}
             waiting={waiting}
             approveOnly={approveOnly}
-            onApproved={async () => {
+            spend={spend}
+            onDone={async () => {
               onOpenChange(false);
-              await onApproved();
+              await onApproved?.();
             }}
           />
         )}
@@ -277,62 +233,49 @@ function ReadyCheckBody({
   scope,
   waiting,
   approveOnly,
-  onApproved,
+  spend,
+  onDone,
 }: {
   sessionId: string;
   scope: string[];
   waiting?: boolean;
   approveOnly?: boolean;
-  onApproved: () => Promise<void>;
+  spend?: Spend;
+  onDone: () => Promise<void>;
 }) {
   const board = useBoard(sessionId);
   const { assets, sessions } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
-  // Experiment branch: sending spends nothing; the balance matters at each video's hold.
-  const frames = useNeedsFrames(sessionId);
-  const model = useBatchVideoModel(sessionId).id;
-  const resolution = useBatchResolution(sessionId).id;
-  const level = useBatchMediaLevel(sessionId).id;
-  const placeIds = useSeriesPlaceIds(sessionId);
+  const { opts, estimate } = useEstimateOpts(sessionId);
   const [editing, setEditing] = useState<Asset | null>(null);
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { error, run } = useAction();
   if (!board || !session) return null;
 
   const order = boardOrder(board.scripts).map((s) => s.id);
   const number = (c: ScriptCheck) => `#${order.indexOf(c.script.id) + 1}`;
-  const check = readyCheck(board.scripts, scope, assets, null, {
-    frames,
-    model,
-    resolution,
-    level,
-    placeIds,
-  });
+  const check = readyCheck(board.scripts, scope, assets, null, opts);
   const make = check.toMake.length;
+  const toMakeIds = check.toMake.map((c) => c.script.id);
   const characters = assets.filter((a) => a.kind === "character");
   const name = (id: string) => check.characters.get(id)?.name ?? "?";
-
-  const run = async (action: () => Promise<unknown>) => {
-    setError(null);
-    try {
-      await action();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
 
   const linkSpeaker = (speaker: string, characterId: string) =>
     run(() => api.invoke("board:link-speaker", { sessionId, speaker, characterId }));
 
   const approve = async () => {
-    await run(async () => {
-      await api.invoke(
-        "session:approve",
-        sessionId,
-        check.toMake.map((c) => c.script.id),
-      );
-      await onApproved();
-    });
+    const ok = await run(() => api.invoke("session:approve", sessionId, toMakeIds));
+    if (ok) await run(onDone);
+  };
+
+  const total = spend ? make + spend.extraCount : 0;
+  const spendUsd = spend
+    ? check.toMake.reduce((n, c) => n + estimate(c.script), 0) + spend.extraUsd
+    : 0;
+  const makeAll = async () => {
+    if (!spend) return;
+    const ok = await run(() => spend.run(toMakeIds));
+    if (ok) await run(onDone);
   };
 
   const editInChat = (scriptId: string) => {
@@ -349,8 +292,8 @@ function ReadyCheckBody({
     ? make
       ? `Duyệt ${make} kịch bản`
       : "Duyệt kịch bản"
-    : make
-      ? `Tạo ${make} video`
+    : make + (spend?.extraCount ?? 0)
+      ? `Tạo ${make + (spend?.extraCount ?? 0)} video`
       : "Tạo video";
   const hasProblems =
     check.blocked.length + overTarget.length + sharedGroups.length + check.places.length > 0;
@@ -459,9 +402,16 @@ function ReadyCheckBody({
       </div>
       <DialogFooter className="justify-end">
         <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>
-        <Button disabled={waiting || make === 0} onClick={approve}>
-          {approveOnly ? title : "Tiếp tục"}
-        </Button>
+        {spend ? (
+          <HoldButton disabled={waiting || total === 0} onHold={makeAll}>
+            {makeLabel(total)}
+            <ButtonPrice>~{formatCost(spendUsd)}</ButtonPrice>
+          </HoldButton>
+        ) : (
+          <Button disabled={waiting || make === 0} onClick={approve}>
+            {approveOnly ? title : "Tiếp tục"}
+          </Button>
+        )}
       </DialogFooter>
 
       {editing && (

@@ -12,9 +12,9 @@ import type { Asset, AssetImage } from "./ipc";
 export const CUTOUT_USD = 0.03;
 
 /** Switch the uniform tone match to the plate off (false) to place the cut-out untouched. */
-export const TONE_MATCH = true;
+const TONE_MATCH = true;
 /** How far toward the plate's colour the product moves (0–1)… */
-export const TONE_STRENGTH = 0.5;
+const TONE_STRENGTH = 0.5;
 /** …and never more than this per channel (±). */
 export const TONE_CAP = 0.08;
 
@@ -80,7 +80,7 @@ export const originals = (product: Pick<Asset, "images">): AssetImage[] =>
   product.images.filter((i) => i.origin !== "ai");
 
 /** The photo whose cut-out is used: the first usable one, if any has been made. */
-export const usableImage = (product: Pick<Asset, "images">) =>
+const usableImage = (product: Pick<Asset, "images">) =>
   originals(product).find((i) => i.cutout?.usable);
 
 /**

@@ -18,13 +18,14 @@ import {
   liveFrameUsd,
   liveShotUsd,
   modelName,
+  type PlannedRoute,
   plannedShotSec,
   ROUTE_LABEL,
   type Route,
   requestCost,
 } from "./live-plan";
 import { mediaLevel } from "./media-level";
-import { isNetworkError, isNetworkMessage, retryDelayMs } from "./net-error";
+import { isNetworkError, MAX_BUSY_ANSWERS, providerBusy, retryDelayMs } from "./net-error";
 import { CUTOUT_USD } from "./product-shot";
 import type { Framing, ShotKind, ShotPlan } from "./shot-plan";
 import {
@@ -49,7 +50,7 @@ import {
 /** Shortest audio a speaking or listening shot is given; shorter ones are padded with silence. */
 export const MIN_SHOT_SEC = 2;
 /** Silence kept before and after each line when cutting the dialogue. */
-export const LINE_PAD_SEC = 0.12;
+const LINE_PAD_SEC = 0.12;
 
 export type ShotState =
   /** Waiting for its voice. */
@@ -141,7 +142,8 @@ export interface JobShot {
   /** Result read from the provider (cost logged); download pending if no clip. */
   resultUrl?: string;
   /** Charged (estimate from seconds × rate). */
-  costUsd?: number;
+  costUsd?: number | null;
+  busyAnswers?: number;
   /** The automatic retry was used. */
   retried: boolean;
   /** Provider attempts that failed (fixture mode uses it to simulate failures). */
@@ -201,7 +203,8 @@ export interface JobFrame {
   sending?: string;
   /** Result read from the provider (cost logged); download pending if no file. */
   resultUrl?: string;
-  costUsd?: number;
+  costUsd?: number | null;
+  busyAnswers?: number;
   retried: boolean;
   /** Made again once because the automatic check found a problem. */
   redone?: boolean;
@@ -363,6 +366,7 @@ export interface JobCut {
   lineSpans?: { start: number; end: number }[];
   frames: JobFrame[];
   shots: JobShot[];
+  routes?: PlannedRoute[];
   final?: string;
   finalSec?: number;
   /** The revision this cut's final video was made at: tells the newer cut from the older. */
@@ -538,7 +542,7 @@ export function jobPhase(job: VideoJob): JobPhase {
 }
 
 /** Seconds a shot lasts: its place in the dialogue once known, else a guess from its words. */
-export function shotSeconds(shot: JobShot): number {
+function shotSeconds(shot: JobShot): number {
   if (shot.start !== undefined && shot.end !== undefined) return shot.end - shot.start;
   return syllables([shot]) / SPEECH_RATE + 2 * LINE_PAD_SEC + (shot.hold ?? 0);
 }
@@ -581,19 +585,24 @@ export function liveSeconds(shot: JobShot): number {
 export const shotEstimateUsd = (
   job: Pick<VideoJob, "model" | "resolution" | "live">,
   shot: JobShot,
-) => {
+): number | null => {
   if (!madeByProvider(shot)) return 0;
   if (job.live && shot.route && !shot.fallback) {
-    return liveShotUsd(job.live, shot.index, liveSeconds(shot)) ?? 0;
+    return liveShotUsd(job.live, shot.index, liveSeconds(shot));
   }
   return clipUsd(shotModel(job, shot), billedSeconds(shot), job.resolution);
 };
 
 /** What one still costs: its keyframe's planned model, else the default image model. */
-export const frameUsd = (job: Pick<VideoJob, "live">, frame: JobFrame) =>
+export const frameUsd = (job: Pick<VideoJob, "live">, frame: JobFrame): number | null =>
   job.live && frame.keyframe && !frame.fallback
-    ? (liveFrameUsd(job.live, frame.keyframe) ?? 0)
+    ? liveFrameUsd(job.live, frame.keyframe)
     : FRAME_USD;
+
+export const addUsd = (a: number | null | undefined, b: number | null): number | null =>
+  a === null || b === null ? null : (a ?? 0) + b;
+
+const orZero = (usd: number | null | undefined) => usd ?? 0;
 
 /**
  * Model and resolution are fixed: a shot has been sent (or made), or the
@@ -657,11 +666,11 @@ export function lossIfStoppedUsd(job: VideoJob): number {
   return (
     spentUsd(job) +
     job.shots
-      .filter((s) => s.state === "rendering")
-      .reduce((n, s) => n + shotEstimateUsd(job, s), 0) +
+      .filter((s) => s.state === "rendering" && !s.resultUrl)
+      .reduce((n, s) => n + orZero(shotEstimateUsd(job, s)), 0) +
     framesToMake(job)
-      .filter((f) => f.requestId)
-      .reduce((n, f) => n + frameUsd(job, f), 0)
+      .filter((f) => f.requestId && !f.resultUrl)
+      .reduce((n, f) => n + orZero(frameUsd(job, f)), 0)
   );
 }
 
@@ -680,10 +689,10 @@ export function costToFinishUsd(job: VideoJob): number {
   const frames =
     framesToMake(job)
       .filter((f) => !f.requestId)
-      .reduce((n, f) => n + frameUsd(job, f), 0) + cutoutsToMakeUsd(job);
+      .reduce((n, f) => n + orZero(frameUsd(job, f)), 0) + cutoutsToMakeUsd(job);
   const shots = job.shots
     .filter((s) => s.state !== "done" && s.state !== "rendering")
-    .reduce((n, s) => n + shotEstimateUsd(job, s), 0);
+    .reduce((n, s) => n + orZero(shotEstimateUsd(job, s)), 0);
   return voice + frames + shots;
 }
 
@@ -707,7 +716,7 @@ export function costToPreviewUsd(job: VideoJob): number {
     voice +
     framesToMake(job)
       .filter((f) => !f.requestId)
-      .reduce((n, f) => n + frameUsd(job, f), 0) +
+      .reduce((n, f) => n + orZero(frameUsd(job, f)), 0) +
     cutoutsToMakeUsd(job)
   );
 }
@@ -717,6 +726,8 @@ export function costToPreviewUsd(job: VideoJob): number {
  * made at what it cost, the rest at the session's recorded rates (unknown
  * when none fits). Its total is what the hold and the status line show.
  */
+const paidUsd = (usd: number | null | undefined) => (usd === undefined ? 0 : usd);
+
 export function liveCostTable(job: VideoJob): CostTable | null {
   const live = job.live;
   if (!live) return null;
@@ -739,7 +750,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
       step: f.kind === "product" && !planned ? "Ảnh sản phẩm" : `Khung hình ${f.keyframe ?? f.id}`,
       model: planned ? modelName(live.schemas, k.endpoint) : null,
       quantity: isGenerated(job, f) ? "1 ảnh" : "",
-      usd: made ? (f.costUsd ?? 0) : estimate,
+      usd: made ? paidUsd(f.costUsd) : estimate,
       paid: made,
     });
   }
@@ -767,7 +778,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
         step,
         model: modelName(live.schemas, r.endpoint),
         quantity: cost.quantity,
-        usd: made ? (shot.costUsd ?? 0) : cost.usd,
+        usd: made ? paidUsd(shot.costUsd) : cost.usd,
         paid: made,
       });
     } else {
@@ -775,7 +786,7 @@ export function liveCostTable(job: VideoJob): CostTable | null {
         step,
         model: shotModel(job, shot).name,
         quantity: `${Math.round(billedSeconds(shot) * 10) / 10} giây`,
-        usd: made ? (shot.costUsd ?? 0) : shotEstimateUsd(job, shot),
+        usd: made ? paidUsd(shot.costUsd) : shotEstimateUsd(job, shot),
         paid: made,
       });
     }
@@ -957,6 +968,8 @@ export function shotFailed(shot: JobShot, message: string): JobShot {
     requestId: undefined,
     submittedAt: undefined,
     sending: undefined,
+    resultUrl: undefined,
+    busyAnswers: undefined,
     failures: shot.failures + 1,
   };
   return shot.retried
@@ -1157,7 +1170,7 @@ export const plannedFrame = (job: Pick<VideoJob, "live">, frame: JobFrame) =>
  * the second fails it, except a planned keyframe, which falls back to the
  * fixed request with the default image model (decision 9).
  */
-export function frameAttemptFailed(
+function frameAttemptFailed(
   job: Pick<VideoJob, "live">,
   frame: JobFrame,
   message: string,
@@ -1168,6 +1181,7 @@ export function frameAttemptFailed(
     submittedAt: undefined,
     resultUrl: undefined,
     sending: undefined,
+    busyAnswers: undefined,
   };
   if (!frame.retried) return { ...reset, retried: true, error: undefined };
   if (plannedFrame(job, frame)) {
@@ -1201,9 +1215,30 @@ export function stepReportedFailure(job: VideoJob, step: JobStep, message: strin
  */
 export function stepThrew(job: VideoJob, step: JobStep, error: unknown, nowMs: number): VideoJob {
   const message = error instanceof Error ? error.message : String(error);
+  if (providerBusy(error)) {
+    const answers = busyAnswersOf(job, step) + 1;
+    if (answers >= MAX_BUSY_ANSWERS) return stepReportedFailure(job, step, message);
+    return wentOffline(withBusyAnswers(job, step, answers), message, nowMs);
+  }
   if (isNetworkError(error)) return wentOffline(job, message, nowMs);
   return stepReportedFailure(job, step, message);
 }
+
+const busyAnswersOf = (job: VideoJob, step: JobStep) =>
+  ("frame" in step
+    ? job.frames.find((f) => f.id === step.frame)?.busyAnswers
+    : job.shots.find((s) => s.index === step.shot)?.busyAnswers) ?? 0;
+
+const withBusyAnswers = (job: VideoJob, step: JobStep, busyAnswers: number): VideoJob =>
+  "frame" in step
+    ? {
+        ...job,
+        frames: job.frames.map((f) => (f.id === step.frame ? { ...f, busyAnswers } : f)),
+      }
+    : {
+        ...job,
+        shots: job.shots.map((s) => (s.index === step.shot ? { ...s, busyAnswers } : s)),
+      };
 
 /** A step reached the provider again. */
 export function backOnline(job: VideoJob): VideoJob {
@@ -1221,60 +1256,6 @@ export const retryNetworkNow = (job: VideoJob, nowMs: number): VideoJob =>
   job.offline
     ? { ...job, offline: { ...job.offline, retryAt: new Date(nowMs).toISOString() } }
     : job;
-
-/**
- * Jobs that failed on network trouble before it was told apart (the first live
- * run, 14 Nov): every still or shot that "failed" or "fell back" only because
- * the connection was gone goes back to its planned model, untried. Paid
- * results (files and saved request ids) are never touched. `cutoutsLeft`
- * says how many cut-outs a product still has untried: a product still shown
- * as its photo because the cut-out never ran is made again.
- */
-export function repairNetworkFailure(
-  job: VideoJob,
-  cutoutsLeft: (productId: string) => number,
-): VideoJob {
-  if (job.status === "done" || job.status === "running" || job.status === "waiting") return job;
-  const network = isNetworkMessage(job.error);
-  let changed = false;
-  const frames = job.frames.map((f) => {
-    if (!f.file && !f.requestId && f.error && isNetworkMessage(f.error)) {
-      changed = true;
-      const { error: _, ...rest } = f;
-      return { ...rest, retried: false, fallback: undefined };
-    }
-    // The cut-out never ran (it would be recorded on the product): the photo was a stopgap.
-    if (
-      network &&
-      f.kind === "product" &&
-      f.noCutout &&
-      f.source === "photo" &&
-      !f.requestId &&
-      job.useEnvironment &&
-      f.productId &&
-      cutoutsLeft(f.productId) > 0
-    ) {
-      changed = true;
-      const { file: _f, source: _s, noCutout: _n, ...rest } = f;
-      return { ...rest, retried: false };
-    }
-    return f;
-  });
-  const shots = job.shots.map((s) => {
-    if (s.state === "failed" && isNetworkMessage(s.error)) {
-      changed = true;
-      return {
-        ...s,
-        state: hasInput(s) ? ("queued" as const) : ("planned" as const),
-        retried: false,
-        error: undefined,
-        fallback: undefined,
-      };
-    }
-    return s;
-  });
-  return changed ? { ...job, frames, shots } : job;
-}
 
 /** Of all jobs, the one to run now: the running one, else the earliest waiting. */
 export function pickNext(jobs: VideoJob[]): VideoJob | null {
@@ -1353,28 +1334,6 @@ export const nextAverage = (current: number, measured: number) =>
 // ---------------------------------------------------------------------------
 
 /**
- * Where to cut the whole dialogue into lines. `segments` are the provider's
- * per-line spans (seconds). Each cut keeps a little silence around its line
- * without reaching into the neighbours: a cut never passes the midpoint of
- * the gap to the next line, so no syllable is clipped or duplicated.
- */
-export function lineCuts(
-  segments: { start: number; end: number }[],
-  totalSec: number,
-  pad = LINE_PAD_SEC,
-): { start: number; end: number }[] {
-  return segments.map((seg, i) => {
-    const prev = segments[i - 1];
-    const next = segments[i + 1];
-    const lo = prev ? (prev.end + seg.start) / 2 : 0;
-    const hi = next ? (seg.end + next.start) / 2 : totalSec;
-    const start = Math.max(lo, seg.start - pad, 0);
-    const end = Math.min(hi, seg.end + pad, totalSec);
-    return { start: round3(start), end: round3(Math.max(end, start)) };
-  });
-}
-
-/**
  * Per-line spans from the provider's voice segments: a line may arrive as
  * several segments; take the earliest start and latest end per line.
  */
@@ -1393,5 +1352,3 @@ export function lineSpans(
   }
   return spans;
 }
-
-const round3 = (n: number) => Math.round(n * 1000) / 1000;

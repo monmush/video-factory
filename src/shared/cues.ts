@@ -34,12 +34,6 @@ export function voiceText(text: string): string {
   return text.replace(BRACKETED, (m) => CUES[key(m.slice(1, -1))] ?? m);
 }
 
-/** The line ends with a sound (the director holds after it). */
-export const endsWithCue = (text: string) => {
-  const last = /\[([^\]]*)\]\s*$/.exec(text.trim());
-  return Boolean(last && CUES[key(last[1] ?? "")]);
-};
-
 /** The text without any bracketed sound, for finding words in the voice's timing. */
 export const withoutCues = (text: string) =>
   text.replace(BRACKETED, " ").replace(/\s+/g, " ").trim();

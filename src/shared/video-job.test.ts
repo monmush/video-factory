@@ -5,12 +5,12 @@ import { CUTOUT_USD } from "./product-shot";
 import { rulesPlan, type ShotPlan } from "./shot-plan";
 import {
   applyPlan,
+  billedSeconds,
   costToFinishUsd,
   followBatch,
   frameFor,
   type JobShot,
   jobPhase,
-  lineCuts,
   lineSpans,
   lossIfStoppedUsd,
   madeByProvider,
@@ -205,11 +205,8 @@ describe("costs", () => {
   it("before anything runs, finishing costs voice, frames and every shot", () => {
     const j = job();
     expect(spentUsd(j)).toBe(0);
-    const shots = j.shots.reduce(
-      // The last shot's hold (C15) is silence the speaking shot is paid for too.
-      (n, s) => n + Math.max(2, s.text.split(" ").length / 3.7 + 0.24 + (s.hold ?? 0)),
-      0,
-    );
+    const shots = j.shots.reduce((n, s) => n + billedSeconds(s), 0);
+    expect(shots).toBeGreaterThan(2 * j.shots.length);
     expect(costToFinishUsd(j)).toBeCloseTo(
       estimateVoiceUsd(j.lines) + 3 * FRAME_USD + shots * VIDEO_USD_PER_SEC,
     );
@@ -254,6 +251,14 @@ describe("costs", () => {
     expect(spentUsd(j)).toBeCloseTo(spent);
     expect(lossIfStoppedUsd(j)).toBeCloseTo(spent + 3 * VIDEO_USD_PER_SEC);
     expect(costToFinishUsd(j)).toBeCloseTo(3 * 3 * VIDEO_USD_PER_SEC);
+  });
+
+  it("a result already logged and still downloading is counted once", () => {
+    const j = readyForShots();
+    const usd = 3 * VIDEO_USD_PER_SEC;
+    patch(j.shots, 1, { state: "rendering", requestId: "r1", resultUrl: "u", costUsd: usd });
+    patch(j.frames, 0, { file: undefined, requestId: "f1", resultUrl: "u", costUsd: FRAME_USD });
+    expect(lossIfStoppedUsd(j)).toBeCloseTo(spentUsd(j));
   });
 
   it("bills short lines at the minimum shot length", () => {
@@ -409,6 +414,23 @@ describe("transitions", () => {
     expect([second.state, second.error]).toEqual(["failed", "boom"]);
   });
 
+  it("a clip whose paid result could not be used is sent again, never fetched from the old link", () => {
+    const s = {
+      ...(readyForShots().shots[0] as JobShot),
+      state: "rendering" as const,
+      requestId: "r",
+      resultUrl: "https://example.test/expired.mp4",
+      costUsd: 0.4,
+    };
+    const next = shotFailed(s, "expired");
+    expect([next.state, next.requestId, next.resultUrl, next.costUsd]).toEqual([
+      "queued",
+      undefined,
+      undefined,
+      0.4,
+    ]);
+  });
+
   it("a failed shot fails the job once nothing else is open; retry by hand resumes it", () => {
     const j = readyForShots();
     j.shots = j.shots.map((s, i) =>
@@ -539,23 +561,6 @@ describe("time left", () => {
 });
 
 describe("line timings", () => {
-  it("pads each line without reaching past the midpoint of a gap", () => {
-    const cuts = lineCuts(
-      [
-        { start: 0.05, end: 2.0 },
-        { start: 2.1, end: 4.0 },
-        { start: 5.0, end: 6.0 },
-      ],
-      6.3,
-      0.12,
-    );
-    expect(cuts).toEqual([
-      { start: 0, end: 2.05 },
-      { start: 2.05, end: 4.12 },
-      { start: 4.88, end: 6.12 },
-    ]);
-  });
-
   it("merges a line's segments and reports a missing line", () => {
     const seg = (i: number, s: number, e: number) => ({
       dialogueInputIndex: i,

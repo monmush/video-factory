@@ -47,8 +47,6 @@ export interface Recipe {
   speak: RoleModel;
   /** No motion route: every shot that does not speak is a still-move. */
   motion: RoleModel | null;
-  /** Typed only; not used yet. */
-  standby?: { stills?: RoleModel; speak?: RoleModel; motion?: RoleModel };
 }
 
 /** Most reference images a still is sent with, unless the recipe says otherwise. */

@@ -38,6 +38,7 @@ import {
 import { useChatInfo, useChatLive } from "@/lib/chat";
 import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
@@ -64,7 +65,9 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     `session-chat-files:${sessionId}`,
     [],
   );
-  const [error, setError] = useState<string | null>(null);
+  const [ownError, setError] = useState<string | null>(null);
+  const action = useAction();
+  const error = ownError ?? action.error;
   const [adding, setAdding] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
@@ -171,6 +174,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
     sendingRef.current = true;
     setSending(true);
     setError(null);
+    action.clear();
     try {
       await api.invoke("chat:send", {
         sessionId,
@@ -191,6 +195,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
 
   const attach = async (picked: Promise<ChatAttachment[]>) => {
     setError(null);
+    action.clear();
     setAdding(true);
     try {
       const added = await picked;
@@ -222,14 +227,7 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
       ).then((items) => api.invoke("chat:stage-files", { sessionId, files: items })),
     );
 
-  const act = async (run: () => Promise<unknown>) => {
-    setError(null);
-    try {
-      await run();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
+  const act = action.run;
 
   // Only the newest turn that can still be undone offers it: undoing an older
   // turn would overwrite what later turns changed.

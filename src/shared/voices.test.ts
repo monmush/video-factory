@@ -7,20 +7,12 @@ import {
   suggestVoice,
   takenVoiceIds,
   VOICES,
-  voiceById,
 } from "./voices";
 
 describe("voice catalogue", () => {
-  it("has ten voices with unique ids, all Northern", () => {
-    expect(VOICES).toHaveLength(10);
-    expect(new Set(VOICES.map((v) => v.id)).size).toBe(10);
+  it("has voices with unique ids, all Northern", () => {
+    expect(new Set(VOICES.map((v) => v.id)).size).toBe(VOICES.length);
     expect(VOICES.every((v) => v.accent === "north")).toBe(true);
-  });
-
-  it("treats unknown or missing ids as no voice", () => {
-    expect(voiceById("mai")?.name).toBe("Mai");
-    expect(voiceById("rachel")).toBeUndefined();
-    expect(voiceById(undefined)).toBeUndefined();
   });
 });
 

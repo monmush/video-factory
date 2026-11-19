@@ -1,4 +1,5 @@
 import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
 
@@ -35,10 +36,13 @@ export function HoldButton({
   const [holding, setHolding] = useState(false);
   const [nudge, setNudge] = useState(false);
   const [busy, setBusy] = useState(false);
+  const action = useAction();
   // The timer decides when the hold completes; animation frames only draw the
   // fill (they pause in a hidden window, the timer does not).
   const state = useRef<{ start: number; frame: number; timer: number } | null>(null);
   const mounted = useRef(true);
+  const latest = useRef({ onHold, disabled });
+  latest.current = { onHold, disabled };
 
   useEffect(
     () => () => {
@@ -53,13 +57,12 @@ export function HoldButton({
 
   const fire = async () => {
     setBusy(true);
-    try {
-      await onHold();
-    } finally {
-      if (mounted.current) {
-        setBusy(false);
-        setShare(0);
-      }
+    await action.run(async () => {
+      await latest.current.onHold();
+    });
+    if (mounted.current) {
+      setBusy(false);
+      setShare(0);
     }
   };
 
@@ -78,8 +81,12 @@ export function HoldButton({
       if (!state.current) return;
       cancelAnimationFrame(state.current.frame);
       state.current = null;
-      setShare(1);
       setHolding(false);
+      if (latest.current.disabled) {
+        setShare(0);
+        return;
+      }
+      setShare(1);
       void fire();
     }, ms);
     state.current = { start, frame: requestAnimationFrame(tick), timer };
@@ -100,67 +107,75 @@ export function HoldButton({
   };
 
   return (
-    <Button
-      {...props}
-      variant={tone === "primary" ? "default" : "outline"}
-      disabled={disabled || busy}
-      aria-busy={busy || undefined}
-      className={cn(
-        "group/hold touch-none select-none overflow-hidden",
-        tone === "stop" && "font-normal text-destructive-foreground",
-        holding && "scale-[0.985]",
-        nudge && "hold-nudge",
-        className,
-      )}
-      data-holding={holding || undefined}
-      data-hint={nudge || undefined}
-      onPointerDown={(e) => {
-        if (e.button !== 0) return;
-        // Released anywhere (even off the button) ends the hold.
-        const release = () => {
-          window.removeEventListener("pointerup", release);
-          window.removeEventListener("pointercancel", release);
-          end();
-        };
-        window.addEventListener("pointerup", release);
-        window.addEventListener("pointercancel", release);
-        begin();
-      }}
-      onKeyDown={(e) => {
-        if ((e.key === " " || e.key === "Enter") && !e.repeat) {
-          e.preventDefault();
-          begin();
-        }
-      }}
-      onKeyUp={(e) => {
-        if (e.key === " " || e.key === "Enter") {
-          e.preventDefault();
-          end();
-        }
-      }}
-      onBlur={end}
-    >
-      <span
-        aria-hidden
+    <>
+      <Button
+        {...props}
+        variant={tone === "primary" ? "default" : "outline"}
+        disabled={disabled || busy}
+        aria-busy={busy || undefined}
         className={cn(
-          "pointer-events-none absolute inset-y-0 left-0",
-          tone === "primary"
-            ? "bg-white/30"
-            : tone === "stop"
-              ? "bg-destructive/18"
-              : "bg-primary/14",
+          "group/hold touch-none select-none overflow-hidden",
+          tone === "stop" && "font-normal text-destructive-foreground",
+          holding && "scale-[0.985]",
+          nudge && "hold-nudge",
+          className,
         )}
-        style={{ width: `${share * 100}%` }}
-      />
-      <span className="relative inline-flex items-center gap-1.5">
-        {children}
-        {hint && (
-          <span className="hidden tabular-nums group-hover/hold:inline group-data-[holding]/hold:inline group-data-[hint]/hold:inline">
-            {hint}
-          </span>
-        )}
-      </span>
-    </Button>
+        data-holding={holding || undefined}
+        data-hint={nudge || undefined}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          action.clear();
+          const release = () => {
+            window.removeEventListener("pointerup", release);
+            window.removeEventListener("pointercancel", release);
+            end();
+          };
+          window.addEventListener("pointerup", release);
+          window.addEventListener("pointercancel", release);
+          begin();
+        }}
+        onKeyDown={(e) => {
+          if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+            e.preventDefault();
+            action.clear();
+            begin();
+          }
+        }}
+        onKeyUp={(e) => {
+          if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            end();
+          }
+        }}
+        onBlur={end}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-y-0 left-0",
+            tone === "primary"
+              ? "bg-white/30"
+              : tone === "stop"
+                ? "bg-destructive/18"
+                : "bg-primary/14",
+          )}
+          style={{ width: `${share * 100}%` }}
+        />
+        <span className="relative inline-flex items-center gap-1.5">
+          {children}
+          {hint && (
+            <span className="hidden tabular-nums group-hover/hold:inline group-data-[holding]/hold:inline group-data-[hint]/hold:inline">
+              {hint}
+            </span>
+          )}
+        </span>
+      </Button>
+      {action.error && (
+        <span role="alert" className="text-xs text-destructive-foreground">
+          {action.error}
+        </span>
+      )}
+    </>
   );
 }
 

@@ -1,4 +1,4 @@
-import { boardOrder, estimateSeconds, estimateUsd, formatSeconds } from "@shared/board";
+import { boardOrder, estimateSeconds, formatSeconds } from "@shared/board";
 import { formatCost } from "@shared/credits";
 import { mediaUrl, type Script } from "@shared/ipc";
 import { mediaLevel } from "@shared/media-level";
@@ -60,14 +60,21 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, editAsNewVersion, requestChatFocus, useBoard } from "@/lib/board";
-import { errorMessage } from "@/lib/errors";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
-import { markHeard, useHeard, useNow, useVideoJobs } from "@/lib/video-jobs";
+import {
+  markHeard,
+  reloadVideoJobs,
+  useHeard,
+  useNow,
+  useVideoJobs,
+  useVideoJobsError,
+} from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { LivePlanFold } from "./live-plan";
 import { Page } from "./page";
 import { QualityChip } from "./quality-chip";
-import { makeLabel, useBatchMediaLevel, useMakeVideos } from "./ready-check";
+import { makeLabel, ReadyCheckDialog, useBatchMediaLevel, useMakeVideos } from "./ready-check";
 import { PlanningSteps } from "./shot-brief";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
@@ -101,6 +108,20 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
   const state = useVideoJobs(sessionId);
   const make = useMakeVideos({ sessionId });
+  const loadError = useVideoJobsError(sessionId);
+  if (!state && loadError) {
+    return (
+      <Page className="pt-0">
+        <div className="flex items-center gap-2 pt-4">
+          <span className="text-destructive-foreground">{loadError}</span>
+          <Button variant="outline" size="sm" onClick={() => reloadVideoJobs(sessionId)}>
+            <RotateCw />
+            Thử lại
+          </Button>
+        </div>
+      </Page>
+    );
+  }
   if (!board || !session || !state) return null;
   const order = boardOrder(board.scripts);
   const committed = committedIds(session, board.scripts);
@@ -153,12 +174,8 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
   const state = useVideoJobs(sessionId);
-  // The batch button runs everything once the ready check lets the new ones through.
-  const runAll = async () => {
-    await api.invoke("video:make-all", { sessionId, scriptIds: [] });
-  };
-  const makeAll = useMakeVideos({ sessionId, onStarted: runAll });
-  const [allError, setAllError] = useState<string | null>(null);
+  const makeAll = useMakeVideos({ sessionId });
+  const all = useAction();
   if (!board || !session || !state) return null;
   const order = boardOrder(board.scripts);
   const committed = committedIds(session, board.scripts);
@@ -166,14 +183,7 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
   const sent = finished.filter((s) => committed.includes(s.id));
   const rest = finished.filter((s) => !committed.includes(s.id));
   const restIds = rest.map((s) => s.id);
-  const estimate = (s: Script) =>
-    estimateUsd(s.lines, {
-      frames: makeAll.frames,
-      model: makeAll.model,
-      resolution: makeAll.resolution,
-      level: makeAll.level,
-      cutoutUsd: makeAll.cutouts(s),
-    });
+  const estimate = makeAll.estimate;
   const restUsd = rest.reduce((n, s) => n + estimate(s), 0);
 
   const stalled = stalledScripts(sent, state.jobs);
@@ -196,15 +206,9 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
     return `${verb} hết ${count} video`;
   };
   const allUsd = restUsd + stalledUsd;
-  const holdAll = async () => {
-    setAllError(null);
-    try {
-      await api.invoke("video:make-all", { sessionId, scriptIds: restIds });
-    } catch (e) {
-      setAllError(errorMessage(e));
-    }
-  };
-  const error = allError ?? makeAll.error;
+  const runAll = (scriptIds: string[]) => api.invoke("video:make-all", { sessionId, scriptIds });
+  const holdAll = () => all.run(() => runAll(restIds));
+  const error = all.error ?? makeAll.error;
 
   return (
     <div className="flex items-center gap-2.5">
@@ -224,7 +228,15 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
           )}
         </>
       )}
-      {makeAll.dialog}
+      <ReadyCheckDialog
+        sessionId={sessionId}
+        scope={makeAll.scope ?? []}
+        open={makeAll.scope !== null}
+        onOpenChange={(next) => {
+          if (!next) makeAll.close();
+        }}
+        spend={{ extraUsd: stalledUsd, extraCount: stalled.length, run: runAll }}
+      />
     </div>
   );
 }
@@ -241,19 +253,14 @@ function SettingsBar({ sessionId }: { sessionId: string }) {
   const own = series.find((s) => s.id === session?.seriesId);
   const seriesLevel = mediaLevel(own?.mediaLevel).id;
   const level = useBatchMediaLevel(sessionId);
-  const [error, setError] = useState<string | null>(null);
-  const set = async (id: string) => {
-    setError(null);
-    try {
-      // The series' own level means following the series again.
-      await api.invoke("session:update", {
+  const { error, run } = useAction();
+  const set = (id: string) =>
+    run(() =>
+      api.invoke("session:update", {
         id: sessionId,
         settings: { mediaLevel: id === seriesLevel ? null : id },
-      });
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
+      }),
+    );
   return (
     <div className="sticky top-0 z-10 mb-1 bg-background py-2">
       <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
@@ -432,21 +439,16 @@ function VideoCard({
   /** A waiting script's own make button; outline, since the group's is primary. */
   ownMake: boolean;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const { error, run } = useAction();
   const navigate = useNavigate();
   // Until its first shot is sent, a video uses the batch's model and size as they are now.
   const job = saved && followBatch(saved, make.batch);
   const active = job?.status === "running" || job?.status === "waiting";
   const now = useNow(job?.status === "running");
   const ids = { sessionId, scriptId: script.id };
-  const run = async (action: () => Promise<unknown>) => {
-    setError(null);
-    try {
-      await action();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
+  const restage = Boolean(
+    job && job.status === "failed" && !job.plan && !job.dialogue && spentUsd(job) === 0,
+  );
 
   // Takes with other models: tabs; the selected one is shown and acted on.
   const [tab, setTab] = useState<string | null>(null);
@@ -573,13 +575,19 @@ function VideoCard({
           Dùng bản này
         </Button>
       );
+  } else if (restage) {
+    action = (
+      <Button variant="outline" onClick={() => run(() => api.invoke("video:plan", ids))}>
+        Lên dàn dựng
+      </Button>
+    );
   } else {
     // Stopped or failed: continue, paying only for what is missing.
     cost = shownCost === null ? null : formatCost(shownCost);
     action = (
       <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
-        Giữ để tạo tiếp
-        <ButtonPrice>~{formatCost(costToFinishUsd(job))}</ButtonPrice>
+        {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo tiếp"}
+        <ButtonPrice>{holdPrice(job)}</ButtonPrice>
       </HoldButton>
     );
   }
@@ -768,11 +776,11 @@ function VideoCard({
             {statusLine(view, script, averages, now)}
           </span>
           {/* The Media level, not a model; videos made before levels existed keep their model's name. */}
-          {" · "}
-          {job && !job.level ? (
-            videoModel(job.model).name
-          ) : (
-            <LevelLabel job={job} batchLevel={make.level} />
+          {(!job || job.level) && (
+            <>
+              {" · "}
+              <LevelLabel job={job} batchLevel={make.level} />
+            </>
           )}
           {/* Charged so far, never an estimate (an estimate always carries "~"). */}
           {cost && shownCost ? ` · Đã chi ${cost}` : ""}
@@ -787,7 +795,7 @@ function VideoCard({
             Thử lại
           </Button>
         )}
-        {view?.dialogue && <DialogueButton job={view} />}
+        {view?.dialogue && <DialogueButton key={view.dialogue} job={view} />}
         {error && <span className="text-xs text-destructive-foreground">{error}</span>}
       </div>
       {/* Planned at another level than the batch's now: re-planning is free but slow, so only on request. */}
@@ -895,7 +903,7 @@ function JobBody({
   job: VideoJob;
   /** The video's number in the list; a shot is named within it ("Video #2 · Cảnh 3"). */
   number: number;
-  run: (action: () => Promise<unknown>) => Promise<void>;
+  run: (action: () => Promise<unknown>) => Promise<boolean>;
   /** A parked take shown: fixes make it the one worked on first. */
   take?: string;
   /** Nothing blocks acting on this take (another take is not rendering). */

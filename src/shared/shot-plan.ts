@@ -176,14 +176,14 @@ const FRAMINGS: Framing[] = ["medium_close", "close"];
 /** A line may only be split right after one of these. */
 const SPLIT_AFTER = /[,.!?…;:]["”']?$/;
 /** Shortest part of a split line, in spoken syllables. */
-export const MIN_PART_SYLLABLES = 4;
+const MIN_PART_SYLLABLES = 4;
 /** A hold lasts this long at least and at most (C15). */
-export const HOLD_MIN_SEC = 1;
-export const HOLD_MAX_SEC = 2;
+const HOLD_MIN_SEC = 1;
+const HOLD_MAX_SEC = 2;
 /** The last shot always holds at least this long, so the video never ends on the last syllable. */
-export const LAST_HOLD_SEC = 1;
+const LAST_HOLD_SEC = 1;
 /** Longest ambient clause, in words. */
-export const AMBIENT_MAX_WORDS = 14;
+const AMBIENT_MAX_WORDS = 14;
 
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 const key = (s: string) => norm(s).toLowerCase();
@@ -271,20 +271,11 @@ const fold = (s: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
-/**
- * The product a text names, if any: its whole name, or any two of its words
- * in a row, with or without accents ("Shan Tuyet tea" names "Bạch Trà Shan
- * Tuyết"). Products are never generated, so a still request may not name one.
- */
 export function namedProduct(text: string, names: readonly string[]): string | null {
   const haystack = ` ${fold(text)} `;
   for (const name of names) {
-    const words = fold(name).split(" ").filter(Boolean);
-    const phrases =
-      words.length < 3
-        ? [words.join(" ")]
-        : words.slice(0, -1).map((w, i) => `${w} ${words[i + 1]}`);
-    if (phrases.some((p) => p && haystack.includes(` ${p} `))) return name;
+    const whole = fold(name);
+    if (whole && haystack.includes(` ${whole} `)) return name;
   }
   return null;
 }
@@ -294,23 +285,33 @@ const PACKAGING =
   /\b(packag\w*|packets?|pouch(es)?|sachets?|cartons?|labels?|label+ed|tea ?bags?|gift ?box(es)?)\b/i;
 
 /** The packaging word a text uses, if any ("pouch", "label"). */
-export const namedPackaging = (text: string) => PACKAGING.exec(text)?.[0]?.toLowerCase() ?? null;
+const namedPackaging = (text: string) => PACKAGING.exec(text)?.[0]?.toLowerCase() ?? null;
 
-/** A product by name, or packaging by kind: what a generated still may never show. */
-const namesProduct = (text: string, names: readonly string[]) =>
-  namedProduct(text, names) ?? namedPackaging(text);
+const sentences = (text: string) => text.split(/(?<=[.!?;])\s+/);
+
+const rulesOut = (sentence: string) => /\b(no|not|never|without|nor|avoid)\b/i.test(sentence);
+
+export const namedInRequest = (text: string, names: readonly string[]): string | null =>
+  namedProduct(text, names) ??
+  sentences(text)
+    .filter((s) => !rulesOut(s))
+    .map(namedPackaging)
+    .find((w): w is string => Boolean(w)) ??
+  null;
 
 /** The text without its sentences that name a product or packaging. */
 export const withoutProducts = (text: string, names: readonly string[]) =>
-  text
-    .split(/(?<=[.!?;])\s+/)
-    .filter((sentence) => !namesProduct(sentence, names))
+  sentences(text)
+    .filter((sentence) => !namedInRequest(sentence, names))
     .join(" ")
     .trim();
 
 /** Props a still may show: never a product or its packaging. */
 export const productFreeProps = (props: ShotPlan["props"], names: readonly string[]) =>
-  props.filter((p) => !namesProduct(`${p.name} ${p.where}`, names));
+  props.filter((p) => !propProduct(p.name, p.where, names));
+
+const propProduct = (name: string, where: string, names: readonly string[]) =>
+  namedProduct(name, names) ?? namedPackaging(name) ?? namedInRequest(where, names);
 
 /**
  * Turns the director's JSON into a plan (names → ids, 1-based → 0-based) and
@@ -361,7 +362,7 @@ export function readDirectorAnswer(
         `Shot ${n}: there is no place, so only speaker, listener and product shots exist.`,
       );
     }
-    const named = productId ? null : namesProduct(String(s.visual ?? ""), productNames);
+    const named = productId ? null : namedInRequest(String(s.visual ?? ""), productNames);
     if (named) {
       errors.push(
         `Shot ${n}: only a product detail shot may show or name "${named}"; describe the scene without it.`,
@@ -398,7 +399,7 @@ export function readDirectorAnswer(
 
   // S4: products are never props, so no still is ever asked to draw one.
   for (const prop of answer.props ?? []) {
-    const named = namesProduct(`${prop.name ?? ""} ${prop.where ?? ""}`, productNames);
+    const named = propProduct(prop.name ?? "", prop.where ?? "", productNames);
     if (named) {
       errors.push(
         `Prop "${norm(String(prop.name ?? ""))}": products and their packaging are never props ("${named}").`,
@@ -419,7 +420,7 @@ export function readDirectorAnswer(
         `Seat of ${seat.character}: ambient is one short clause of at most ${AMBIENT_MAX_WORDS} words.`,
       );
     }
-    if (namesProduct(`${motion} ${seat.behind ?? ""}`, productNames)) {
+    if (namedInRequest(motion, productNames) ?? namedInRequest(seat.behind ?? "", productNames)) {
       errors.push(`Seat of ${seat.character}: a product is never behind anyone.`);
     }
     ambient.set(id, motion);

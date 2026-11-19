@@ -16,7 +16,7 @@ export interface DirectionEntry {
 
 export const MAX_DIRECTIONS = 20;
 /** Longest wish kept. */
-export const WANT_MAX = 300;
+const WANT_MAX = 300;
 
 const norm = (s: unknown) =>
   String(s ?? "")

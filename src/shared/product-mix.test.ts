@@ -6,8 +6,6 @@ import {
   mentionedProducts,
   mixProblem,
   newTopicProducts,
-  productCounts,
-  shortNames,
 } from "./product-mix";
 
 const known = (id: string) => ["bach", "hong", "luc", "co"].includes(id);
@@ -52,35 +50,6 @@ describe("a batch's product mix", () => {
   it("assigns nothing without a mix, so the writer chooses", () => {
     expect(assignProducts(undefined, ["bach"], 2)).toEqual([undefined, undefined]);
     expect(assignProducts([], [], 1)).toEqual([undefined]);
-  });
-
-  it("counts the board per product", () => {
-    const { counts, none } = productCounts([
-      { productIds: ["bach"] },
-      { productIds: ["hong"] },
-      { productIds: ["bach"] },
-      { productIds: [] },
-    ]);
-    expect([...counts]).toEqual([
-      ["bach", 2],
-      ["hong", 1],
-    ]);
-    expect(none).toBe(1);
-  });
-
-  it("shortens names by the words they all share", () => {
-    expect(
-      shortNames([
-        "Shan Tuyết Cổ Thụ",
-        "Bạch Trà Shan Tuyết",
-        "Lục Trà Shan Tuyết",
-        "Hồng Trà Shan Tuyết",
-      ]),
-    ).toEqual(["Cổ Thụ", "Bạch Trà", "Lục Trà", "Hồng Trà"]);
-    expect(shortNames(["Trà xanh", "Cà phê"])).toEqual(["Trà xanh", "Cà phê"]);
-    // Never empties a name.
-    expect(shortNames(["Trà", "Trà sen"])).toEqual(["Trà", "Trà sen"]);
-    expect(shortNames(["Bạch Trà"])).toEqual(["Bạch Trà"]);
   });
 });
 

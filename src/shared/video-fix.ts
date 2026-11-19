@@ -43,10 +43,39 @@ export const cutOf = (job: VideoJob): JobCut => ({
   lineSpans: job.lineSpans,
   frames: job.frames,
   shots: job.shots,
+  ...(job.live ? { routes: job.live.plan.routes } : {}),
   final: job.final,
   finalSec: job.finalSec,
   cutRev: job.cutRev,
 });
+
+const sameLayout = (a: JobShot[], b: JobShot[]) =>
+  a.length === b.length &&
+  a.every((s, i) => {
+    const o = b[i] as JobShot;
+    return (
+      s.lineIndex === o.lineIndex &&
+      s.kind === o.kind &&
+      s.characterId === o.characterId &&
+      s.route === o.route &&
+      s.keyframe === o.keyframe
+    );
+  });
+
+const OLD_CUT = "Bản này được lưu theo cách dựng cũ, không quay lại được";
+
+export function canUseCut(job: VideoJob, cut: JobCut): boolean {
+  return !job.live || Boolean(cut.routes) || sameLayout(job.shots, cut.shots);
+}
+
+export function withCut(job: VideoJob, cut: JobCut): VideoJob {
+  const { routes, ...fields } = cut;
+  const next: VideoJob = { ...job, ...fields };
+  if (!job.live) return next;
+  if (routes) return { ...next, live: { ...job.live, plan: { ...job.live.plan, routes } } };
+  if (sameLayout(job.shots, cut.shots)) return next;
+  throw new FixError(OLD_CUT);
+}
 
 export const clearShot = (s: JobShot): JobShot => ({
   ...s,
@@ -268,7 +297,10 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
         }));
 
   // Stills: scene and character stills stay; a detail's still follows its shot.
-  const frames: JobFrame[] = job.frames.filter((f) => f.kind === "wide" || f.kind === "character");
+  const pictured = new Set(placed.filter((s) => s.keyframe).map(frameIdFor));
+  const frames: JobFrame[] = job.frames.filter(
+    (f) => f.kind === "wide" || f.kind === "character" || pictured.has(f.id),
+  );
   const add = (frame: JobFrame) => {
     if (!frames.some((f) => f.id === frame.id)) frames.push(frame);
   };
@@ -388,7 +420,7 @@ export const settled = (job: VideoJob) =>
 export const previousIsNewer = (job: VideoJob) => (job.previous?.cutRev ?? 0) > (job.cutRev ?? 0);
 
 export const canRestore = (job: VideoJob) =>
-  Boolean(job.previous?.final) &&
+  Boolean(job.previous?.final && canUseCut(job, job.previous)) &&
   settled(job) &&
   job.status !== "running" &&
   job.status !== "waiting";
@@ -399,9 +431,10 @@ export const canRestore = (job: VideoJob) =>
  */
 export function restorePrevious(job: VideoJob, now: string): VideoJob {
   if (!job.previous?.final) throw new FixError("Không có bản trước");
+  if (!canUseCut(job, job.previous)) throw new FixError(OLD_CUT);
   if (!canRestore(job)) throw new FixError("Đợi các cảnh đang quay xong rồi thử lại");
   const total = spentUsd(job);
-  const next: VideoJob = { ...job, ...job.previous, previous: cutOf(job) };
+  const next: VideoJob = { ...withCut(job, job.previous), previous: cutOf(job) };
   return {
     ...next,
     status: "done",
