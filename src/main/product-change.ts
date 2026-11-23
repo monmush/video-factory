@@ -78,6 +78,6 @@ export async function undoTurn(sessionId: string, messageId: string): Promise<nu
   const editable = new Set<string>();
   for (const id of sent) if (!(await video.videoStarted(sessionId, id))) editable.add(id);
   const restored = await board.undo(sessionId, messageId, editable);
-  for (const id of restored) await video.dropPlan(sessionId, id);
+  for (const id of restored) await video.followScript(sessionId, id);
   return null;
 }

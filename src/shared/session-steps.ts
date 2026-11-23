@@ -13,20 +13,6 @@ export function jobNeedsYou(job: VideoJob | null | undefined): boolean {
   return job.status === "review" || job.status === "stopped" || job.status === "failed";
 }
 
-export type StagingState = "none" | "staging" | "failed" | "ready";
-
-export function stagingState(
-  script: Pick<Script, "status" | "lines">,
-  job: Pick<VideoJob, "status" | "plan" | "planning"> | null | undefined,
-): StagingState {
-  if (script.status !== "ready") return "none";
-  if (!script.lines.some((l) => l.characterId && l.text.trim())) return "none";
-  if (job?.planning) return "staging";
-  if (job?.plan) return "ready";
-  if (!job || job.status === "idle") return "staging";
-  return job.status === "failed" ? "failed" : "none";
-}
-
 export interface SessionSteps {
   scripts: number;
   scriptsDone: boolean;

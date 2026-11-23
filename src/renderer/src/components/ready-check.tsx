@@ -1,4 +1,4 @@
-import { batchMediaLevel, videoLevel } from "@shared/batch-settings";
+import { batchMediaLevel } from "@shared/batch-settings";
 import { boardOrder, formatSeconds } from "@shared/board";
 import { estimateText } from "@shared/cost/table";
 import type { Asset } from "@shared/ipc";
@@ -11,6 +11,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, requestChatFocus, useBoard } from "@/lib/board";
+import { useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { useVoiceMode } from "@/lib/voice-mode";
 import { useWorkspace } from "@/lib/workspace";
@@ -43,13 +44,6 @@ export function useBatchMediaLevel(sessionId: string): { id: MediaLevelId; inher
   );
 }
 
-export function useVideoLevel(sessionId: string): (scriptId: string) => MediaLevelId {
-  const { sessions, series } = useWorkspace();
-  const session = sessions.find((s) => s.id === sessionId);
-  const own = series.find((s) => s.id === session?.seriesId);
-  return (scriptId) => videoLevel(session, own, scriptId);
-}
-
 function useCheckOpts(sessionId: string) {
   const level = useBatchMediaLevel(sessionId).id;
   const levelOf = useVideoLevel(sessionId);
@@ -65,7 +59,7 @@ export interface Spend {
   run: (ids: string[]) => Promise<unknown>;
 }
 
-export const stagingText = (count: number) => `${count} video đang lên dàn dựng`;
+export const stagingText = (count: number) => `${count} video đang dàn dựng`;
 
 export function useMakeVideos({
   sessionId,

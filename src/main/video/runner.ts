@@ -29,7 +29,6 @@ import {
 import {
   frameUsd,
   shotEstimateUsd,
-  stagedToMake,
   withCurrentRates,
   withFirstPass,
 } from "../../shared/cost/estimate";
@@ -38,11 +37,10 @@ import { segmentStep } from "../../shared/cost/speech-cost";
 import {
   anchoredDirection,
   type DirectionEntry,
-  jobStale,
   sameSpokenLines,
   setDirection,
 } from "../../shared/direction";
-import { editsInPlace, failedUnpaid, unstarted } from "../../shared/edit-in-place";
+import { editsInPlace, failedUnpaid, unstarted, videoUntouched } from "../../shared/edit-in-place";
 import type { Asset, Script } from "../../shared/ipc";
 import { mediaLevel } from "../../shared/media-level";
 import { isNetworkError, providerBusy } from "../../shared/net-error";
@@ -92,11 +90,15 @@ import {
 } from "../../shared/speech";
 import type { VoiceMode } from "../../shared/speech-models";
 import {
-  MAX_STAGING_HOLD_MS,
-  type StagingHold,
-  stagingHeld,
+  freeSettle,
+  type OutdatedReason,
+  outdatedReasons,
+  readyToMake,
+  type StagingStatus,
+  stageable,
   stagingOutdated,
-} from "../../shared/staging-hold";
+  stagingStatus,
+} from "../../shared/staging-status";
 import { buildAss, wordCues } from "../../shared/subtitles";
 import { type Tempo, tempoOf } from "../../shared/tempo";
 import {
@@ -425,8 +427,6 @@ const settledWithin = (ms: number, work: readonly (Promise<unknown> | undefined)
 function stopStartingWork() {
   accepting = false;
   stopRunner();
-  for (const pending of autoTimers.values()) clearTimeout(pending);
-  autoTimers.clear();
 }
 
 export async function finishRunner(withinMs: number): Promise<void> {
@@ -455,69 +455,50 @@ function schedule() {
 
 export async function jobsFor(sessionId: string): Promise<VideoJob[]> {
   await ensureLoaded();
-  if (!autoTimers.has(sessionId)) scheduleAutoPlan(sessionId);
   return [...jobs.values()].filter((j) => j.sessionId === sessionId);
 }
 
-const autoTried = new Map<string, string>();
-const autoTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const AUTO_PLAN_DELAY_MS = 3000;
-
-function scheduleAutoPlan(sessionId: string) {
-  clearTimeout(autoTimers.get(sessionId));
-  autoTimers.set(
-    sessionId,
-    setTimeout(() => {
-      autoTimers.delete(sessionId);
-      void autoPlan(sessionId).catch((error) =>
-        console.warn("[video] automatic staging:", (error as Error).message),
-      );
-    }, AUTO_PLAN_DELAY_MS),
-  );
+interface StagingHold {
+  holders: number;
+  asked: Map<string, boolean>;
 }
 
-const holds = new Map<string, Set<StagingHold>>();
+const stagingHolds = new Map<string, StagingHold>();
 
-const stagingWaits = (sessionId: string, scriptId: string) =>
-  stagingHeld(holds.get(sessionId) ?? [], scriptId, Date.now());
-
-export function holdStaging(sessionId: string, scripts: ReadonlySet<string>): () => void {
-  const hold: StagingHold = { scripts, since: Date.now() };
-  const session = holds.get(sessionId) ?? new Set();
-  holds.set(sessionId, session.add(hold));
-  const expired = setTimeout(() => scheduleAutoPlan(sessionId), MAX_STAGING_HOLD_MS);
+export function holdStaging(sessionId: string): () => void {
+  const hold = stagingHolds.get(sessionId) ?? { holders: 0, asked: new Map() };
+  hold.holders += 1;
+  stagingHolds.set(sessionId, hold);
+  let released = false;
   return () => {
-    if (!session.delete(hold)) return;
-    clearTimeout(expired);
-    if (!session.size && holds.get(sessionId) === session) holds.delete(sessionId);
-    scheduleAutoPlan(sessionId);
+    if (released) return;
+    released = true;
+    hold.holders -= 1;
+    if (hold.holders > 0) return;
+    stagingHolds.delete(sessionId);
+    const asked = [...hold.asked];
+    const once = asked.filter(([, again]) => !again).map(([id]) => id);
+    const again = asked.filter(([, again]) => again).map(([id]) => id);
+    void stage(sessionId, once).catch(logStaging);
+    void stage(sessionId, again, true).catch(logStaging);
   };
 }
 
-async function autoPlan(sessionId: string) {
-  if (!textAiIsOwn()) return;
-  await ensureLoaded();
-  const board = await getBoard(sessionId);
-  for (const script of board.scripts) {
-    if (script.deletedAt || script.status !== "ready") continue;
-    const spoken = spokenLines(script.lines);
-    if (!spoken.length) continue;
-    const key = keyOf(sessionId, script.id);
-    const job = jobs.get(key);
-    if (job && (job.plan || !unstarted(job))) continue;
-    if (stagingWaits(sessionId, script.id)) continue;
-    const said = JSON.stringify([
-      spoken.map((l) => [l.characterId, l.text]),
-      script.productIds,
-      job?.createdAt ?? null,
-    ]);
-    if (autoTried.get(key) === said) continue;
-    autoTried.set(key, said);
-    void planOnly(sessionId, script.id).catch((error) =>
-      console.warn("[video] automatic staging:", (error as Error).message),
-    );
+export async function askToStage(
+  sessionId: string,
+  scriptIds: string[],
+  again = false,
+): Promise<void> {
+  const hold = stagingHolds.get(sessionId);
+  if (!hold) {
+    await stage(sessionId, scriptIds, again);
+    return;
   }
+  for (const id of scriptIds) hold.asked.set(id, again || hold.asked.get(id) === true);
 }
+
+const logStaging = (error: unknown) =>
+  console.warn("[video] staging:", error instanceof Error ? error.message : String(error));
 
 async function createJob(
   sessionId: string,
@@ -583,17 +564,23 @@ class JobInUse extends Error {
 const freeToReplace = (current: VideoJob | undefined) =>
   !current || unstarted(current) || failedUnpaid(current);
 
-const ignoreInUse = (error: unknown) => {
-  if (!(error instanceof JobInUse)) throw error;
-};
+async function boardNow(sessionId: string) {
+  const ws = await getWorkspace();
+  const session = ws.sessions.find((s) => s.id === sessionId);
+  const series = ws.series.find((s) => s.id === session?.seriesId);
+  const board = await getBoard(sessionId);
+  const levelOf = (id: string) => videoLevel(session, series, id);
+  const find = (id: string) => board.scripts.find((s) => s.id === id && !s.deletedAt);
+  return { ws, session, board, levelOf, find };
+}
 
-export async function enqueue(sessionId: string, scriptIds: string[]): Promise<void> {
-  await ensureLoaded();
-  const fresh = scriptIds.filter((id) => !jobs.has(keyOf(sessionId, id)));
-  for (const scriptId of fresh) {
-    await createJob(sessionId, scriptId, fresh.length === 1).catch(ignoreInUse);
-  }
-  schedule();
+const STAGING_BEHIND = "Dàn dựng chưa theo thay đổi mới";
+const NOT_STAGED = "Chưa dàn dựng";
+
+function assertStagedToMake(job: VideoJob | undefined, script: Script | undefined, level: string) {
+  if (job && !videoUntouched(job)) return;
+  if (!job?.plan || !script) throw new Error(NOT_STAGED);
+  if (!readyToMake(job, script, level)) throw new Error(STAGING_BEHIND);
 }
 
 export async function start(sessionId: string, scriptId: string): Promise<null> {
@@ -606,8 +593,15 @@ export async function start(sessionId: string, scriptId: string): Promise<null> 
     await update(key, (job) => retryNetworkNow(job, Date.now()));
     return null;
   }
-  if (!current) await createJob(sessionId, scriptId, true).catch(ignoreInUse);
-  await update(key, (job) => resumeJob(spendingStarts(job, nowIso()), nowIso()));
+  const { find, levelOf } = await boardNow(sessionId);
+  const script = find(scriptId);
+  const level = levelOf(scriptId);
+  assertStagedToMake(current, script, level);
+  await update(key, (job) =>
+    videoUntouched(job) && !(script && readyToMake(job, script, level))
+      ? job
+      : resumeJob(spendingStarts(job, nowIso()), nowIso()),
+  );
   return null;
 }
 
@@ -657,23 +651,19 @@ export async function followVoiceMode(): Promise<void> {
 }
 
 const stagings = new Map<string, AbortController>();
+const preparing = new Set<string>();
 
-export async function planOnly(sessionId: string, scriptId: string): Promise<null> {
-  await ensureLoaded();
-  const key = keyOf(sessionId, scriptId);
-  const had = jobs.get(key);
-  if (!had || failedUnpaid(had)) {
-    await createJob(sessionId, scriptId, true, "idle", had?.direction, (current) =>
-      Boolean(!current || failedUnpaid(current)),
-    ).catch(ignoreInUse);
-  }
+async function beginStaging(key: string): Promise<void> {
   const job = jobs.get(key);
-  if (!job || job.plan || job.planning || job.status !== "idle") return null;
-  if (stagingWaits(sessionId, scriptId)) return null;
+  if (!job || job.plan || job.planning || job.status !== "idle" || stagings.has(key)) return;
   const staging = new AbortController();
   stagings.set(key, staging);
+  const planning = await update(key, (j) => ({ ...j, planning: true }));
+  void finishStaging(key, planning, staging).catch(logStaging);
+}
+
+async function finishStaging(key: string, planning: VideoJob | null, staging: AbortController) {
   try {
-    const planning = await update(key, (j) => ({ ...j, planning: true }));
     if (planning) await runPlan(key, planning, staging.signal);
   } finally {
     if (stagings.get(key) === staging) stagings.delete(key);
@@ -682,17 +672,83 @@ export async function planOnly(sessionId: string, scriptId: string): Promise<nul
       return rest;
     });
   }
-  await syncScripts(sessionId, (await getBoard(sessionId)).scripts);
+  if (planning) await syncScripts(planning.sessionId, (await getBoard(planning.sessionId)).scripts);
+}
+
+export async function stage(sessionId: string, scriptIds: string[], again = false): Promise<null> {
+  await ensureLoaded();
+  const { levelOf, find } = await boardNow(sessionId);
+  for (const scriptId of new Set(scriptIds)) {
+    const key = keyOf(sessionId, scriptId);
+    const script = find(scriptId);
+    if (!script || preparing.has(key) || stagings.has(key)) continue;
+    const job = jobs.get(key);
+    const status = stagingStatus(job, script, levelOf(scriptId));
+    if (!stageable(script) || status === "started" || status === "staging") continue;
+    if (status === "ready" && !again) continue;
+    preparing.add(key);
+    try {
+      await jobForStaging(sessionId, script, job, status === "ready", levelOf(scriptId));
+      await beginStaging(key);
+    } catch (error) {
+      if (!(error instanceof JobInUse)) logStaging(error);
+    } finally {
+      preparing.delete(key);
+    }
+  }
+  return null;
+}
+
+async function jobForStaging(
+  sessionId: string,
+  script: Script,
+  job: VideoJob | undefined,
+  fromScratch: boolean,
+  level: string,
+) {
+  const direction = anchoredDirection(job?.direction, script.lines);
+  if (!job || fromScratch) {
+    await createJob(sessionId, script.id, true, "idle", direction, freeToReplace);
+    return;
+  }
+  const otherLevel = Boolean(job.plan && mediaLevel(job.level).id !== mediaLevel(level).id);
+  const restageFrom = otherLevel ? undefined : await restageBasis(job, script);
+  const wordsChanged = !sameSpokenLines(job.lines, script.lines);
+  const rewordedBasis = wordsChanged
+    ? rewordedFrom(job, direction)
+    : job.plan
+      ? undefined
+      : job.rewordedFrom;
+  await createJob(sessionId, script.id, true, "idle", direction, freeToReplace, {
+    restageFrom,
+    rewordedFrom: rewordedBasis,
+  });
+}
+
+export async function stagingOf(
+  sessionId: string,
+  scriptId: string,
+): Promise<{ status: StagingStatus; reasons: OutdatedReason[] }> {
+  await ensureLoaded();
+  const job = jobs.get(keyOf(sessionId, scriptId));
+  const { find, levelOf } = await boardNow(sessionId);
+  const script = find(scriptId);
+  if (!script) return { status: job && !videoUntouched(job) ? "started" : "none", reasons: [] };
+  const level = levelOf(scriptId);
+  return {
+    status: stagingStatus(job, script, level),
+    reasons: outdatedReasons(job, script, level),
+  };
+}
+
+export async function stopStaging(sessionId: string, scriptId: string): Promise<null> {
+  stagings.get(keyOf(sessionId, scriptId))?.abort();
   return null;
 }
 
 export function planCommitted(sessionId: string, scriptIds: string[]): void {
   if (!textAiIsOwn()) return;
-  for (const scriptId of scriptIds) {
-    void planOnly(sessionId, scriptId).catch((error) =>
-      console.warn("[video] planning after approval:", (error as Error).message),
-    );
-  }
+  void stage(sessionId, scriptIds).catch(logStaging);
 }
 
 export async function direct(
@@ -703,32 +759,18 @@ export async function direct(
   await ensureLoaded();
   const key = keyOf(sessionId, scriptId);
   const current = jobs.get(key);
-  if (current?.planning) throw new Error("Đang lên dàn dựng");
-  if (current && !unstarted(current)) throw new Error("Video đã bắt đầu tạo");
-  const direction = setDirection(current?.direction, change, nowIso());
-  await createJob(sessionId, scriptId, true, "idle", direction, freeToReplace);
-  void planOnly(sessionId, scriptId).catch((error) =>
-    console.warn("[video] planning after a direction:", (error as Error).message),
+  if (current && !videoUntouched(current)) throw new Error("Video đã bắt đầu tạo");
+  if (!current) {
+    const direction = setDirection(undefined, change, nowIso());
+    await createJob(sessionId, scriptId, true, "idle", direction, freeToReplace);
+    return null;
+  }
+  stagings.get(key)?.abort();
+  await update(key, (job) =>
+    videoUntouched(job)
+      ? { ...job, direction: setDirection(job.direction, change, nowIso()) }
+      : job,
   );
-  return null;
-}
-
-export async function dropPlan(sessionId: string, scriptId: string): Promise<null> {
-  await ensureLoaded();
-  const job = jobs.get(keyOf(sessionId, scriptId));
-  if (!job) return null;
-  if (!unstarted(job)) throw new Error("Video đã bắt đầu tạo");
-  const script = (await getBoard(sessionId)).scripts.find((s) => s.id === scriptId);
-  await createJob(
-    sessionId,
-    scriptId,
-    true,
-    "idle",
-    anchoredDirection(job.direction, script?.lines ?? []),
-    freeToReplace,
-  );
-  autoTried.delete(keyOf(sessionId, scriptId));
-  scheduleAutoPlan(sessionId);
   return null;
 }
 
@@ -764,7 +806,6 @@ async function syncScripts(sessionId: string, scripts: Script[]) {
     const script = scripts.find((s) => s.id === job.scriptId);
     await followScriptNow(job, script, videoLevel(session, series, job.scriptId), ws.assets);
   }
-  scheduleAutoPlan(sessionId);
 }
 
 async function followScriptNow(
@@ -772,64 +813,43 @@ async function followScriptNow(
   script: Script | undefined,
   level: string,
   all: readonly Asset[],
-  force = false,
 ) {
   const key = jobKey(job);
-  if (job.planning && stagingOutdated(job, script)) stagings.get(key)?.abort();
-  if (!unstarted(job) && !failedUnpaid(job)) return;
+  const { abort, step } = freeSettle(job, script, level);
+  if (abort) stagings.get(key)?.abort();
   try {
-    if (!script || script.deletedAt) {
-      await removeJob(key);
-      return;
-    }
-    if (script.status !== "ready") return;
-    const otherLevel = Boolean(job.plan && mediaLevel(job.level).id !== level);
-    const sameStaging = otherLevel && !jobStale(job, script) && planAtLevel(job, level);
-    if (sameStaging) {
-      const next = await update(key, (j) => (j === job ? withSpeech(sameStaging) : j));
+    if (step === "remove") await removeJob(key);
+    if (step === "level") {
+      const atLevel = planAtLevel(job, level);
+      const next = atLevel && (await update(key, (j) => (j === job ? withSpeech(atLevel) : j)));
       if (next?.live) await writeJsonAtomic(join(jobDir(next), "live-plan.json"), next.live);
-      return;
     }
-    if (!otherLevel && !jobStale(job, script) && !(force && !job.productIds)) return;
-    if (!otherLevel && job.plan) {
-      const product = (id: string) => {
-        const a = all.find((x) => x.id === id && x.kind === "product");
-        return a ? { id: a.id, name: a.name } : null;
-      };
-      const cutouts = (id: string) => {
-        const a = all.find((x) => x.id === id);
-        return a ? cutoutsToMake(a) : 0;
-      };
-      const followed = followProduct(job, script, product, cutouts);
-      if (followed.kind === "patched") {
-        const next = await update(key, (j) => (j === job ? withSpeech(followed.job) : j));
-        if (next?.plan) {
-          await writeJsonAtomic(join(jobDir(next), "plan.json"), next.plan);
-          if (next.live) await writeJsonAtomic(join(jobDir(next), "live-plan.json"), next.live);
-        }
+    if (step === "product" && script) {
+      const followed = followProduct(job, script, productOf(all), cutoutsOf(all));
+      if (followed.kind !== "patched") {
+        console.log(`[video] product change leaves the staging outdated (${followed.why})`);
         return;
       }
-      if (job.productIds?.[0] !== script.productIds[0]) {
-        console.log(`[video] product change staged again (${followed.why})`);
-      }
+      const next = await update(key, (j) => (j === job ? withSpeech(followed.job) : j));
+      if (!next?.plan) return;
+      await writeJsonAtomic(join(jobDir(next), "plan.json"), next.plan);
+      if (next.live) await writeJsonAtomic(join(jobDir(next), "live-plan.json"), next.live);
+      await followScriptNow(next, script, level, all);
     }
-    if (!otherLevel && !jobStale(job, script) && !job.plan) return;
-    const direction = anchoredDirection(job.direction, script.lines);
-    const restageFrom = otherLevel ? undefined : await restageBasis(job, script);
-    const wordsChanged = !sameSpokenLines(job.lines, script.lines);
-    const rewordedBasis = wordsChanged
-      ? rewordedFrom(job, direction)
-      : job.plan
-        ? undefined
-        : job.rewordedFrom;
-    await createJob(job.sessionId, job.scriptId, true, "idle", direction, freeToReplace, {
-      restageFrom,
-      rewordedFrom: rewordedBasis,
-    }).catch((error) => (error instanceof JobInUse ? undefined : removeJob(key)));
   } catch (error) {
     console.warn("[video] could not follow the script:", (error as Error).message);
   }
 }
+
+const productOf = (all: readonly Asset[]) => (id: string) => {
+  const a = all.find((x) => x.id === id && x.kind === "product");
+  return a ? { id: a.id, name: a.name } : null;
+};
+
+const cutoutsOf = (all: readonly Asset[]) => (id: string) => {
+  const a = all.find((x) => x.id === id);
+  return a ? cutoutsToMake(a) : 0;
+};
 
 async function plannedBasis(job: VideoJob): Promise<RestageBasis | undefined> {
   const { plan, live, productIds } = job;
@@ -860,17 +880,9 @@ async function restageBasis(job: VideoJob, script: Script): Promise<RestageBasis
 export async function followScript(sessionId: string, scriptId: string): Promise<void> {
   await ensureLoaded();
   const job = jobs.get(keyOf(sessionId, scriptId));
-  if (!job) {
-    scheduleAutoPlan(sessionId);
-    return;
-  }
-  const ws = await getWorkspace();
-  const session = ws.sessions.find((s) => s.id === sessionId);
-  const series = ws.series.find((s) => s.id === session?.seriesId);
-  const level = videoLevel(session, series, scriptId);
-  const script = (await getBoard(sessionId)).scripts.find((s) => s.id === scriptId);
-  await followScriptNow(job, script, level, ws.assets, true);
-  scheduleAutoPlan(sessionId);
+  if (!job) return;
+  const { ws, find, levelOf } = await boardNow(sessionId);
+  await followScriptNow(job, find(scriptId), levelOf(scriptId), ws.assets);
 }
 
 export async function followLevel(sessionId: string): Promise<void> {
@@ -892,22 +904,20 @@ export async function changesInPlace(
   return editsInPlace(sent, jobs.get(keyOf(sessionId, scriptId)));
 }
 
-export async function replan(sessionId: string, scriptId: string): Promise<null> {
-  await dropPlan(sessionId, scriptId);
-  return planOnly(sessionId, scriptId);
-}
-
 export async function runAll(sessionId: string): Promise<null> {
   await ensureLoaded();
   const ws = await getWorkspace();
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
-  const board = await getBoard(sessionId);
+  const { board, levelOf, find } = await boardNow(sessionId);
   for (const scriptId of committedIds(session, board.scripts)) {
     const key = keyOf(sessionId, scriptId);
-    if (!stagedToMake(jobs.get(key))) continue;
+    const script = find(scriptId);
+    const toMake = (job: VideoJob | undefined) =>
+      Boolean(script && readyToMake(job, script, levelOf(scriptId)));
+    if (!toMake(jobs.get(key))) continue;
     await update(key, (job) =>
-      stagedToMake(job) ? runThrough(spendingStarts(job, nowIso()), nowIso()) : job,
+      toMake(job) ? runThrough(spendingStarts(job, nowIso()), nowIso()) : job,
     );
   }
   return null;
@@ -1087,10 +1097,6 @@ export async function abandonSessions(sessionIds: readonly string[]): Promise<vo
   const keys = [...jobs]
     .filter(([, job]) => sessionIds.includes(job.sessionId))
     .map(([key]) => key);
-  for (const sessionId of sessionIds) {
-    clearTimeout(autoTimers.get(sessionId));
-    autoTimers.delete(sessionId);
-  }
   for (const key of keys) {
     stagings.get(key)?.abort();
     await update(key, (job) => stopJob(job, nowIso()));
@@ -1408,6 +1414,7 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
       const model = modelLocked(j) ? j.model : mediaLevel(level).speaker;
       const staging = withSpeech({
         ...withCutouts(planned),
+        stagedDirection: job.direction ?? [],
         level,
         model,
         resolution: live

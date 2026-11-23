@@ -3,12 +3,13 @@ import { unstarted } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
 import type { Reworded } from "@shared/reworded";
 import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "@shared/scene";
-import { stagingState } from "@shared/session-steps";
+import { OUTDATED_TEXT } from "@shared/staging-status";
 import type { JobShot, VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
+import { STAGE_LABEL, stagingOf, useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -49,18 +50,32 @@ export function ShotBrief({
   const jobs = useVideoJobs(sessionId);
   const { assets } = useWorkspace();
   const job = given !== undefined ? given : (jobs?.jobs.get(script.id) ?? null);
+  const level = useVideoLevel(sessionId)(script.id);
   const { error, run } = useAction();
   const [editing, setEditing] = useState<number | null>(null);
   const ids = { sessionId, scriptId: script.id };
+  const stage = (again = false) =>
+    run(() =>
+      api.invoke("video:stage", { sessionId, scriptIds: [script.id], ...(again ? { again } : {}) }),
+    );
 
   if (script.status !== "ready") return null;
   const staging = script.staging?.trim();
   const errorLine = error && <p className="text-xs text-destructive-foreground">{error}</p>;
+  const { status, reasons, canStage } = stagingOf(job, script, level);
 
-  if (job?.planning || (jobs && stagingState(script, job) === "staging")) {
+  if (job?.planning) {
     return (
-      <div data-shot-brief className={className}>
-        <PlanningSteps steps={job?.planningSteps?.length ? job.planningSteps : ["Đọc kịch bản"]} />
+      <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>
+        <PlanningSteps steps={job.planningSteps?.length ? job.planningSteps : ["Đọc kịch bản"]} />
+        <Button
+          variant="ghost-muted"
+          size="xs"
+          onClick={() => run(() => api.invoke("video:stage-stop", ids))}
+        >
+          Dừng
+        </Button>
+        {errorLine}
       </div>
     );
   }
@@ -69,19 +84,19 @@ export function ShotBrief({
     return (
       <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>
         {staging && <StagingNote text={staging} />}
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={() => run(() => api.invoke("video:plan", ids))}
-        >
-          Lên dàn dựng
-        </Button>
+        {canStage && (
+          <Button variant="outline" size="xs" onClick={() => stage()}>
+            {STAGE_LABEL[status]}
+          </Button>
+        )}
         {errorLine}
       </div>
     );
   }
 
   const open = unstarted(job);
+  const outdated = status === "outdated";
+  const reason = reasons[0];
   const changed = open ? job.reworded : undefined;
   const changedScene = (i: number) => Array.isArray(changed?.scenes) && changed.scenes.includes(i);
   const keyframes = job.live?.plan.keyframes ?? [];
@@ -93,17 +108,30 @@ export function ShotBrief({
   };
   const whole = (job.direction ?? []).filter((d) => !d.words);
   const plannedBeforeBriefsWereSentences = job.shots.some((shot) => !sceneBrief(shot));
+  const pendingWish = (shot: JobShot) => {
+    const wanted = directionAt(job.direction, shot.text)?.want;
+    if (!wanted || !job.stagedDirection) return undefined;
+    return directionAt(job.stagedDirection, shot.text)?.want === wanted ? undefined : wanted;
+  };
   const save = (shot: JobShot, value: string) => {
     setEditing(null);
     const want = value.replace(/\s+/g, " ").trim();
     const had = directionAt(job.direction, shot.text);
-    if (want === (sceneBrief(shot) ?? "") || (!want && !had)) return;
+    if (want === (pendingWish(shot) ?? sceneBrief(shot) ?? "") || (!want && !had)) return;
     void run(() => api.invoke("video:direct", { ...ids, words: shot.text, want }));
   };
 
   return (
     <div data-shot-brief className={cn("flex flex-col gap-3", className)}>
-      {changed && <RewordedNote changed={changed} />}
+      {outdated && reason && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {OUTDATED_TEXT[reason]}
+          <Button variant="outline" size="xs" onClick={() => stage()}>
+            Cập nhật
+          </Button>
+        </div>
+      )}
+      {changed && !outdated && <RewordedNote changed={changed} />}
       {staging && <StagingNote text={staging} />}
       {whole.length > 0 && (
         <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
@@ -129,17 +157,12 @@ export function ShotBrief({
           ))}
         </ul>
       )}
-      {open && plannedBeforeBriefsWereSentences && (
-        <Button
-          variant="outline"
-          size="xs"
-          className="self-start"
-          onClick={() => run(() => api.invoke("video:replan", ids))}
-        >
-          Lên lại dàn dựng
+      {open && !outdated && plannedBeforeBriefsWereSentences && (
+        <Button variant="outline" size="xs" className="self-start" onClick={() => stage(true)}>
+          Dàn dựng lại
         </Button>
       )}
-      <ol className="flex flex-col divide-y divide-border">
+      <ol className={cn("flex flex-col divide-y divide-border", outdated && "opacity-60")}>
         {job.shots.map((shot, i) => (
           <Scene
             key={shot.index}
@@ -148,6 +171,7 @@ export function ShotBrief({
             name={nameOf(shot)}
             framing={sceneFraming(shot, keyframes)}
             directed={Boolean(directionAt(job.direction, shot.text))}
+            wish={pendingWish(shot)}
             editing={editing === shot.index}
             editable={open}
             onEdit={() => setEditing(shot.index)}
@@ -180,6 +204,7 @@ function Scene({
   name,
   framing,
   directed,
+  wish,
   editing,
   editable,
   onEdit,
@@ -191,13 +216,14 @@ function Scene({
   name: string;
   framing: string;
   directed: boolean;
+  wish: string | undefined;
   editing: boolean;
   editable: boolean;
   onEdit: () => void;
   onCancel: () => void;
   onSave: (value: string) => void;
 }) {
-  const brief = sceneBrief(shot);
+  const brief = wish ?? sceneBrief(shot);
   const seen = brief ?? <span className="text-muted-foreground/60">Chưa có mô tả</span>;
   return (
     <li className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">

@@ -59,13 +59,18 @@ const sameLines = (a: readonly ScriptLine[], b: readonly ScriptLine[]) =>
 export const sameSpokenLines = (staged: readonly ScriptLine[], script: ScriptLine[]) =>
   sameLines(staged, spokenLines(script));
 
-export function jobStale(
-  job: Pick<VideoJob, "lines" | "productIds">,
-  script: { lines: ScriptLine[]; productIds: string[] },
-): boolean {
-  if (!sameSpokenLines(job.lines, script.lines)) return true;
-  if (!job.productIds) return false;
-  const a = [...job.productIds].sort().join("|");
-  const b = [...script.productIds].sort().join("|");
-  return a !== b;
-}
+export const sameProducts = (a: readonly string[], b: readonly string[]) =>
+  [...a].sort().join("|") === [...b].sort().join("|");
+
+const wishKeys = (list: readonly DirectionEntry[] | undefined) =>
+  (list ?? []).map((d) => `${key(d.words)}\n${key(d.want)}`).sort();
+
+export const sameDirection = (
+  a: readonly DirectionEntry[] | undefined,
+  b: readonly DirectionEntry[] | undefined,
+) => wishKeys(a).join("\n\n") === wishKeys(b).join("\n\n");
+
+export const productChanged = (
+  job: Pick<VideoJob, "productIds">,
+  script: { productIds: string[] },
+) => Boolean(job.productIds && !sameProducts(job.productIds, script.productIds));

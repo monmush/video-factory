@@ -5,20 +5,19 @@ import {
   costToFinishUsd,
   costToPreviewUsd,
   inFlightUsd,
-  stagedToMake,
   stillToPayUsd,
   unknownPriceSteps,
 } from "@shared/cost/estimate";
 import { estimateText, type Money, moneyText, paidSoFar } from "@shared/cost/table";
 import { formatCost } from "@shared/credits";
-import { failedUnpaid } from "@shared/edit-in-place";
+import { failedUnpaid, videoUntouched } from "@shared/edit-in-place";
 import { mediaUrl, type Script } from "@shared/ipc";
 import { type MediaLevel, type MediaLevelId, mediaLevel } from "@shared/media-level";
 import { isNetworkMessage, OFFLINE_MESSAGE } from "@shared/net-error";
 import { stillOwedHint } from "@shared/paid-work";
 import { phaseSecNow, timed, totalSec } from "@shared/phase-clock";
 import { committedIds, finishedScripts } from "@shared/ready-check";
-import { stagingState } from "@shared/session-steps";
+import { OUTDATED_TEXT, readyToMake } from "@shared/staging-status";
 import { type Tempo, tempoOf } from "@shared/tempo";
 import {
   canFix,
@@ -80,6 +79,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, editAsNewVersion, requestChatFocus, useBoard } from "@/lib/board";
+import { type ScriptStaging, STAGE_LABEL, stagingOf } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import {
@@ -214,21 +214,26 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
   const rest = finished.filter((s) => !committed.includes(s.id));
   const restIds = rest.map((s) => s.id);
   const jobOf = (scriptId: string) => state.jobs.get(scriptId);
+  const scriptOf = (scriptId: string) => finished.find((s) => s.id === scriptId);
   const atLevel = (scriptId: string): VideoJob | undefined => {
     const job = jobOf(scriptId);
-    if (!stagedToMake(job) || job.status !== "idle") return job;
+    if (!job?.plan || job.planning || job.status !== "idle") return job;
     const level = makeAll.levelOf(scriptId);
     return level === mediaLevel(job.level).id ? job : (planAtLevel(job, level) ?? job);
   };
   const priceOf = (scriptId: string) => batchToMake([atLevel(scriptId)]).usd;
-  const staged = (s: Script) => stagedToMake(jobOf(s.id));
-  const isStaging = (script: Script) => stagingState(script, jobOf(script.id)) === "staging";
+  const staged = (s: Script) => readyToMake(jobOf(s.id), s, makeAll.levelOf(s.id));
+  const stagingOfScript = (s: Script) => stagingOf(jobOf(s.id), s, makeAll.levelOf(s.id));
+  const isStaging = (script: Script) => stagingOfScript(script).status === "staging";
   const stagedRest = rest.filter(staged);
   const stalled = sentVideosBatchAlsoFinishes(sent, state.jobs);
   const stagedStalled = stalled.filter(staged);
   const sum = (list: Script[]) => batchToMake(list.map((s) => atLevel(s.id))).usd;
   const count = stagedRest.length + stagedStalled.length;
   const staging = [...rest, ...stalled].filter(isStaging).length;
+  const unstaged = [...rest, ...stalled].filter((s) => stagingOfScript(s).canStage);
+  const stageAll = () =>
+    all.run(() => api.invoke("video:stage", { sessionId, scriptIds: unstaged.map((s) => s.id) }));
   const showAll = rest.length + stalled.length > 1 || rest.length === 1;
 
   const label = (hold: boolean) => {
@@ -257,6 +262,14 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
               {stagingText(staging)}
             </span>
           )}
+          {unstaged.length > 0 && (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+              {unstaged.length} video chưa dàn dựng
+              <Button variant="outline" size="xs" onClick={stageAll}>
+                Dàn dựng
+              </Button>
+            </span>
+          )}
           {checkFirst ? (
             <Button onClick={() => makeAll.open(restIds)}>
               {label(false)}
@@ -280,7 +293,10 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
           if (!next) makeAll.close();
         }}
         spend={{
-          priceOf: (scriptId) => (stagedToMake(jobOf(scriptId)) ? priceOf(scriptId) : null),
+          priceOf: (scriptId) => {
+            const script = scriptOf(scriptId);
+            return script && staged(script) ? priceOf(scriptId) : null;
+          },
           staging: (scriptId) => {
             const script = rest.find((s) => s.id === scriptId);
             return Boolean(script && isStaging(script));
@@ -347,14 +363,26 @@ const hasPlanTable = (job: VideoJob) => Boolean(job.live);
 
 const minutes = (seconds: number) => `còn ~${Math.max(1, Math.round(seconds / 60))} phút`;
 
+function stagingLine({ status, reasons }: ScriptStaging): string | null {
+  if (status === "staging") return "Đang dàn dựng";
+  if (status === "outdated" && reasons[0]) return OUTDATED_TEXT[reasons[0]];
+  return null;
+}
+
 function statusLine(
   job: VideoJob | null,
   script: Script,
+  staging: ScriptStaging,
   averages: StepAverages,
   now: number,
 ): string | null {
-  if (stagingState(script, job) === "staging") return "Đang lên dàn dựng";
-  if (!job || job.status === "idle") return formatSeconds(estimateSeconds(script.lines));
+  const stagingNow = stagingLine(staging);
+  if (stagingNow) return stagingNow;
+  const length = formatSeconds(estimateSeconds(script.lines));
+  if (!job?.plan && staging.canStage && staging.status === "none") {
+    return `Chưa dàn dựng · ${length}`;
+  }
+  if (!job || job.status === "idle") return length;
   if (job.offline && (job.status === "running" || job.status === "waiting")) return OFFLINE_MESSAGE;
   const done = doneShots(job);
   const total = job.shots.length;
@@ -559,6 +587,9 @@ function VideoCard({
   const now = useNow(job?.status === "running");
   const ids = { sessionId, scriptId: script.id };
   const stagingFailedBeforeSpending = Boolean(job && failedUnpaid(job));
+  const staging = stagingOf(job, script, ownLevel);
+  const stageThis = () =>
+    run(() => api.invoke("video:stage", { sessionId, scriptIds: [script.id] }));
 
   const [tab, setTab] = useState<string | null>(null);
   const [trying, setTrying] = useState<MediaLevelId | null>(null);
@@ -605,9 +636,9 @@ function VideoCard({
   };
 
   const unstartedVideo = !job || job.status === "idle";
-  const status = statusLine(view, script, averages, now);
+  const status = statusLine(view, script, staging, averages, now);
   const priceAt = (level: MediaLevel) => {
-    if (!job?.plan || job.planning || job.status !== "idle") return null;
+    if (job?.status !== "idle" || !readyToMake(job, script, level.id)) return null;
     const at = level.id === mediaLevel(job.level).id ? job : planAtLevel(job, level.id);
     return at ? costToFinishUsd(at) : null;
   };
@@ -636,7 +667,7 @@ function VideoCard({
           Tạo video
         </Button>
       );
-  } else if (job?.planning) {
+  } else if (staging.status === "staging") {
     action = (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <LoaderCircle className="size-3.5 animate-spin" />
@@ -644,12 +675,17 @@ function VideoCard({
       </span>
     );
   } else if (!job || job.status === "idle") {
-    action = job?.plan ? (
-      <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
-        {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo video"}
-        <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
-      </HoldButton>
-    ) : null;
+    action =
+      job && readyToMake(job, script, ownLevel) ? (
+        <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
+          {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo video"}
+          <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
+        </HoldButton>
+      ) : staging.canStage ? (
+        <Button variant="outline" onClick={stageThis}>
+          {STAGE_LABEL[staging.status]}
+        </Button>
+      ) : null;
   } else if (active && working) {
     const left = stillToPayUsd(job);
     cost =
@@ -690,11 +726,11 @@ function VideoCard({
         </Button>
       );
   } else if (stagingFailedBeforeSpending) {
-    action = (
-      <Button variant="outline" onClick={() => run(() => api.invoke("video:plan", ids))}>
-        Lên dàn dựng
+    action = staging.canStage ? (
+      <Button variant="outline" onClick={stageThis}>
+        {STAGE_LABEL[staging.status]}
       </Button>
-    );
+    ) : null;
   } else {
     cost = shownCost;
     action = (
@@ -705,12 +741,6 @@ function VideoCard({
     );
   }
 
-  const plannedAtAnotherLevel = Boolean(
-    view?.status === "idle" &&
-      view.plan &&
-      !view.planning &&
-      mediaLevel(view.level).id !== mediaLevel(ownLevel).id,
-  );
   const fixOrTalk = Boolean(
     view && view.status !== "idle" && view.status !== "waiting" && switchable,
   );
@@ -953,25 +983,15 @@ function VideoCard({
           </Button>
         </div>
       )}
-      {plannedAtAnotherLevel && view && (
-        <div className="mt-1 flex items-center gap-2 pl-7.5 text-xs text-muted-foreground">
-          Kế hoạch theo {mediaLevel(view.level).label}
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() => run(() => api.invoke("video:replan", ids))}
-          >
-            Lập lại
-          </Button>
-        </div>
-      )}
       {view?.planningSteps && (view.planning || jobPhase(view) === "plan") && (
         <PlanningSteps steps={view.planningSteps} className="mt-2 ml-7.5" />
       )}
       {view &&
         (view.status === "running" || view.status === "waiting") &&
         jobPhase(view) !== "plan" && <MakingSteps job={view} now={now} />}
-      {view && hasPlanTable(view) && <LivePlanFold job={view} />}
+      {view && hasPlanTable(view) && (!videoUntouched(view) || staging.status === "ready") && (
+        <LivePlanFold job={view} />
+      )}
       {view && view.status !== "idle" && (
         <JobBody
           key={selected ?? ""}

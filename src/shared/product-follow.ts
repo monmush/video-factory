@@ -72,14 +72,16 @@ export function followProduct(
   if (coverageErrors(shots, lines).length) return { kind: "replan", why: "lines" };
   const nextPlan: ShotPlan = { ...plan, shots };
 
-  const direction: DirectionEntry[] | undefined = job.direction?.map((d) =>
-    d.words ? { ...d, words: swap(d.words) } : d,
-  );
+  const swapWords = (list: DirectionEntry[] | undefined) =>
+    list?.map((d) => (d.words ? { ...d, words: swap(d.words) } : d));
+  const direction = swapWords(job.direction);
+  const stagedDirection = swapWords(job.stagedDirection);
   const base: VideoJob = {
     ...job,
     lines,
     productIds: [to.id],
     ...(direction ? { direction } : {}),
+    ...(stagedDirection ? { stagedDirection } : {}),
   };
   const followed = job.live
     ? applyLivePlan(base, followLive(job.live, nextPlan, lines, renamed))

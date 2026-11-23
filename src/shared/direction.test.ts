@@ -4,7 +4,6 @@ import {
   type DirectionEntry,
   directionAt,
   directionSlot,
-  jobStale,
   MAX_DIRECTIONS,
   setDirection,
 } from "./direction";
@@ -95,46 +94,5 @@ describe("direction", () => {
       { want: "c", at: T },
     ];
     expect(anchoredDirection(list, LINES).map((d) => d.want)).toEqual(["a", "c"]);
-  });
-});
-
-describe("jobStale", () => {
-  const job = {
-    ...newJob({
-      sessionId: "s",
-      seriesId: "r",
-      scriptId: "x",
-      title: "t",
-      lines: LINES,
-      useEnvironment: true,
-      now: T,
-    }),
-    productIds: ["p"],
-  };
-  const script = { lines: LINES, productIds: ["p"] };
-
-  it("fits while the lines and products are the same", () => {
-    expect(jobStale(job, script)).toBe(false);
-    expect(
-      jobStale(job, {
-        ...script,
-        lines: [
-          ...LINES.map((l) => ({ ...l, text: ` ${l.text} ` })),
-          { characterId: null, speaker: "?", text: "" },
-        ],
-      }),
-    ).toBe(false);
-  });
-
-  it("no longer fits once a line, a speaker or a product changed", () => {
-    expect(jobStale(job, { ...script, lines: LINES.slice(1) })).toBe(true);
-    expect(
-      jobStale(job, {
-        ...script,
-        lines: LINES.map((l, i) => (i ? l : { ...l, characterId: "b" })),
-      }),
-    ).toBe(true);
-    expect(jobStale(job, { ...script, productIds: [] })).toBe(true);
-    expect(jobStale({ ...job, productIds: undefined }, { ...script, productIds: [] })).toBe(false);
   });
 });

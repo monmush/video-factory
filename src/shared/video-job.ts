@@ -167,6 +167,7 @@ export interface VideoJob {
   rewordedFrom?: RewordedFrom;
   reworded?: Reworded;
   direction?: DirectionEntry[];
+  stagedDirection?: DirectionEntry[];
   productIds?: string[];
   dialogue?: string;
   dialogueSec?: number;

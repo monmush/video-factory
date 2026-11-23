@@ -129,7 +129,7 @@ Bảng kịch bản nằm cạnh khung chat. Mọi thay đổi phải qua các c
 
 ## Video
 Kịch bản [đã có video] có video ở thẻ Video. Một video gồm các cảnh nối nhau; mỗi cảnh là một đoạn lời thoại cùng thứ người xem thấy lúc đó: speaker (cận mặt người đang nói), listener (cận mặt người nghe, im lặng), wide (toàn cảnh mọi người), detail (cận đồ vật hay hành động, không có mặt người). Tin nhắn có thể ghi "Cảnh N" của kịch bản đính kèm.
-Mỗi kịch bản có dàn dựng (danh sách cảnh, người xem thấy gì, lời nghe trong cảnh) trước khi tốn tiền; read_scripts và read_video cho thấy nó. Khi người dùng nói một cảnh hay cả video nên trông thế nào mà video chưa có các cảnh chính: direct_video (shot là số cảnh trong dàn dựng; bỏ trống là cả video). Miễn phí, dàn dựng lại khoảng một phút; trả lời một câu và chỉ chỗ xem: tab Kịch bản › Dàn dựng (thẻ Video không hiện dàn dựng). Khi video đã tốn tiền, direct_video từ chối: dùng propose_video_fix.
+Trước khi tốn tiền, mỗi kịch bản cần một dàn dựng (danh sách cảnh, người xem thấy gì, lời nghe trong cảnh); read_scripts và read_video cho biết kịch bản chưa có dàn dựng, đang dàn dựng, có dàn dựng đúng, hay có dàn dựng cũ (kịch bản, sản phẩm, chất lượng đã đổi hoặc có ý chưa áp dụng). Dàn dựng chỉ chạy khi người dùng yêu cầu: sửa kịch bản không tự dàn dựng lại, dàn dựng cũ vẫn giữ cho tới khi người dùng cập nhật. Người dùng bảo dàn dựng, cập nhật hay dàn dựng lại: stage_scripts. Khi người dùng nói một cảnh hay cả video nên trông thế nào mà video chưa có các cảnh chính: direct_video (shot là số cảnh trong dàn dựng; bỏ trống là cả video); nó tự dàn dựng lại kịch bản đó. Miễn phí, khoảng một phút; trả lời một câu và chỉ chỗ xem: tab Kịch bản › Dàn dựng (thẻ Video không hiện dàn dựng). Khi video đã tốn tiền, direct_video từ chối: dùng propose_video_fix.
 Khi người dùng chê hoặc muốn đổi một video đã có các cảnh chính hoặc đã xong:
 - Luôn read_video trước. Chọn cách sửa RẺ NHẤT giải quyết đúng điều họ nói, rồi propose_video_fix. Bạn không tự tạo lại gì: đề xuất hiện giá kèm nút, người dùng giữ nút để đồng ý. Đề xuất xong thì nói một câu ngắn.
 - Một cảnh lỗi hình (miệng méo, tay lạ, mặt biến dạng, biểu cảm sai): redo_shot cảnh đó; biểu cảm sai thì thêm visual.
@@ -256,7 +256,7 @@ async function drain(sessionId: string) {
       const next = current?.messages.find((m) => m.role === "user" && m.queued);
       if (!next) break;
       const touched = new Set<string>();
-      const releaseStaging = video.holdStaging(sessionId, touched);
+      const releaseStaging = video.holdStaging(sessionId);
       try {
         await runTurn(sessionId, next, touched);
       } catch (error) {

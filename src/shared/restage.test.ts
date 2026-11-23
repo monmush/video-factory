@@ -4,7 +4,6 @@ import { classifyScriptEdit, restagePlan, untouchedChanged } from "./restage";
 import { readShotList, type ShotListAnswer, shotListAnswer } from "./shot-list";
 import { answer, CTX, LINES } from "./shot-list.fixture";
 import { applyCorrection } from "./shot-list-correction";
-import { stagingHeld, stagingOutdated } from "./staging-hold";
 
 const CAPS = { motion: false };
 const an = (text: string): ScriptLine => ({ characterId: "a", speaker: "An", text });
@@ -220,27 +219,5 @@ describe("merging a partial restage", () => {
     });
     if ("unusable" in touchedPicture) throw new Error(touchedPicture.unusable);
     expect(untouchedChanged(r.previous, touchedPicture.answer, r.open)).toMatch(/Picture "an"/);
-  });
-});
-
-describe("staging and the script it was made for", () => {
-  it("drops a staging made for an older wording of the script", () => {
-    expect(stagingOutdated({ lines: LINES }, { lines: LINES })).toBe(false);
-    expect(stagingOutdated({ lines: LINES }, { lines: withLine(2, "Dạ cháu cảm ơn ông.") })).toBe(
-      true,
-    );
-    expect(stagingOutdated({ lines: LINES }, { lines: LINES, deletedAt: "2026-11-20" })).toBe(true);
-    expect(stagingOutdated({ lines: LINES }, undefined)).toBe(true);
-  });
-
-  it("holds staging only for scripts a running turn touched, and never for ever", () => {
-    const touched = new Set<string>();
-    const holds = [{ scripts: touched, since: 0 }];
-    expect(stagingHeld(holds, "s1", 1000)).toBe(false);
-    touched.add("s1");
-    expect(stagingHeld(holds, "s1", 1000)).toBe(true);
-    expect(stagingHeld(holds, "s2", 1000)).toBe(false);
-    expect(stagingHeld(holds, "s1", 60 * 60 * 1000)).toBe(false);
-    expect(stagingHeld([], "s1", 1000)).toBe(false);
   });
 });

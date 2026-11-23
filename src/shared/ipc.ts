@@ -597,8 +597,11 @@ export interface IpcContract {
   "video:paid-work": { args: [sessionIds: string[]]; result: PaidWork };
   "video:making": { args: []; result: VideosBeingMade };
   "video:start": { args: [input: { sessionId: string; scriptId: string }]; result: null };
-  "video:plan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
-  "video:replan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  "video:stage": {
+    args: [input: { sessionId: string; scriptIds: string[]; again?: boolean }];
+    result: null;
+  };
+  "video:stage-stop": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   "video:direct": {
     args: [
       input: { sessionId: string; scriptId: string; words?: string; want: string; at?: string },
@@ -719,8 +722,8 @@ export const IPC_CHANNELS = [
   "video:paid-work",
   "video:making",
   "video:start",
-  "video:plan",
-  "video:replan",
+  "video:stage",
+  "video:stage-stop",
   "video:direct",
   "video:make-all",
   "video:stop",

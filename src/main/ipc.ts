@@ -274,8 +274,14 @@ export function registerIpc() {
   );
   handle("video:making", video.videosBeingMadeNow);
   handle("video:start", ({ sessionId, scriptId }) => video.start(sessionId, scriptId));
-  handle("video:plan", ({ sessionId, scriptId }) => video.planOnly(sessionId, scriptId));
-  handle("video:replan", ({ sessionId, scriptId }) => video.replan(sessionId, scriptId));
+  handle("video:stage", ({ sessionId, scriptIds, again }) =>
+    video.stage(
+      sessionId,
+      Array.isArray(scriptIds) ? scriptIds.filter((id) => typeof id === "string") : [],
+      again === true,
+    ),
+  );
+  handle("video:stage-stop", ({ sessionId, scriptId }) => video.stopStaging(sessionId, scriptId));
   handle("video:direct", ({ sessionId, scriptId, words, want, at }) =>
     video.direct(sessionId, scriptId, {
       ...(words ? { words } : {}),

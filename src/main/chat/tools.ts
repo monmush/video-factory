@@ -9,6 +9,12 @@ import type { Asset, ChatPart, Script } from "../../shared/ipc";
 import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
 import { mixProblem } from "../../shared/product-mix";
 import type { PlannedShot } from "../../shared/shot-plan";
+import {
+  OUTDATED_TEXT,
+  type OutdatedReason,
+  type StagingStatus,
+  stageable,
+} from "../../shared/staging-status";
 import { canFix, type FixChange } from "../../shared/video-fix";
 import { frameFor, isGenerated, jobPhase, type VideoJob } from "../../shared/video-job";
 import * as board from "../board";
@@ -106,7 +112,29 @@ const STATUS: Record<VideoJob["status"], string> = {
   done: "xong",
 };
 
-function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
+interface Staging {
+  status: StagingStatus;
+  reasons: OutdatedReason[];
+}
+
+function stagingLine({ status, reasons }: Staging): string {
+  switch (status) {
+    case "none":
+      return "Chưa có dàn dựng. Chỉ dàn dựng khi người dùng yêu cầu (stage_scripts).";
+    case "staging":
+      return "Đang dàn dựng.";
+    case "failed":
+      return "Lần dàn dựng trước bị lỗi; dàn dựng lại khi người dùng yêu cầu (stage_scripts).";
+    case "outdated":
+      return `Dàn dựng cũ: ${reasons
+        .map((r) => OUTDATED_TEXT[r].toLocaleLowerCase("vi"))
+        .join(", ")}. Chưa tạo video được cho đến khi người dùng cập nhật (stage_scripts).`;
+    default:
+      return "";
+  }
+}
+
+function describeVideo(number: number, job: VideoJob, assets: Asset[], staging: Staging) {
   const name = (id: string | null | undefined) => assets.find((a) => a.id === id)?.name ?? "?";
   const stills = job.frames.map((f) => {
     const what =
@@ -143,7 +171,7 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
   const whole = (job.direction ?? []).filter((d) => !d.words);
   return [
     `Video #${number}: ${STATUS[job.status]}; ${job.shots.length} cảnh; đã dùng ${moneyText(paidSoFar(job))}.`,
-    job.planning ? "Đang lên dàn dựng." : job.plan ? "" : "Chưa lên dàn dựng.",
+    stagingLine(staging),
     whole.length ? `Ý người dùng cho cả video:\n${whole.map((d) => `- ${d.want}`).join("\n")}` : "",
     job.previous?.final
       ? 'Có bản trước lần sửa gần nhất (người dùng tự bấm "Bản trước" để quay lại).'
@@ -156,16 +184,16 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
     .join("\n\n");
 }
 
-function describePlan(job: VideoJob | null): string {
-  if (!job) return "";
-  if (job.planning) return "Dàn dựng: đang lên.";
-  if (!job.plan) return "";
+function describePlan(job: VideoJob | null, staging: Staging): string {
+  const line = stagingLine(staging);
+  if (!job?.plan || staging.status === "staging") return line;
   const rows = job.shots.map((s) => {
     const want = directionAt(job.direction, s.text)?.want;
     return `${s.index + 1}. ${s.brief ?? s.kind} — "${s.text}"${want ? ` [ý người dùng: ${want}]` : ""}`;
   });
   const whole = (job.direction ?? []).filter((d) => !d.words).map((d) => `- ${d.want}`);
   return [
+    ...(line ? [line] : []),
     `Dàn dựng (${job.shots.length} cảnh; ${job.status === "idle" && spentUsd(job) === 0 ? "chưa tốn gì, sửa được bằng direct_video" : "video đã bắt đầu tạo"}):`,
     ...rows,
     ...(whole.length ? ["Ý người dùng cho cả video:", ...whole] : []),
@@ -342,7 +370,12 @@ export const TOOLS = [
       host.label(`Đọc ${list(numbers)}`);
       const ctx = await board.writerContext(host.sessionId);
       const plans = await Promise.all(
-        scripts.map(async (s) => describePlan(await video.jobFor(host.sessionId, s.id))),
+        scripts.map(async (s) =>
+          describePlan(
+            await video.jobFor(host.sessionId, s.id),
+            await video.stagingOf(host.sessionId, s.id),
+          ),
+        ),
       );
       return scripts
         .map(
@@ -666,14 +699,19 @@ export const TOOLS = [
       host.label(`Xem video #${number}`);
       const job = await video.jobFor(host.sessionId, (scripts[0] as Script).id);
       if (!job) return `#${number} chưa có video.`;
-      return describeVideo(number, job, (await getWorkspace()).assets);
+      return describeVideo(
+        number,
+        job,
+        (await getWorkspace()).assets,
+        await video.stagingOf(host.sessionId, (scripts[0] as Script).id),
+      );
     },
   }),
 
   define({
     name: "direct_video",
     description:
-      "Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại miễn phí (khoảng một phút), giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có các cảnh chính. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Sau khi có các cảnh chính thì dùng propose_video_fix.",
+      "Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại kịch bản đó một lần miễn phí (khoảng một phút) sau khi bạn trả lời xong, giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có các cảnh chính. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Sau khi có các cảnh chính thì dùng propose_video_fix.",
     shape: {
       number: z.number().int().min(1),
       shot: z.number().int().min(1).optional().describe("Số cảnh; bỏ trống là cho cả video"),
@@ -693,6 +731,7 @@ export const TOOLS = [
       }
       try {
         await video.direct(host.sessionId, script.id, { ...(words ? { words } : {}), want });
+        await video.askToStage(host.sessionId, [script.id]);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message === "Video đã bắt đầu tạo") {
@@ -700,7 +739,51 @@ export const TOOLS = [
         }
         throw error;
       }
-      return `Đã lưu. #${number} đang được dàn dựng lại theo ý này (miễn phí, khoảng một phút). Trả lời một câu ngắn và chỉ chỗ xem, ví dụ: "Đã cập nhật dàn dựng #${number}, xem ở tab Kịch bản › Dàn dựng."`;
+      return `Đã lưu. #${number} sẽ được dàn dựng lại theo ý này ngay khi bạn trả lời xong (miễn phí, khoảng một phút). Trả lời một câu ngắn và chỉ chỗ xem, ví dụ: "Đang dàn dựng lại #${number}, xem ở tab Kịch bản › Dàn dựng."`;
+    },
+  }),
+
+  define({
+    name: "stage_scripts",
+    description:
+      'Dàn dựng các kịch bản theo số: chia cảnh và lên cách quay cho lời thoại hiện tại. Miễn phí, mỗi kịch bản khoảng một phút. CHỈ gọi khi người dùng yêu cầu (ví dụ "dàn dựng #2", "cập nhật dàn dựng #2", "dàn dựng lại #2"); không bao giờ tự gọi sau khi sửa kịch bản. Kịch bản đã có dàn dựng đúng với lời hiện tại thì bỏ qua, trừ khi again là true ("dàn dựng lại" từ đầu). Chạy sau khi bạn trả lời xong. Video đã bắt đầu tạo thì không dàn dựng lại được.',
+    shape: {
+      numbers: z.array(z.number().int().min(1)).min(1).max(30),
+      again: z.boolean().optional().describe("true: dàn dựng lại từ đầu cả khi đã đúng"),
+    },
+    pending: "Dàn dựng",
+    async run({ numbers, again }, host) {
+      const { scripts } = await pick(host.sessionId, numbers);
+      host.label(`Dàn dựng ${list(numbers)}`);
+      const picked = await Promise.all(
+        scripts.map(async (script, i) => ({
+          script,
+          number: numbers[i] as number,
+          status: (await video.stagingOf(host.sessionId, script.id)).status,
+        })),
+      );
+      const numbersOf = (rows: typeof picked) => list(rows.map((r) => r.number));
+      const unwritten = picked.filter((r) => !stageable(r.script));
+      const started = picked.filter((r) => r.status === "started");
+      const current = picked.filter((r) => !again && r.status === "ready");
+      const asked = picked.filter(
+        (r) => !unwritten.includes(r) && !started.includes(r) && !current.includes(r),
+      );
+      await video.askToStage(
+        host.sessionId,
+        asked.map((r) => r.script.id),
+        again === true,
+      );
+      return [
+        asked.length
+          ? `${numbersOf(asked)} sẽ được dàn dựng ngay khi bạn trả lời xong (miễn phí, khoảng một phút mỗi kịch bản).`
+          : "",
+        current.length ? `${numbersOf(current)} đã có dàn dựng đúng với lời hiện tại.` : "",
+        started.length ? `${numbersOf(started)} đã bắt đầu tạo video nên không dàn dựng lại.` : "",
+        unwritten.length ? `${numbersOf(unwritten)} chưa có lời thoại xong để dàn dựng.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
     },
   }),
 

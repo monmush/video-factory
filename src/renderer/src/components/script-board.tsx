@@ -2,7 +2,7 @@ import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "
 import { editsInPlace } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
 import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
-import { hasVideo, type StagingState, stagingState } from "@shared/session-steps";
+import { hasVideo } from "@shared/session-steps";
 import type { VideoJob } from "@shared/video-job";
 import { Link } from "@tanstack/react-router";
 import {
@@ -51,6 +51,7 @@ import {
 } from "@/lib/board";
 import { useLiveWriting } from "@/lib/chat";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
+import { type ScriptStaging, STAGE_LABEL, useStaging } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -248,7 +249,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       if (ok && removed) showLineSaved(removed, "Đã xóa lời thoại");
       return ok;
     },
-    stage: (id) => run(() => api.invoke("video:plan", { sessionId, scriptId: id })),
+    stage: (id) => run(() => api.invoke("video:stage", { sessionId, scriptIds: [id] })),
     undoChange: (id) =>
       run(async () => {
         await api.invoke("board:undo-change", { sessionId, scriptId: id });
@@ -777,7 +778,7 @@ function ScriptCard({
         <DragHandle className="top-[19px] left-0.5" />
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
-            {!isSent && <StagingMark scriptId={script.id} state={staging} actions={actions} />}
+            {!isSent && <StagingMark scriptId={script.id} staging={staging} actions={actions} />}
             {script.status === "ready" && script.lines.length > 0 && (
               <CardTabs value={tab} onChange={setTab} staging={staging} />
             )}
@@ -982,7 +983,7 @@ function CompactCard({
             {isSent ? (
               <SentBadge sessionId={shared.sessionId} job={job} staging={staging} />
             ) : (
-              <StagingMark scriptId={script.id} state={staging} actions={actions} />
+              <StagingMark scriptId={script.id} staging={staging} actions={actions} />
             )}
           </CardMeta>
           <h3 className="mt-1 line-clamp-2 font-semibold leading-snug text-balance">
@@ -1219,29 +1220,24 @@ function VersionTag({ script }: { script: Script }) {
   return <span className="whitespace-nowrap">· bản {script.version}</span>;
 }
 
-function useStaging(sessionId: string, script: Script): StagingState {
-  const jobs = useVideoJobs(sessionId);
-  return jobs ? stagingState(script, jobs.jobs.get(script.id)) : "none";
-}
-
 function StagingMark({
   scriptId,
-  state,
+  staging,
   actions,
 }: {
   scriptId: string;
-  state: StagingState;
+  staging: ScriptStaging;
   actions: CardActions;
 }) {
-  if (state === "staging") {
+  if (staging.status === "staging") {
     return (
       <span className="flex shrink-0 items-center gap-1 text-2xs whitespace-nowrap">
         <LoaderCircle className="size-3 animate-spin" />
-        <span className="shimmer-text">Đang lên dàn dựng</span>
+        <span className="shimmer-text">Đang dàn dựng</span>
       </span>
     );
   }
-  if (state !== "failed") return null;
+  if (!staging.canStage) return null;
   return (
     <Button
       variant="outline"
@@ -1252,7 +1248,7 @@ function StagingMark({
         actions.stage(scriptId);
       }}
     >
-      Lên dàn dựng
+      {STAGE_LABEL[staging.status]}
     </Button>
   );
 }
@@ -1264,11 +1260,11 @@ function SentBadge({
 }: {
   sessionId: string;
   job: VideoJob | null | undefined;
-  staging: StagingState;
+  staging: ScriptStaging;
 }) {
   const label =
-    staging === "staging"
-      ? "Lên dàn dựng"
+    staging.status === "staging"
+      ? "Đang dàn dựng"
       : !job || job.status === "idle"
         ? "Chờ tạo"
         : hasVideo(job)
@@ -1308,7 +1304,7 @@ function CardTabs({
 }: {
   value: CardTab;
   onChange: (tab: CardTab) => void;
-  staging: StagingState;
+  staging: ScriptStaging;
 }) {
   return (
     <fieldset className="flex shrink-0 rounded-[var(--control-radius)] border p-px">
@@ -1322,11 +1318,11 @@ function CardTabs({
           aria-pressed={value === t.id}
           onClick={() => onChange(t.id)}
         >
-          {staging === "staging" && t.id === "staging" ? (
-            <span className="shimmer-text" title="Đang lên dàn dựng">
+          {staging.status === "staging" && t.id === "staging" ? (
+            <span className="shimmer-text" title="Đang dàn dựng">
               {t.label}
             </span>
-          ) : staging === "failed" && t.id === "staging" ? (
+          ) : staging.status === "failed" && t.id === "staging" ? (
             <span className="text-destructive-foreground" title="Chưa lên được dàn dựng">
               {t.label}
             </span>
