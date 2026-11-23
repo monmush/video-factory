@@ -23,6 +23,11 @@ type BoardScript = StagedScript & Pick<Script, "status">;
 const otherLevel = (job: VideoJob, level: string) =>
   mediaLevel(job.level).id !== mediaLevel(level).id;
 
+export const wishesChanged = (
+  job: Pick<VideoJob, "stagedDirection">,
+  direction: VideoJob["direction"],
+) => Boolean(job.stagedDirection && !sameDirection(job.stagedDirection, direction));
+
 export function outdatedReasons(
   job: VideoJob | null | undefined,
   script: StagedScript,
@@ -33,9 +38,7 @@ export function outdatedReasons(
   if (!sameSpokenLines(job.lines, script.lines)) reasons.push("words");
   if (productChanged(job, script)) reasons.push("product");
   if (otherLevel(job, level) && !planAtLevel(job, level)) reasons.push("quality");
-  if (job.stagedDirection && !sameDirection(job.stagedDirection, job.direction)) {
-    reasons.push("wishes");
-  }
+  if (wishesChanged(job, job.direction)) reasons.push("wishes");
   return reasons;
 }
 

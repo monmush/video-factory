@@ -24,10 +24,14 @@ const JOB = {
 };
 
 describe("scene actions", () => {
-  it("merges a scene that shares its line, into the next one only at the start of the video", () => {
+  it("merges a scene that shares its line, into the next one when it opens its line", () => {
     expect(sceneAction(JOB, SCRIPT, JOB.shots[2] as JobShot)).toEqual({
       kind: "merge",
       into: "previous",
+    });
+    expect(sceneAction(JOB, SCRIPT, JOB.shots[1] as JobShot)).toEqual({
+      kind: "merge",
+      into: "next",
     });
     const opening = {
       ...JOB,

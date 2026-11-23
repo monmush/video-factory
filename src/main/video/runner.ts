@@ -98,6 +98,7 @@ import {
   stageable,
   stagingOutdated,
   stagingStatus,
+  wishesChanged,
 } from "../../shared/staging-status";
 import { buildAss, wordCues } from "../../shared/subtitles";
 import { type Tempo, tempoOf } from "../../shared/tempo";
@@ -711,7 +712,8 @@ async function jobForStaging(
     return;
   }
   const otherLevel = Boolean(job.plan && mediaLevel(job.level).id !== mediaLevel(level).id);
-  const restageFrom = otherLevel ? undefined : await restageBasis(job, script);
+  const planMustBeRewritten = otherLevel || wishesChanged(job, direction);
+  const restageFrom = planMustBeRewritten ? undefined : await restageBasis(job, script);
   const wordsChanged = !sameSpokenLines(job.lines, script.lines);
   const rewordedBasis = wordsChanged
     ? rewordedFrom(job, direction)

@@ -49,7 +49,8 @@ export function sceneAction(
   if (sameLine.length > 1) {
     const sameWords = job.shots.filter((s) => norm(s.text) === norm(shot.text));
     if (sameWords.length > 1) return null;
-    return { kind: "merge", into: job.shots[0]?.index === shot.index ? "next" : "previous" };
+    const firstOfItsLine = sameLine[0]?.index === shot.index;
+    return { kind: "merge", into: firstOfItsLine ? "next" : "previous" };
   }
   if (job.lines.length <= 1 || scriptLines.length <= 1) return null;
   const index = scriptLineOf(job, scriptLines, shot);
