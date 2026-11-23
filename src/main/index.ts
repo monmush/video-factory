@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, nativeTheme, shell } from "electron";
 import { registerIpc } from "./ipc";
+import { startLog } from "./log";
 import { clearStaging, handleMediaProtocol, registerMediaSchemeBeforeAppReady } from "./media";
 import { chooseDataFolder, superviseDevelopmentRestarts } from "./profiles";
 import { confirmBeforeClosing, confirmBeforeQuitting, quitWithoutAskingOnSignals } from "./quit";
@@ -75,6 +76,7 @@ function createWindow() {
 
 function startApp() {
   chooseDataFolder();
+  startLog();
   allowOneRunningCopyPerDataFolder();
   loadOptionalDevelopmentKeys();
   registerMediaSchemeBeforeAppReady();

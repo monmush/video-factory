@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { ChatEffort, TextProvider, ThemePreference } from "../shared/ipc";
 import { devFeatures } from "./dev";
 import { dataFile, writeJsonAtomic } from "./paths";
+import { providerMode } from "./providers";
 
 interface Settings {
   theme: ThemePreference;
@@ -13,25 +14,35 @@ interface Settings {
 }
 
 const FILE = "settings.json";
-const defaults: Settings = {
+const textProviderUntilChosen = (): TextProvider =>
+  providerMode() === "live" ? "claude-code" : "fal";
+
+const defaultSettings = (): Settings => ({
   theme: "system",
-  textProvider: "fal",
+  textProvider: textProviderUntilChosen(),
   chatModel: "opus",
   chatEffort: "medium",
   onboarded: false,
   nativeVoice: false,
-};
+});
 
-export function readSettings(): Settings {
+function storedSettings(): Settings {
   try {
-    return { ...defaults, ...JSON.parse(readFileSync(dataFile(FILE), "utf8")) };
+    return { ...defaultSettings(), ...JSON.parse(readFileSync(dataFile(FILE), "utf8")) };
   } catch {
-    return { ...defaults };
+    return { ...defaultSettings() };
   }
 }
 
+const paidTextIsOffered = devFeatures;
+
+export function readSettings(): Settings {
+  const stored = storedSettings();
+  return paidTextIsOffered() ? stored : { ...stored, textProvider: "claude-code" };
+}
+
 export async function writeSettings(patch: Partial<Settings>): Promise<void> {
-  await writeJsonAtomic(dataFile(FILE), { ...readSettings(), ...patch });
+  await writeJsonAtomic(dataFile(FILE), { ...storedSettings(), ...patch });
 }
 
 export const nativeVoiceOn = () => devFeatures() && readSettings().nativeVoice === true;

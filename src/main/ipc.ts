@@ -23,6 +23,7 @@ import {
   estimateClean,
   placePhotoPath,
 } from "./place-check";
+import { writeProblemReport } from "./problem-report";
 import * as products from "./product-change";
 import { cutOutProductPhoto } from "./product-cutout";
 import { groupProducts } from "./product-grouping";
@@ -58,11 +59,21 @@ export function registerIpc() {
     version: app.getVersion(),
     platform: process.platform,
     isPackaged: app.isPackaged,
+    devFeatures: devFeatures(),
     dataDir: dataDir(),
   }));
   handle("app:open-data-dir", async () => {
     await shell.openPath(dataDir());
     return null;
+  });
+  handle("app:problem-report", async () => {
+    const file = await writeProblemReport({
+      dataDir: dataDir(),
+      destination: app.getPath("downloads"),
+      about: { version: app.getVersion(), packaged: app.isPackaged },
+    });
+    shell.showItemInFolder(file);
+    return { file };
   });
   handle("dev:profiles", listProfiles);
   handle("dev:create-profile", createProfile);
@@ -372,6 +383,7 @@ export function registerIpc() {
   });
   handle("ai:set-text-provider", async (provider) => {
     if (provider !== "fal" && provider !== "claude-code") throw new Error("Unknown provider");
+    if (provider === "fal" && !devFeatures()) throw new Error("Unknown provider");
     await writeSettings({ textProvider: provider });
     return aiStatus();
   });

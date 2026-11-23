@@ -415,6 +415,7 @@ export interface AppInfo {
   version: string;
   platform: NodeJS.Platform;
   isPackaged: boolean;
+  devFeatures: boolean;
   dataDir: string;
 }
 
@@ -435,6 +436,7 @@ export type VideosBeingMade = Record<string, number>;
 export interface IpcContract {
   "app:info": { args: []; result: AppInfo };
   "app:open-data-dir": { args: []; result: null };
+  "app:problem-report": { args: []; result: { file: string } };
   "dev:profiles": { args: []; result: DevProfiles | null };
   "dev:create-profile": { args: [name: string]; result: DevProfiles | null };
   "dev:switch-profile": { args: [id: string]; result: null };
@@ -653,6 +655,7 @@ export type IpcChannel = keyof IpcContract;
 export const IPC_CHANNELS = [
   "app:info",
   "app:open-data-dir",
+  "app:problem-report",
   "dev:profiles",
   "dev:create-profile",
   "dev:switch-profile",

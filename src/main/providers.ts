@@ -24,12 +24,22 @@ async function readStored(): Promise<StoredSecrets> {
 
 const bundledKey = (id: ProviderId): string | null => __BUNDLED_KEYS__[ENV_NAMES[id]] || null;
 
+const storedKeysInUse = new Set<string>();
+
+export function knownKeyValues(): string[] {
+  const fromEnv = PROVIDERS.map((id) => process.env[ENV_NAMES[id]] ?? "");
+  const bundled = Object.values(__BUNDLED_KEYS__).filter((value) => value !== undefined);
+  return [...fromEnv, ...bundled, ...storedKeysInUse];
+}
+
 export async function getKey(id: ProviderId): Promise<string | null> {
   const fromEnv = process.env[ENV_NAMES[id]];
   if (fromEnv) return fromEnv;
   const stored = (await readStored())[id];
   if (stored && safeStorage.isEncryptionAvailable()) {
-    return safeStorage.decryptString(Buffer.from(stored, "base64"));
+    const key = safeStorage.decryptString(Buffer.from(stored, "base64"));
+    storedKeysInUse.add(key);
+    return key;
   }
   return bundledKey(id);
 }
@@ -60,6 +70,7 @@ export async function setKey(id: ProviderId, key: string): Promise<ProvidersInfo
   if (!safeStorage.isEncryptionAvailable()) throw new Error("OS encryption is unavailable");
   const trimmed = key.trim();
   if (!trimmed) throw new Error("Key is empty");
+  storedKeysInUse.add(trimmed);
   const stored = await readStored();
   stored[id] = safeStorage.encryptString(trimmed).toString("base64");
   await writeJsonAtomic(dataFile(SECRETS_FILE), stored);

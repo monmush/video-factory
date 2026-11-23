@@ -27,13 +27,19 @@ export function UsageDialog({
 
 function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
   const [data, setData] = useState<Balances | null>(null);
+  const [showsProviders, setShowsProviders] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setData(await api.invoke("usage:balances"));
+      const [balances, app] = await Promise.all([
+        api.invoke("usage:balances"),
+        api.invoke("app:info"),
+      ]);
+      setData(balances);
+      setShowsProviders(app.devFeatures);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -72,32 +78,36 @@ function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
         !error && <p className="px-6 py-10 text-center text-muted-foreground">Đang kiểm tra…</p>
       ) : (
         <div className="flex min-h-0 flex-col gap-8 overflow-y-auto px-6 py-6">
-          <Section title="fal.ai" hint="Tạo ảnh và video. Trả trước, trừ dần theo mỗi lần tạo.">
-            <Status result={data.fal} provider="fal" onNavigate={onNavigate}>
-              {(fal) => (
-                <Card>
-                  <div className="text-muted-foreground">Số dư</div>
-                  <div className="mt-1 text-3xl font-semibold tabular-nums">
-                    {fal.currency === "USD"
-                      ? formatCost(fal.balance)
-                      : `${fal.balance} ${fal.currency}`}
-                  </div>
-                </Card>
-              )}
-            </Status>
-          </Section>
+          {showsProviders && (
+            <>
+              <Section title="fal.ai" hint="Tạo ảnh và video. Trả trước, trừ dần theo mỗi lần tạo.">
+                <Status result={data.fal} provider="fal" onNavigate={onNavigate}>
+                  {(fal) => (
+                    <Card>
+                      <div className="text-muted-foreground">Số dư</div>
+                      <div className="mt-1 text-3xl font-semibold tabular-nums">
+                        {fal.currency === "USD"
+                          ? formatCost(fal.balance)
+                          : `${fal.balance} ${fal.currency}`}
+                      </div>
+                    </Card>
+                  )}
+                </Status>
+              </Section>
 
-          <Section title="ElevenLabs" hint="Giọng đọc. Hạn mức theo gói, đặt lại mỗi kỳ.">
-            <Status result={data.elevenlabs} provider="elevenlabs" onNavigate={onNavigate}>
-              {(el) => (
-                <Meter
-                  label={el.plan ? `Gói ${capitalize(el.plan)}` : "Hạn mức"}
-                  used={el.limit > 0 ? el.used / el.limit : 0}
-                  detail={`Còn ${(el.limit - el.used).toLocaleString("vi-VN")} / ${el.limit.toLocaleString("vi-VN")} credit${el.resetsAt ? ` · đặt lại ${untilText(el.resetsAt)}` : ""}`}
-                />
-              )}
-            </Status>
-          </Section>
+              <Section title="ElevenLabs" hint="Giọng đọc. Hạn mức theo gói, đặt lại mỗi kỳ.">
+                <Status result={data.elevenlabs} provider="elevenlabs" onNavigate={onNavigate}>
+                  {(el) => (
+                    <Meter
+                      label={el.plan ? `Gói ${capitalize(el.plan)}` : "Hạn mức"}
+                      used={el.limit > 0 ? el.used / el.limit : 0}
+                      detail={`Còn ${(el.limit - el.used).toLocaleString("vi-VN")} / ${el.limit.toLocaleString("vi-VN")} credit${el.resetsAt ? ` · đặt lại ${untilText(el.resetsAt)}` : ""}`}
+                    />
+                  )}
+                </Status>
+              </Section>
+            </>
+          )}
 
           <Section
             title="Claude trên máy này"

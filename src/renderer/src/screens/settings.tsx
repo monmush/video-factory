@@ -45,6 +45,7 @@ export function SettingsPage() {
   const [providers, setProviders] = useState<ProvidersInfo | null>(null);
   const notes = useWorkspace().notes ?? [];
   const { error, run } = useAction();
+  const devFeatures = info?.devFeatures === true;
 
   const load = useCallback(
     () =>
@@ -86,7 +87,7 @@ export function SettingsPage() {
         </fieldset>
       </Section>
 
-      <TextAiSection />
+      <TextAiSection offersPaidText={devFeatures} />
 
       {notes.length > 0 && (
         <Section title="Ghi nhớ cho mọi series">
@@ -96,36 +97,40 @@ export function SettingsPage() {
         </Section>
       )}
 
-      <Section title="Khóa API">
-        {error && (
-          <div className="mb-3 flex items-center gap-2">
-            <span className="text-xs text-destructive-foreground">{error}</span>
-            <Button variant="ghost-muted" size="sm" onClick={load}>
-              Thử lại
-            </Button>
-          </div>
-        )}
-        {providers && (
-          <>
-            <p className="mb-4 text-muted-foreground">
-              {providers.mode === "fixture"
-                ? "Chế độ thử: dùng kết quả mẫu, không gọi API trả phí."
-                : "Gọi API thật: mỗi lần tạo có thể tốn phí."}
-            </p>
-            <div className="flex flex-col gap-3">
-              {providers.providers.map((p) => (
-                <ProviderKeyRow
-                  key={p.id}
-                  id={p.id}
-                  source={p.source}
-                  canStore={providers.canStoreKeys}
-                  onChange={setProviders}
-                />
-              ))}
+      {devFeatures && (
+        <Section title="Khóa API">
+          {error && (
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-xs text-destructive-foreground">{error}</span>
+              <Button variant="ghost-muted" size="sm" onClick={load}>
+                Thử lại
+              </Button>
             </div>
-          </>
-        )}
-      </Section>
+          )}
+          {providers && (
+            <>
+              <p className="mb-4 text-muted-foreground">
+                {providers.mode === "fixture"
+                  ? "Chế độ thử: dùng kết quả mẫu, không gọi API trả phí."
+                  : "Gọi API thật: mỗi lần tạo có thể tốn phí."}
+              </p>
+              <div className="flex flex-col gap-3">
+                {providers.providers.map((p) => (
+                  <ProviderKeyRow
+                    key={p.id}
+                    id={p.id}
+                    source={p.source}
+                    canStore={providers.canStoreKeys}
+                    onChange={setProviders}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </Section>
+      )}
+
+      <ProblemReportSection />
 
       {info && (
         <Section title="Dữ liệu">
@@ -148,6 +153,29 @@ export function SettingsPage() {
       <DevProfilesSection />
       <TrialSection />
     </Page>
+  );
+}
+
+function ProblemReportSection() {
+  const [creating, setCreating] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const { error, run } = useAction();
+
+  const create = async () => {
+    setCreating(true);
+    setSaved(false);
+    setSaved(await run(() => api.invoke("app:problem-report")));
+    setCreating(false);
+  };
+
+  return (
+    <Section title="Báo lỗi">
+      <Button variant="outline" size="sm" disabled={creating} onClick={() => void create()}>
+        Tạo tệp báo lỗi
+      </Button>
+      {saved && <p className="mt-2 text-xs text-muted-foreground">Đã lưu vào thư mục Tải về.</p>}
+      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
+    </Section>
   );
 }
 
@@ -258,7 +286,7 @@ function TrialSection() {
   );
 }
 
-function TextAiSection() {
+function TextAiSection({ offersPaidText }: { offersPaidText: boolean }) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const { error, run } = useAction();
@@ -293,12 +321,13 @@ function TextAiSection() {
   }
   const cc = status.claudeCode;
   const ccReady = cc.installed && cc.loggedIn;
+  const paidOption = {
+    value: "fal" as const,
+    label: "fal.ai",
+    detail: "Dùng khóa fal ở trên. Mỗi lần gọi tính phí nhỏ vào tài khoản fal.",
+  };
   const options: { value: TextProvider; label: string; detail: string; disabled?: boolean }[] = [
-    {
-      value: "fal",
-      label: "fal.ai",
-      detail: "Dùng khóa fal ở trên. Mỗi lần gọi tính phí nhỏ vào tài khoản fal.",
-    },
+    ...(offersPaidText ? [paidOption] : []),
     {
       value: "claude-code",
       label: "Claude trên máy này",
