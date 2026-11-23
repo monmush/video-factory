@@ -48,6 +48,12 @@ import {
   useBoard,
   useBoardView,
 } from "@/lib/board";
+import {
+  type LineSaved,
+  lineSavedNotice,
+  removeScriptLine,
+  useBoardNotice,
+} from "@/lib/board-notice";
 import { useLiveWriting } from "@/lib/chat";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
 import { type ScriptStaging, stagingOf, useStaging, useVideoLevel } from "@/lib/staging";
@@ -55,6 +61,7 @@ import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
+import { BoardToast } from "./board-notice";
 import { ProductPicker } from "./product-picker";
 import { Button } from "./ui/button";
 import {
@@ -84,7 +91,6 @@ interface CardActions {
   setProduct: (id: string, productId: string | null) => void;
   editLine: (id: string, edit: LineEdit) => Promise<LineSaved | null | "failed">;
   removeLine: (id: string, removal: Omit<LineEdit, "text">) => Promise<boolean>;
-  undoChange: (id: string) => void;
   stageMany: (ids: string[]) => void;
 }
 
@@ -94,21 +100,10 @@ interface LineEdit {
   text: string;
 }
 
-interface LineSaved {
-  scriptId: string;
-  copied: boolean;
-}
-
 interface SavingLine extends LineEdit {
   at: string;
   inPlace: boolean;
   sent: boolean;
-}
-
-interface Notice {
-  text: string;
-  restore?: string[];
-  undoOf?: string;
 }
 
 function isCardClick(e: MouseEvent) {
@@ -127,7 +122,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const askedFocus = view.focusId;
-  const [notice, setNotice] = useState<Notice | null>(null);
+  const [, setNotice] = useBoardNotice(sessionId);
   const [selection, setSelection] = useState<string[]>([]);
   const [customiseId, setCustomiseId] = useState<string | null>(null);
   const [box, setBox] = useState<Box | null>(null);
@@ -135,12 +130,6 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const root = useRef<HTMLElement>(null);
   const videoJobs = useVideoJobs(sessionId);
   const action = useAction();
-
-  useEffect(() => {
-    if (!notice || notice.undoOf) return;
-    const timer = setTimeout(() => setNotice(null), 8000);
-    return () => clearTimeout(timer);
-  }, [notice]);
 
   useEffect(() => {
     if (!askedFocus) return;
@@ -169,15 +158,10 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const layout = boardLayout(view, scripts.length);
 
   const run = action.run;
-  const showLineSaved = (saved: LineSaved, inPlaceText: string) => {
-    if (saved.copied) {
-      if (layout === "list") setView({ activeId: saved.scriptId });
-      else setFocusId(saved.scriptId);
-    }
-    setNotice({
-      text: saved.copied ? "Đã lưu thành bản mới" : inPlaceText,
-      undoOf: saved.scriptId,
-    });
+  const followCopy = (saved: LineSaved) => {
+    if (!saved.copied) return;
+    if (layout === "list") setView({ activeId: saved.scriptId });
+    else setFocusId(saved.scriptId);
   };
 
   const actions: CardActions = {
@@ -230,47 +214,24 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       if (!ok) return "failed";
       const result = saved as LineSaved | null;
       if (!result) return null;
-      showLineSaved(result, "Đã sửa lời thoại");
+      setNotice(lineSavedNotice(result, "Đã sửa lời thoại"));
+      followCopy(result);
       return result;
     },
     removeLine: async (id, removal) => {
       let removed: LineSaved | null = null;
       const ok = await run(async () => {
-        removed = await api.invoke("board:remove-line", { sessionId, scriptId: id, ...removal });
+        removed = await removeScriptLine(sessionId, id, removal);
       });
-      if (ok && removed) showLineSaved(removed, "Đã xóa lời thoại");
+      if (ok && removed) followCopy(removed);
       return ok;
     },
     stageMany: (ids) => run(() => api.invoke("video:stage", { sessionId, scriptIds: ids })),
-    undoChange: (id) =>
-      run(async () => {
-        await api.invoke("board:undo-change", { sessionId, scriptId: id });
-        setNotice(null);
-      }),
     toggleRef: (id) => {
       if (toggleRef(sessionId, id)) requestChatFocus(sessionId);
     },
     open: (id) => setView({ layout: "list", activeId: id }),
   };
-
-  const undoNotice = notice?.undoOf
-    ? scripts.findIndex((s) => s.id === notice.undoOf && s.changeUndo)
-    : -1;
-  const shownNotice: Notice | null = action.error
-    ? { text: action.error }
-    : notice?.undoOf && undoNotice < 0
-      ? null
-      : notice;
-  const closeNotice = () => {
-    setNotice(null);
-    action.clear();
-  };
-
-  const restore = (ids: string[]) =>
-    run(async () => {
-      await api.invoke("board:restore", { sessionId, ids });
-      setNotice(null);
-    });
 
   const onCardKey = (e: KeyboardEvent<HTMLElement>, id: string) => {
     if (e.target !== e.currentTarget) return;
@@ -402,58 +363,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
         <Gallery scripts={scripts} full={scripts.length <= FULL_CARDS_MAX} {...shared} />
       )}
 
-      {shownNotice && (
-        <div className="pointer-events-none sticky bottom-4 z-20 mt-4 flex flex-col items-center gap-2">
-          {shownNotice && (
-            <div
-              role="status"
-              className="pointer-events-auto flex items-center gap-2 rounded-full border bg-popover py-1 pr-1 pl-4 text-popover-foreground shadow-lg"
-            >
-              {shownNotice.text}
-              {shownNotice.undoOf && (
-                <span className="text-muted-foreground tabular-nums">#{undoNotice + 1}</span>
-              )}
-              {shownNotice.restore || shownNotice.undoOf ? (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="rounded-full"
-                    onClick={() =>
-                      shownNotice.undoOf
-                        ? actions.undoChange(shownNotice.undoOf)
-                        : restore(shownNotice.restore ?? [])
-                    }
-                  >
-                    Hoàn tác
-                  </Button>
-                  {shownNotice.undoOf && (
-                    <Button
-                      variant="ghost-muted"
-                      size="icon-sm"
-                      className="rounded-full"
-                      aria-label="Đóng"
-                      onClick={closeNotice}
-                    >
-                      <X />
-                    </Button>
-                  )}
-                </>
-              ) : (
-                <Button
-                  variant="ghost-muted"
-                  size="icon-sm"
-                  className="rounded-full"
-                  aria-label="Đóng"
-                  onClick={closeNotice}
-                >
-                  <X />
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      <BoardToast sessionId={sessionId} error={action.error} onClearError={action.clear} />
     </section>
   );
 }

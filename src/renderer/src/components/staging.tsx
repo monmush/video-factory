@@ -21,6 +21,7 @@ import { addRefs, FULL_CARDS_MAX, requestCardFocus, requestChatFocus } from "@/l
 import type { ScriptStaging } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
+import { BoardToast } from "./board-notice";
 import { LivePlanFold } from "./live-plan";
 import { type Batch, useBatch } from "./make-all";
 import { VideoQuality } from "./quality-chip";
@@ -130,6 +131,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
           </ul>
         </section>
       )}
+      <BoardToast sessionId={sessionId} />
     </section>
   );
 }

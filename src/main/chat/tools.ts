@@ -8,6 +8,7 @@ import { directionAt } from "../../shared/direction";
 import type { Asset, ChatPart, Script } from "../../shared/ipc";
 import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
 import { mixProblem } from "../../shared/product-mix";
+import { MERGE_WISH } from "../../shared/scene-actions";
 import type { PlannedShot } from "../../shared/shot-plan";
 import {
   OUTDATED_TEXT,
@@ -710,8 +711,7 @@ export const TOOLS = [
 
   define({
     name: "direct_video",
-    description:
-      "Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại kịch bản đó một lần miễn phí (khoảng một phút) sau khi bạn trả lời xong, giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có các cảnh chính. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Sau khi có các cảnh chính thì dùng propose_video_fix.",
+    description: `Lưu ý người dùng về cách quay một cảnh hay cả video TRƯỚC khi video tốn tiền, rồi dàn dựng lại kịch bản đó một lần miễn phí (khoảng một phút) sau khi bạn trả lời xong, giữ mọi ý đã lưu. Dùng khi người dùng nói video nên trông thế nào mà chưa có các cảnh chính. shot: số cảnh trong dàn dựng hiện tại (read_scripts hoặc read_video); bỏ trống là cho cả video. want: ý người dùng, bằng lời của họ, ngắn. Gộp một cảnh vào cảnh bên cạnh: lưu want đúng nguyên câu "${MERGE_WISH.previous}" (cảnh đầu video: "${MERGE_WISH.next}"); xóa cảnh cùng lời thoại của nó là sửa kịch bản, không phải direct_video. Sau khi có các cảnh chính thì dùng propose_video_fix.`,
     shape: {
       number: z.number().int().min(1),
       shot: z.number().int().min(1).optional().describe("Số cảnh; bỏ trống là cho cả video"),

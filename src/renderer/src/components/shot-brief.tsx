@@ -3,10 +3,19 @@ import { unstarted } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
 import type { Reworded } from "@shared/reworded";
 import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "@shared/scene";
+import {
+  MERGE_WISH,
+  type MergeSide,
+  mergeAt,
+  mergeSideOf,
+  type SceneAction,
+  sceneAction,
+} from "@shared/scene-actions";
 import type { JobShot, VideoJob } from "@shared/video-job";
-import { Pencil, PenLine, X } from "lucide-react";
+import { Pencil, PenLine, Trash2, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { removeScriptLine } from "@/lib/board-notice";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
 import { stagingOf, useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
@@ -57,7 +66,7 @@ export function ShotBrief({
   if (script.status !== "ready") return null;
   const staging = script.staging?.trim();
   const errorLine = error && <p className="text-xs text-destructive-foreground">{error}</p>;
-  const { status } = stagingOf(job, script, level);
+  const { status, reasons } = stagingOf(job, script, level);
 
   if (job?.planning) {
     return (
@@ -95,6 +104,21 @@ export function ShotBrief({
     if (!wanted || !job.stagedDirection) return undefined;
     return directionAt(job.stagedDirection, shot.text)?.want === wanted ? undefined : wanted;
   };
+  const scenesEditable =
+    open &&
+    !script.changing &&
+    (status === "ready" || (status === "outdated" && reasons.every((r) => r === "wishes")));
+  const toMerge = (shot: JobShot) => mergeSideOf(pendingWish(shot));
+  const actionOf = (shot: JobShot) =>
+    scenesEditable && !toMerge(shot) ? sceneAction(job, script.lines, shot) : null;
+  const act = (shot: JobShot, action: SceneAction) =>
+    run(() =>
+      action.kind === "merge"
+        ? api.invoke("video:direct", { ...ids, words: shot.text, want: MERGE_WISH[action.into] })
+        : removeScriptLine(sessionId, script.id, { index: action.index, was: action.was }),
+    );
+  const unmerge = (shot: JobShot) =>
+    run(() => api.invoke("video:direct", { ...ids, words: shot.text, want: "" }));
   const save = (shot: JobShot, value: string) => {
     setEditing(null);
     const want = value.replace(/\s+/g, " ").trim();
@@ -139,8 +163,14 @@ export function ShotBrief({
             reworded={changedScene(i)}
             name={nameOf(shot)}
             framing={sceneFraming(shot, keyframes)}
-            directed={Boolean(directionAt(job.direction, shot.text))}
-            wish={pendingWish(shot)}
+            directed={
+              Boolean(directionAt(job.direction, shot.text)) && !mergeAt(job.direction, shot)
+            }
+            wish={toMerge(shot) ? undefined : pendingWish(shot)}
+            merging={toMerge(shot)}
+            action={actionOf(shot)}
+            onAction={(action) => act(shot, action)}
+            onUnmerge={open ? () => unmerge(shot) : undefined}
             editing={editing === shot.index}
             editable={open}
             onEdit={() => setEditing(shot.index)}
@@ -174,6 +204,10 @@ function Scene({
   framing,
   directed,
   wish,
+  merging,
+  action,
+  onAction,
+  onUnmerge,
   editing,
   editable,
   onEdit,
@@ -186,6 +220,10 @@ function Scene({
   framing: string;
   directed: boolean;
   wish: string | undefined;
+  merging: MergeSide | null;
+  action: SceneAction | null;
+  onAction: (action: SceneAction) => void;
+  onUnmerge: (() => void) | undefined;
   editing: boolean;
   editable: boolean;
   onEdit: () => void;
@@ -195,8 +233,8 @@ function Scene({
   const brief = wish ?? sceneBrief(shot);
   const seen = brief ?? <span className="text-muted-foreground/60">Chưa có mô tả</span>;
   return (
-    <li className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
-      <div className="flex items-center gap-1.5">
+    <li className="group/scene flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0">
+      <div className={cn("flex items-center gap-1.5", merging && "opacity-60")}>
         <span className="text-xs font-medium text-muted-foreground tabular-nums">
           Cảnh {shot.index + 1}
         </span>
@@ -208,8 +246,12 @@ function Scene({
         <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
           {sceneSeconds(shot)} giây
         </span>
+        {action && <SceneActionButton action={action} onClick={() => onAction(action)} />}
       </div>
-      <p className="text-sm leading-relaxed text-foreground" data-selectable>
+      <p
+        className={cn("text-sm leading-relaxed text-foreground", merging && "opacity-60")}
+        data-selectable
+      >
         “
         {withOccurrenceKeys(spokenParts(shot.text), (part) => part.text).map(
           ({ item: part, key }, i, all) => (
@@ -224,7 +266,16 @@ function Scene({
           <span className="ml-1.5 text-xs whitespace-nowrap text-muted-foreground">{name}</span>
         )}
       </p>
-      {editing ? (
+      {merging ? (
+        <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          {MERGING_TEXT[merging]}
+          {onUnmerge && (
+            <Button variant="ghost-muted" size="xs" onClick={onUnmerge}>
+              Hoàn tác
+            </Button>
+          )}
+        </p>
+      ) : editing ? (
         <SceneEditor
           label={`Cảnh ${shot.index + 1}`}
           initial={brief ?? ""}
@@ -249,6 +300,33 @@ function Scene({
         </p>
       )}
     </li>
+  );
+}
+
+const MERGING_TEXT: Record<MergeSide, string> = {
+  previous: "Sẽ gộp vào cảnh trước",
+  next: "Sẽ gộp vào cảnh sau",
+};
+
+const ACTION_LABEL = {
+  previous: "Gộp vào cảnh trước",
+  next: "Gộp vào cảnh sau",
+  remove: "Xóa cảnh và lời thoại",
+} as const;
+
+function SceneActionButton({ action, onClick }: { action: SceneAction; onClick: () => void }) {
+  const label = ACTION_LABEL[action.kind === "merge" ? action.into : "remove"];
+  return (
+    <Button
+      variant="ghost-muted"
+      size="icon-xs"
+      className="-my-0.5 opacity-0 transition-opacity group-hover/scene:opacity-100 focus-visible:opacity-100"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+    >
+      <Trash2 />
+    </Button>
   );
 }
 
