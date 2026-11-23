@@ -76,6 +76,10 @@ export function StagingList({ sessionId }: { sessionId: string }) {
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
   if (!batch) return null;
   const { unstarted, started } = onStagingStep(batch);
+  const toStage = unstarted.filter((s) => batch.stagingOfScript(s).canStage);
+  const anyReady = unstarted.some((s) => batch.stagingOfScript(s).status === "ready");
+  const stageRest = () =>
+    run(() => api.invoke("video:stage", { sessionId, scriptIds: toStage.map((s) => s.id) }));
   const grid = unstarted.length <= FULL_CARDS_MAX;
   const number = (s: Script) => batch.order.indexOf(s) + 1;
   const toVideos = () => navigate({ to: "/sessions/$sessionId/videos", params: { sessionId } });
@@ -114,6 +118,13 @@ export function StagingList({ sessionId }: { sessionId: string }) {
 
   return (
     <section aria-label="Dàn dựng" className={cn("px-6 pt-2 pb-8", !grid && "mx-auto max-w-5xl")}>
+      <BatchQuality sessionId={sessionId}>
+        {anyReady && toStage.length > 0 && (
+          <Button variant="outline" size="sm" className="ml-auto" onClick={stageRest}>
+            Dàn dựng {toStage.length} kịch bản
+          </Button>
+        )}
+      </BatchQuality>
       {error && <p className="mb-3 text-xs text-destructive-foreground">{error}</p>}
       <ul
         className={cn(
@@ -205,7 +216,7 @@ function statusLine(script: Script, job: VideoJob | undefined, staging: ScriptSt
     case "ready":
       return `${job?.shots.length ?? 0} cảnh · ${length}`;
     case "staging":
-      return "Đang dàn dựng";
+      return "Đang dàn dựng · ~1–2 phút";
     case "outdated":
       return staging.reasons[0] ? OUTDATED_TEXT[staging.reasons[0]] : length;
     case "failed":
@@ -282,7 +293,6 @@ function StagingCard({
     action = (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <LoaderCircle className="size-3.5 animate-spin" />
-        ~1–2 phút
         <Button
           variant="ghost-muted"
           size="xs"
@@ -334,7 +344,7 @@ function StagingCard({
             )}
           />
           <span className="text-xs text-muted-foreground tabular-nums">#{number}</span>
-          <span className="min-w-0 truncate font-semibold">
+          <span className="line-clamp-2 min-w-0 font-semibold leading-snug text-balance">
             {script.title}
             {script.version && (
               <span className="ml-1.5 text-xs font-normal text-muted-foreground">
@@ -343,7 +353,6 @@ function StagingCard({
             )}
           </span>
         </button>
-        {action}
         <Menu>
           <MenuTrigger render={<Button variant="ghost-muted" size="icon-sm" aria-label="Thêm" />}>
             <Ellipsis />
@@ -396,6 +405,7 @@ function StagingCard({
           <VideoQuality value={level} onChange={setLevel} price={priceAt} />
         </span>
         {error && <span className="text-destructive-foreground">{error}</span>}
+        <span className="ml-auto flex items-center gap-2.5 text-sm">{action}</span>
       </div>
       {open && (
         <>
@@ -407,21 +417,12 @@ function StagingCard({
   );
 }
 
-export function StagingToolbar({ sessionId }: { sessionId: string }) {
-  const batch = useBatch(sessionId);
-  const testChoice = useTestChoice(sessionId, batch);
-  const navigate = useNavigate();
+function BatchQuality({ sessionId, children }: { sessionId: string; children?: ReactNode }) {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const seriesLevel = mediaLevel(series.find((s) => s.id === session?.seriesId)?.mediaLevel).id;
   const level = useBatchMediaLevel(sessionId);
   const { error, run } = useAction();
-  if (!batch) return null;
-  const { unstarted } = onStagingStep(batch);
-  const statuses = unstarted.map((s) => batch.stagingOfScript(s));
-  const staging = statuses.filter((s) => s.status === "staging").length;
-  const toStage = unstarted.filter((s) => batch.stagingOfScript(s).canStage);
-  const anyReady = statuses.some((s) => s.status === "ready");
   const setLevel = (id: string) =>
     run(() =>
       api.invoke("session:update", {
@@ -429,20 +430,38 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
         settings: { mediaLevel: id === seriesLevel ? null : id },
       }),
     );
+  return (
+    <div className="mb-3 flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
+      <span className="text-xs text-muted-foreground">Thiết lập</span>
+      <QualityChip value={level.id} onChange={setLevel} seriesDefault={seriesLevel} />
+      {error && <span className="text-xs text-destructive-foreground">{error}</span>}
+      {children}
+    </div>
+  );
+}
+
+export function StagingToolbar({ sessionId }: { sessionId: string }) {
+  const batch = useBatch(sessionId);
+  const testChoice = useTestChoice(sessionId, batch);
+  const navigate = useNavigate();
+  const { error, run } = useAction();
+  if (!batch) return null;
+  const { unstarted } = onStagingStep(batch);
+  const statuses = unstarted.map((s) => batch.stagingOfScript(s));
+  const staging = statuses.filter((s) => s.status === "staging").length;
+  const toStage = unstarted.filter((s) => batch.stagingOfScript(s).canStage);
+  const anyReady = statuses.some((s) => s.status === "ready");
   const stageAll = () =>
     run(() => api.invoke("video:stage", { sessionId, scriptIds: toStage.map((s) => s.id) }));
 
   return (
     <div className="flex items-center gap-2.5">
-      <QualityChip value={level.id} onChange={setLevel} seriesDefault={seriesLevel} />
       {error && <span className="text-xs text-destructive-foreground">{error}</span>}
       {staging > 0 && (
         <span className="text-xs text-muted-foreground tabular-nums">{staging} đang dàn dựng</span>
       )}
-      {toStage.length > 0 && (
-        <Button variant={anyReady ? "outline" : "default"} onClick={stageAll}>
-          Dàn dựng {toStage.length} kịch bản
-        </Button>
+      {toStage.length > 0 && !anyReady && (
+        <Button onClick={stageAll}>Dàn dựng {toStage.length} kịch bản</Button>
       )}
       {anyReady && (
         <MakeAll

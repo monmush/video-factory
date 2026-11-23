@@ -39,7 +39,7 @@ export function SessionLayout() {
 
   const steps = sessionSteps(session, board?.scripts ?? [], jobs?.jobs ?? null, levelOf);
   const tab =
-    "flex items-center gap-1.5 rounded-none px-2.5 py-2.5 text-muted-foreground hover:text-foreground [&.active]:text-foreground [&.active]:shadow-[inset_0_-2px_var(--foreground)]";
+    "flex items-center gap-1.5 whitespace-nowrap rounded-none px-2.5 py-2.5 text-muted-foreground hover:text-foreground [&.active]:text-foreground [&.active]:shadow-[inset_0_-2px_var(--foreground)]";
   const disabledTab = cn(tab, "cursor-default opacity-50 hover:text-muted-foreground");
   const chevron = <ChevronRight aria-hidden className="size-3.5 text-muted-foreground" />;
 
