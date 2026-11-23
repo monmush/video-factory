@@ -13,13 +13,12 @@ import { readyToMake } from "@shared/staging-status";
 import { stopsForPreview, type VideoJob } from "@shared/video-job";
 import { planAtLevel } from "@shared/video-takes";
 import { api } from "@/lib/api";
-import { useBoard, useBoardView } from "@/lib/board";
+import { useBoard } from "@/lib/board";
 import { stagingOf } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
-import { makeLabel, ReadyCheckDialog, useMakeVideos } from "./ready-check";
-import { Button } from "./ui/button";
+import { useMakeVideos } from "./ready-check";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 
 export function sentVideosBatchAlsoFinishes(
@@ -49,7 +48,6 @@ export function useBatch(sessionId: string) {
   const committed = committedIds(session, board.scripts);
   const finished = finishedScripts(board.scripts);
   const sent = finished.filter((s) => committed.includes(s.id));
-  const unsent = finished.filter((s) => !committed.includes(s.id));
   const jobOf = (scriptId: string) => state.jobs.get(scriptId);
   const atLevel = (scriptId: string): VideoJob | undefined => {
     const job = jobOf(scriptId);
@@ -67,140 +65,30 @@ export function useBatch(sessionId: string) {
     committed,
     finished,
     sent,
-    unsent,
     stalled,
     jobOf,
     staged,
     stagingOfScript,
-    priceOf: (scriptId: string) => batchToMake([atLevel(scriptId)]).usd,
     sum,
     make,
-    batchMakesOnlyThisVideo: unsent.length <= 1 && stalled.length === 0,
   };
 }
 
 export type Batch = NonNullable<ReturnType<typeof useBatch>>;
 
-export function MakeAll({
-  sessionId,
-  batch,
-  withUnsent,
-  test,
-  onStarted,
-}: {
-  sessionId: string;
-  batch: Batch;
-  withUnsent: boolean;
-  test?: Script | null;
-  onStarted?: () => void | Promise<void>;
-}) {
+export function MakeAll({ sessionId, batch }: { sessionId: string; batch: Batch }) {
   const all = useAction();
-  const [, setView] = useBoardView(sessionId);
-  const { make, order, committed, stalled, staged, stagingOfScript, sum } = batch;
-  const rest = withUnsent ? batch.unsent : [];
-  const restIds = rest.map((s) => s.id);
-  const stagedRest = rest.filter(staged);
-  const stagedStalled = stalled.filter(staged);
-  const count = stagedRest.length + stagedStalled.length;
-  const showAll = rest.length + stalled.length > 1 || rest.length === 1;
-  const isStaging = (s: Script) => stagingOfScript(s).status === "staging";
-
-  const label = (hold: boolean) => {
-    const verb = hold ? "Giữ để tạo" : "Tạo";
-    if (stagedStalled.length === 0)
-      return makeLabel(stagedRest.length, {
-        hold,
-        remaining: committed.length > 0,
-        number: stagedRest[0] ? order.indexOf(stagedRest[0]) + 1 : undefined,
-      });
-    return `${verb} hết ${count} video`;
-  };
-  const allUsd = sum(stagedRest) + sum(stagedStalled);
-  const runAll = async (scriptIds: string[]) => {
-    await api.invoke("video:make-all", { sessionId, scriptIds });
-    await onStarted?.();
-  };
-  const holdAll = () => all.run(() => runAll(stagedRest.map((s) => s.id)));
-  const error = all.error;
-  const checkFirst = rest.length > 0 && make.needsCheck(restIds);
-  const testing = Boolean(test && staged(test) && count > 1);
-  const preview = {
-    onPointerEnter: () => setView({ previewAll: true }),
-    onPointerLeave: () => setView({ previewAll: false }),
-    onFocus: () => setView({ previewAll: true }),
-    onBlur: () => setView({ previewAll: false }),
-  };
-
-  const allButton = checkFirst ? (
-    <Button
-      variant={testing ? "outline" : "default"}
-      onClick={() => make.open(restIds)}
-      {...(testing ? preview : {})}
-    >
-      {label(false)}
-      {count > 0 && <ButtonPrice>{estimateText(allUsd)}</ButtonPrice>}
-    </Button>
-  ) : (
-    count > 0 && (
-      <HoldButton
-        tone={testing ? "outline" : "primary"}
-        onHold={holdAll}
-        {...(testing ? preview : {})}
-      >
-        {label(true)}
-        <ButtonPrice>{estimateText(allUsd)}</ButtonPrice>
-      </HoldButton>
-    )
-  );
-
-  const testButton =
-    testing && test ? (
-      make.needsCheck([test.id]) ? (
-        <Button onClick={() => make.open([test.id])}>
-          {makeLabel(1, { test: true, hold: false })}
-          <ButtonPrice>{estimateText(sum([test]))}</ButtonPrice>
-        </Button>
-      ) : (
-        <HoldButton onHold={() => all.run(() => runAll([test.id]))}>
-          {makeLabel(1, { test: true })}
-          <ButtonPrice>{estimateText(sum([test]))}</ButtonPrice>
-        </HoldButton>
-      )
-    ) : null;
-
+  const { stalled, staged, sum } = batch;
+  const ready = stalled.filter(staged);
+  if (stalled.length <= 1 || ready.length === 0) return null;
+  const holdAll = () => all.run(() => api.invoke("video:make-all", { sessionId, scriptIds: [] }));
   return (
     <>
-      {showAll && (
-        <>
-          {error && <span className="text-xs text-destructive-foreground">{error}</span>}
-          {allButton}
-          {testButton}
-        </>
-      )}
-      <ReadyCheckDialog
-        sessionId={sessionId}
-        scope={make.scope ?? []}
-        open={make.scope !== null}
-        onOpenChange={(next) => {
-          if (!next) make.close();
-        }}
-        spend={{
-          priceOf: (scriptId) => {
-            const script = batch.finished.find((s) => s.id === scriptId);
-            return script && staged(script) ? batch.priceOf(scriptId) : null;
-          },
-          staging: (scriptId) => {
-            const script = rest.find((s) => s.id === scriptId);
-            return Boolean(script && isStaging(script));
-          },
-          extra: {
-            usd: sum(stagedStalled),
-            count: stagedStalled.length,
-            staging: stalled.filter(isStaging).length,
-          },
-          run: runAll,
-        }}
-      />
+      {all.error && <span className="text-xs text-destructive-foreground">{all.error}</span>}
+      <HoldButton onHold={holdAll}>
+        Giữ để tạo hết {ready.length} video
+        <ButtonPrice>{estimateText(sum(ready))}</ButtonPrice>
+      </HoldButton>
     </>
   );
 }

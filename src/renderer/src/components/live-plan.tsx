@@ -13,7 +13,7 @@ const unknownMark = (costs: CostPanel) => (costs.unknownSteps > 0 ? " +?" : "");
 
 function headline(job: VideoJob, costs: CostPanel): string {
   if (job.status === "idle")
-    return `Chi phí ${estimateText(costs.estimateUsd)}${unknownMark(costs)}`;
+    return `Chi phí dự kiến ${estimateText(costs.estimateUsd)}${unknownMark(costs)}`;
   const paid = moneyText(costs.paid ?? { usd: 0, billed: true });
   if (job.status === "done") return `Chi phí ${paid}`;
   return `Chi phí ${paid} · còn ${estimateText(costs.leftUsd ?? 0)}`;

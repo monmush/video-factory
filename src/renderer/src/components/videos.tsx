@@ -138,12 +138,7 @@ export function VideosList({ sessionId }: { sessionId: string }) {
     });
 
   return (
-    <Page className="pt-0">
-      <div className="sticky top-0 z-10 mb-1 bg-background py-2">
-        <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
-          <SaveVideosButton sessionId={sessionId} />
-        </div>
-      </div>
+    <Page className="pt-2">
       <ul className="flex flex-col gap-4">
         {sent.map((script) => (
           <VideoCard
@@ -190,7 +185,8 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
           </Button>
         </span>
       )}
-      <MakeAll sessionId={sessionId} batch={batch} withUnsent={false} />
+      <SaveVideosButton sessionId={sessionId} />
+      <MakeAll sessionId={sessionId} batch={batch} />
     </div>
   );
 }

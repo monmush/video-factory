@@ -1,13 +1,12 @@
 import { batchMediaLevel } from "@shared/batch-settings";
 import { boardOrder, formatSeconds } from "@shared/board";
-import { estimateText } from "@shared/cost/table";
 import type { Asset } from "@shared/ipc";
 import { type MediaLevelId, mediaLevel } from "@shared/media-level";
 import { isFlagged, placeFinding, placeWarning } from "@shared/place-check";
 import { needsAttention, readyCheck, type ScriptCheck } from "@shared/ready-check";
 import { fitResolution } from "@shared/video-models";
 import { voiceById } from "@shared/voices";
-import { ChevronDown, Plus } from "lucide-react";
+import { ArrowRight, ChevronDown, Plus } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, requestChatFocus, useBoard } from "@/lib/board";
@@ -26,7 +25,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "./ui/dialog";
-import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
 export function useSeriesPlaceIds(sessionId: string): string[] {
@@ -35,7 +33,7 @@ export function useSeriesPlaceIds(sessionId: string): string[] {
   return series.find((s) => s.id === session?.seriesId)?.environmentIds ?? [];
 }
 
-export function useBatchMediaLevel(sessionId: string): { id: MediaLevelId; inherited: boolean } {
+function useBatchMediaLevel(sessionId: string): { id: MediaLevelId; inherited: boolean } {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   return batchMediaLevel(
@@ -50,13 +48,6 @@ function useCheckOpts(sessionId: string) {
   const placeIds = useSeriesPlaceIds(sessionId);
   const voiceMode = useVoiceMode();
   return { opts: { placeIds, voiceMode }, level, levelOf };
-}
-
-export interface Spend {
-  priceOf: (scriptId: string) => number | null;
-  staging: (scriptId: string) => boolean;
-  extra: { usd: number; count: number; staging: number };
-  run: (ids: string[]) => Promise<unknown>;
 }
 
 export const stagingText = (count: number) => `${count} video đang dàn dựng`;
@@ -87,30 +78,18 @@ export function useMakeVideos({ sessionId }: { sessionId: string }) {
   };
 }
 
-export function makeLabel(
-  count: number,
-  opts: { test?: boolean; hold?: boolean; remaining?: boolean; number?: number } = {},
-) {
-  const verb = opts.hold === false ? "Tạo" : "Giữ để tạo";
-  if (opts.test) return `${verb} thử`;
-  if (count > 1)
-    return opts.remaining ? `${verb} ${count} video còn lại` : `${verb} cả ${count} video`;
-  if (opts.remaining && opts.number) return `${verb} video #${opts.number}`;
-  return opts.hold === false ? "Tạo video" : verb;
-}
-
 export function ReadyCheckDialog({
   sessionId,
   scope,
   open,
   onOpenChange,
-  spend,
+  onCommit,
 }: {
   sessionId: string;
   scope: string[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  spend: Spend;
+  onCommit: (ids: string[]) => Promise<unknown>;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -119,7 +98,7 @@ export function ReadyCheckDialog({
           <ReadyCheckBody
             sessionId={sessionId}
             scope={scope}
-            spend={spend}
+            onCommit={onCommit}
             onDone={() => onOpenChange(false)}
           />
         )}
@@ -131,12 +110,12 @@ export function ReadyCheckDialog({
 function ReadyCheckBody({
   sessionId,
   scope,
-  spend,
+  onCommit,
   onDone,
 }: {
   sessionId: string;
   scope: string[];
-  spend: Spend;
+  onCommit: (ids: string[]) => Promise<unknown>;
   onDone: () => void;
 }) {
   const board = useBoard(sessionId);
@@ -157,12 +136,8 @@ function ReadyCheckBody({
   const linkSpeaker = (speaker: string, characterId: string) =>
     run(() => api.invoke("board:link-speaker", { sessionId, speaker, characterId }));
 
-  const stagedIds = toMakeIds.filter((id) => spend.priceOf(id) !== null);
-  const total = stagedIds.length + spend.extra.count;
-  const spendUsd = stagedIds.reduce((n, id) => n + (spend.priceOf(id) ?? 0), 0) + spend.extra.usd;
-  const staging = toMakeIds.filter((id) => spend.staging(id)).length + spend.extra.staging;
-  const makeAll = async () => {
-    if (await run(() => spend.run(stagedIds))) onDone();
+  const commit = async () => {
+    if (await run(() => onCommit(toMakeIds))) onDone();
   };
 
   const keepPlacePhotos = (place: Asset) =>
@@ -184,7 +159,7 @@ function ReadyCheckBody({
   const sharedGroups = [...new Set(shared.map((m) => m.voiceId))].map((voiceId) =>
     shared.filter((m) => m.voiceId === voiceId),
   );
-  const title = total ? `Tạo ${total} video` : "Tạo video";
+  const title = toMakeIds.length ? `Tạo ${toMakeIds.length} video` : "Tạo video";
   const hasProblems =
     check.blocked.length + overTarget.length + sharedGroups.length + check.places.length > 0;
 
@@ -300,15 +275,10 @@ function ReadyCheckBody({
       )}
       <DialogFooter className="justify-end">
         <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>
-        {staging > 0 && (
-          <span className="text-xs text-muted-foreground tabular-nums">{stagingText(staging)}</span>
-        )}
-        {total > 0 && (
-          <HoldButton onHold={makeAll}>
-            {makeLabel(total)}
-            <ButtonPrice>{estimateText(spendUsd)}</ButtonPrice>
-          </HoldButton>
-        )}
+        <Button disabled={toMakeIds.length === 0} onClick={commit}>
+          {title}
+          <ArrowRight />
+        </Button>
       </DialogFooter>
 
       {editing && (

@@ -35,7 +35,7 @@ export function SaveVideosButton({ sessionId }: { sessionId: string }) {
   if (offeredFiles(videos) < 2) return null;
   return (
     <>
-      <Button variant="outline" size="sm" className="ml-auto" onClick={() => setOpen(true)}>
+      <Button variant="outline" onClick={() => setOpen(true)}>
         <Download />
         Tải xuống
       </Button>

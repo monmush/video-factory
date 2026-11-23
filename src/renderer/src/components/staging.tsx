@@ -2,98 +2,59 @@ import { estimateSeconds, formatSeconds } from "@shared/board";
 import { costToFinishUsd } from "@shared/cost/estimate";
 import type { Script } from "@shared/ipc";
 import { type MediaLevel, type MediaLevelId, mediaLevel } from "@shared/media-level";
-import { isFirstBatch } from "@shared/ready-check";
 import { OUTDATED_TEXT, readyToMake, stageable } from "@shared/staging-status";
-import { followBatch, stopsForPreview, type VideoJob } from "@shared/video-job";
+import { followBatch, type VideoJob } from "@shared/video-job";
 import { planAtLevel } from "@shared/video-takes";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowRight,
   ChevronRight,
-  Clapperboard,
   Ellipsis,
   LoaderCircle,
   MessageSquarePlus,
   Pencil,
   RotateCw,
 } from "lucide-react";
-import { type MouseEvent, type ReactNode, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
-import {
-  addRefs,
-  FULL_CARDS_MAX,
-  requestCardFocus,
-  requestChatFocus,
-  testCardId,
-  useBoardView,
-} from "@/lib/board";
+import { addRefs, FULL_CARDS_MAX, requestCardFocus, requestChatFocus } from "@/lib/board";
 import type { ScriptStaging } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
-import { useWorkspace } from "@/lib/workspace";
 import { LivePlanFold } from "./live-plan";
-import { type Batch, MakeAll, priceOfThisHold, useBatch } from "./make-all";
-import { QualityChip, VideoQuality } from "./quality-chip";
-import { ReadyCheckDialog, useBatchMediaLevel } from "./ready-check";
+import { type Batch, useBatch } from "./make-all";
+import { VideoQuality } from "./quality-chip";
+import { ReadyCheckDialog } from "./ready-check";
 import { ShotBrief } from "./shot-brief";
 import { Button } from "./ui/button";
-import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
-
-const DIMMED = "opacity-50 hover:opacity-80 focus-within:opacity-80";
 
 function onStagingStep(batch: Batch) {
   const stageableScripts = batch.finished.filter(stageable);
   const started = stageableScripts.filter((s) => batch.stagingOfScript(s).status === "started");
   const unstarted = stageableScripts.filter((s) => !started.includes(s));
-  return { unstarted, started };
+  const toStage = unstarted.filter((s) => batch.stagingOfScript(s).canStage);
+  const toCommit = unstarted.filter(
+    (s) => batch.stagingOfScript(s).status === "ready" && !batch.committed.includes(s.id),
+  );
+  return { unstarted, started, toStage, toCommit };
 }
 
-function useTestChoice(sessionId: string, batch: Batch | null) {
-  const { sessions } = useWorkspace();
-  const [view, setView] = useBoardView(sessionId);
-  if (!batch) return null;
-  const { session, finished } = batch;
-  const nudge = !session.approvedAt && isFirstBatch(session, sessions) && finished.length > 1;
-  if (!nudge) return null;
-  const testId = testCardId(
-    view,
-    finished.map((s) => s.id),
-  );
-  return {
-    test: finished.find((s) => s.id === testId) ?? null,
-    isTest: (id: string) => id === testId,
-    isDimmed: (id: string) => id !== testId && !view.previewAll,
-    pick: (id: string) => setView({ testId: id }),
+function useCommitToVideos(sessionId: string) {
+  const navigate = useNavigate();
+  return async (ids: string[]) => {
+    await api.invoke("session:approve", sessionId, ids);
+    await navigate({ to: "/sessions/$sessionId/videos", params: { sessionId } });
   };
 }
 
 export function StagingList({ sessionId }: { sessionId: string }) {
   const batch = useBatch(sessionId);
-  const testChoice = useTestChoice(sessionId, batch);
-  const navigate = useNavigate();
-  const { error, run } = useAction();
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
   if (!batch) return null;
   const { unstarted, started } = onStagingStep(batch);
-  const toStage = unstarted.filter((s) => batch.stagingOfScript(s).canStage);
-  const anyReady = unstarted.some((s) => batch.stagingOfScript(s).status === "ready");
-  const stageRest = () =>
-    run(() => api.invoke("video:stage", { sessionId, scriptIds: toStage.map((s) => s.id) }));
   const grid = unstarted.length <= FULL_CARDS_MAX;
   const number = (s: Script) => batch.order.indexOf(s) + 1;
-  const toVideos = () => navigate({ to: "/sessions/$sessionId/videos", params: { sessionId } });
-
-  const pay = async (ids: string[]) => {
-    const unsent = ids.filter((id) => !batch.committed.includes(id));
-    if (unsent.length) await api.invoke("session:approve", sessionId, unsent);
-    for (const scriptId of ids) await api.invoke("video:start", { sessionId, scriptId });
-    await toVideos();
-  };
-  const make = (script: Script) =>
-    !batch.committed.includes(script.id) && batch.make.needsCheck([script.id])
-      ? batch.make.open([script.id])
-      : run(() => pay([script.id]));
 
   if (unstarted.length === 0) {
     return (
@@ -118,14 +79,6 @@ export function StagingList({ sessionId }: { sessionId: string }) {
 
   return (
     <section aria-label="Dàn dựng" className={cn("px-6 pt-2 pb-8", !grid && "mx-auto max-w-5xl")}>
-      <BatchQuality sessionId={sessionId}>
-        {anyReady && toStage.length > 0 && (
-          <Button variant="outline" size="sm" className="ml-auto" onClick={stageRest}>
-            Dàn dựng {toStage.length} kịch bản
-          </Button>
-        )}
-      </BatchQuality>
-      {error && <p className="mb-3 text-xs text-destructive-foreground">{error}</p>}
       <ul
         className={cn(
           "grid items-start gap-4",
@@ -145,15 +98,6 @@ export function StagingList({ sessionId }: { sessionId: string }) {
                 ...current,
                 [script.id]: !(current[script.id] ?? grid),
               }))
-            }
-            ownHold={!batch.batchMakesOnlyThisVideo}
-            onMake={() => make(script)}
-            test={
-              testChoice && {
-                isTest: testChoice.isTest(script.id),
-                dimmed: testChoice.isDimmed(script.id),
-                pick: () => testChoice.pick(script.id),
-              }
             }
           />
         ))}
@@ -186,26 +130,6 @@ export function StagingList({ sessionId }: { sessionId: string }) {
           </ul>
         </section>
       )}
-      <ReadyCheckDialog
-        sessionId={sessionId}
-        scope={batch.make.scope ?? []}
-        open={batch.make.scope !== null}
-        onOpenChange={(next) => {
-          if (!next) batch.make.close();
-        }}
-        spend={{
-          priceOf: (scriptId) => {
-            const script = batch.finished.find((s) => s.id === scriptId);
-            return script && batch.staged(script) ? batch.priceOf(scriptId) : null;
-          },
-          staging: (scriptId) => {
-            const script = batch.finished.find((s) => s.id === scriptId);
-            return Boolean(script && batch.stagingOfScript(script).status === "staging");
-          },
-          extra: { usd: 0, count: 0, staging: 0 },
-          run: pay,
-        }}
-      />
     </section>
   );
 }
@@ -232,12 +156,6 @@ const STAGE_ACTION: Partial<Record<ScriptStaging["status"], string>> = {
   failed: "Thử lại",
 };
 
-function isCardClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (target.closest("button, a, input, textarea, [data-shot-brief]")) return false;
-  return !window.getSelection()?.toString();
-}
-
 function StagingCard({
   sessionId,
   script,
@@ -245,9 +163,6 @@ function StagingCard({
   batch,
   open,
   onToggle,
-  ownHold,
-  onMake,
-  test,
 }: {
   sessionId: string;
   script: Script;
@@ -255,9 +170,6 @@ function StagingCard({
   batch: Batch;
   open: boolean;
   onToggle: () => void;
-  ownHold: boolean;
-  onMake: () => void;
-  test: { isTest: boolean; dimmed: boolean; pick: () => void } | null;
 }) {
   const { error, run } = useAction();
   const navigate = useNavigate();
@@ -277,9 +189,7 @@ function StagingCard({
   };
   const setLevel = (next: MediaLevelId) =>
     run(() => api.invoke("video:level", { ...ids, level: next }));
-  const dimmed = Boolean(test?.dimmed);
   const ready = staging.status === "ready" && job;
-  const needsCheck = !batch.committed.includes(script.id) && batch.make.needsCheck([script.id]);
 
   let action: ReactNode = null;
   const stageLabel = STAGE_ACTION[staging.status];
@@ -302,33 +212,10 @@ function StagingCard({
         </Button>
       </span>
     );
-  } else if (ready && ownHold) {
-    const label = stopsForPreview(job) ? "các cảnh chính" : "video";
-    action = needsCheck ? (
-      <Button variant="outline" onClick={onMake}>
-        Tạo {label}
-        <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
-      </Button>
-    ) : (
-      <HoldButton tone="outline" onHold={onMake}>
-        Giữ để tạo {label}
-        <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
-      </HoldButton>
-    );
   }
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: picking the test video is also in the card menu
-    <li
-      className={cn(
-        "rounded-xl border bg-card p-4 transition-opacity",
-        dimmed && cn(DIMMED, "cursor-pointer"),
-      )}
-      title={dimmed ? "Chọn làm video thử" : undefined}
-      onClick={(e) => {
-        if (dimmed && isCardClick(e)) test?.pick();
-      }}
-    >
+    <li className="rounded-xl border bg-card p-4">
       <div className="flex min-h-9 items-center gap-2.5">
         <button
           type="button"
@@ -358,12 +245,6 @@ function StagingCard({
             <Ellipsis />
           </MenuTrigger>
           <MenuPopup align="end">
-            {test && !test.isTest && (
-              <MenuItem onClick={test.pick}>
-                <Clapperboard />
-                Chọn làm video thử
-              </MenuItem>
-            )}
             {staging.status === "ready" && (
               <MenuItem onClick={() => stage(true)}>
                 <RotateCw />
@@ -417,42 +298,19 @@ function StagingCard({
   );
 }
 
-function BatchQuality({ sessionId, children }: { sessionId: string; children?: ReactNode }) {
-  const { sessions, series } = useWorkspace();
-  const session = sessions.find((s) => s.id === sessionId);
-  const seriesLevel = mediaLevel(series.find((s) => s.id === session?.seriesId)?.mediaLevel).id;
-  const level = useBatchMediaLevel(sessionId);
-  const { error, run } = useAction();
-  const setLevel = (id: string) =>
-    run(() =>
-      api.invoke("session:update", {
-        id: sessionId,
-        settings: { mediaLevel: id === seriesLevel ? null : id },
-      }),
-    );
-  return (
-    <div className="mb-3 flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
-      <span className="text-xs text-muted-foreground">Thiết lập</span>
-      <QualityChip value={level.id} onChange={setLevel} seriesDefault={seriesLevel} />
-      {error && <span className="text-xs text-destructive-foreground">{error}</span>}
-      {children}
-    </div>
-  );
-}
-
 export function StagingToolbar({ sessionId }: { sessionId: string }) {
   const batch = useBatch(sessionId);
-  const testChoice = useTestChoice(sessionId, batch);
-  const navigate = useNavigate();
+  const commit = useCommitToVideos(sessionId);
   const { error, run } = useAction();
   if (!batch) return null;
-  const { unstarted } = onStagingStep(batch);
-  const statuses = unstarted.map((s) => batch.stagingOfScript(s));
-  const staging = statuses.filter((s) => s.status === "staging").length;
-  const toStage = unstarted.filter((s) => batch.stagingOfScript(s).canStage);
-  const anyReady = statuses.some((s) => s.status === "ready");
+  const { unstarted, toStage, toCommit } = onStagingStep(batch);
+  const staging = unstarted.filter((s) => batch.stagingOfScript(s).status === "staging").length;
+  const allOutdated = toStage.every((s) => batch.stagingOfScript(s).status === "outdated");
   const stageAll = () =>
     run(() => api.invoke("video:stage", { sessionId, scriptIds: toStage.map((s) => s.id) }));
+  const commitIds = toCommit.map((s) => s.id);
+  const makeVideos = () =>
+    batch.make.needsCheck(commitIds) ? batch.make.open(commitIds) : run(() => commit(commitIds));
 
   return (
     <div className="flex items-center gap-2.5">
@@ -460,18 +318,38 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
       {staging > 0 && (
         <span className="text-xs text-muted-foreground tabular-nums">{staging} đang dàn dựng</span>
       )}
-      {toStage.length > 0 && !anyReady && (
-        <Button onClick={stageAll}>Dàn dựng {toStage.length} kịch bản</Button>
+      {toStage.length > 0 && (
+        <Button onClick={stageAll}>
+          {allOutdated
+            ? `Cập nhật ${toStage.length} dàn dựng`
+            : `Dàn dựng ${toStage.length} kịch bản`}
+        </Button>
       )}
-      {anyReady && (
-        <MakeAll
-          sessionId={sessionId}
-          batch={batch}
-          withUnsent
-          test={testChoice?.test}
-          onStarted={() => navigate({ to: "/sessions/$sessionId/videos", params: { sessionId } })}
-        />
+      {toCommit.length > 0 ? (
+        <Button variant={toStage.length > 0 ? "outline" : "default"} onClick={makeVideos}>
+          Tạo {toCommit.length} video
+          <ArrowRight />
+        </Button>
+      ) : (
+        batch.committed.length > 0 && (
+          <Button
+            variant="outline"
+            render={<Link to="/sessions/$sessionId/videos" params={{ sessionId }} />}
+          >
+            Xem video
+            <ArrowRight />
+          </Button>
+        )
       )}
+      <ReadyCheckDialog
+        sessionId={sessionId}
+        scope={batch.make.scope ?? []}
+        open={batch.make.scope !== null}
+        onOpenChange={(next) => {
+          if (!next) batch.make.close();
+        }}
+        onCommit={commit}
+      />
     </div>
   );
 }

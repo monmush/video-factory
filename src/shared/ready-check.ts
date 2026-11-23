@@ -26,9 +26,6 @@ export function assertCommitted(session: Session, scripts: Script[], scriptId: s
   if (!committedIds(session, scripts).includes(scriptId)) throw new Error(NOT_COMMITTED);
 }
 
-export const isFirstBatch = (session: Session, sessions: Session[]) =>
-  !sessions.some((s) => s.seriesId === session.seriesId && s.id !== session.id && s.approvedAt);
-
 export type Blocker =
   | { kind: "unknown-speaker"; speaker: string }
   | { kind: "no-image"; characterId: string };

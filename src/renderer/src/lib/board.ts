@@ -69,8 +69,6 @@ export interface BoardView {
   refs: string[];
   layout: BoardLayout | null;
   activeId: string | null;
-  testId: string | null;
-  previewAll: boolean;
   focusId: string | null;
 }
 
@@ -83,13 +81,9 @@ const DEFAULT_VIEW: BoardView = {
   refs: [],
   layout: null,
   activeId: null,
-  testId: null,
-  previewAll: false,
   focusId: null,
 };
 
-export const testCardId = (view: BoardView, finishedIds: string[]): string | null =>
-  view.testId && finishedIds.includes(view.testId) ? view.testId : (finishedIds[0] ?? null);
 const views = new Map<string, BoardView>();
 
 export function useBoardView(sessionId: string) {

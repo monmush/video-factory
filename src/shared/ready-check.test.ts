@@ -4,7 +4,6 @@ import type { Asset, Script, Session } from "./ipc";
 import {
   assertCommitted,
   committedIds,
-  isFirstBatch,
   NOT_COMMITTED,
   needsAttention,
   readyCheck,
@@ -147,13 +146,6 @@ describe("commits and the first batch", () => {
     expect(() => assertCommitted(approved, scripts, "1")).not.toThrow();
     expect(() => assertCommitted(approved, scripts, "2")).toThrow(NOT_COMMITTED);
     expect(() => assertCommitted(session("s", "x"), scripts, "1")).toThrow(NOT_COMMITTED);
-  });
-
-  it("is the first batch until another session of the series is approved", () => {
-    const current = session("s", "x");
-    expect(isFirstBatch(current, [current, session("o", "y", "t")])).toBe(true);
-    expect(isFirstBatch(current, [current, session("o", "x")])).toBe(true);
-    expect(isFirstBatch(current, [current, session("o", "x", "t")])).toBe(false);
   });
 });
 
