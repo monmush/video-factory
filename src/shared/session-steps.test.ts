@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { buildDirection } from "./build-direction";
 import type { Script, Session } from "./ipc";
+import { mediaLevel } from "./media-level";
+import { builtinRecipe } from "./recipe";
 import { jobNeedsYou, sessionSteps } from "./session-steps";
-import type { VideoJob } from "./video-job";
+import { readShotList } from "./shot-list";
+import { answer, CTX, LINES } from "./shot-list.fixture";
+import { applyLivePlan, newJob, type VideoJob } from "./video-job";
 
 const script = (id: string, fields: Partial<Script> = {}): Script => ({
   id,
   title: id,
   hook: "",
-  lines: [],
+  lines: LINES,
   productIds: [],
   staging: "",
   status: "ready",
@@ -29,6 +34,35 @@ const session = (fields: Partial<Session> = {}): Session => ({
   updatedAt: "",
   ...fields,
 });
+
+const LEVEL = "balanced";
+const levelOf = () => LEVEL;
+
+function staged(scriptId: string, fields: Partial<VideoJob> = {}): VideoJob {
+  const level = mediaLevel(LEVEL);
+  const { list } = readShotList(answer(), CTX, { motion: level.motion, sound: level.sound });
+  const live = buildDirection({
+    list,
+    recipe: builtinRecipe(level),
+    lines: LINES,
+    level,
+    cast: [
+      { id: "a", name: "An", photos: 3 },
+      { id: "b", name: "Ba", photos: 2 },
+    ],
+    placePhotos: 3,
+  });
+  const fresh = newJob({
+    sessionId: "s",
+    seriesId: "x",
+    scriptId,
+    title: scriptId,
+    lines: LINES,
+    useEnvironment: true,
+    now: "2026-01-01T00:00:00Z",
+  });
+  return { ...applyLivePlan(fresh, live), status: "idle", level: level.id, ...fields };
+}
 
 const job = (status: VideoJob["status"], fields: Partial<VideoJob> = {}) =>
   ({ status, ...fields }) as VideoJob;
@@ -57,10 +91,92 @@ describe("sessionSteps", () => {
     script("d", { status: "failed" }),
     script("e", { deletedAt: "2026-01-02T00:00:00Z" }),
   ];
+  const finishedOnly = scripts.filter((s) => s.id !== "c");
 
-  it("counts scripts that are not failed or deleted, before approval", () => {
-    const steps = sessionSteps(session(), scripts, new Map());
-    expect(steps).toMatchObject({ scripts: 3, scriptsDone: false, toSend: 2, sent: 0 });
+  it("counts scripts that are not failed or deleted", () => {
+    const steps = sessionSteps(session(), scripts, new Map(), levelOf);
+    expect(steps.scripts).toBe(3);
+  });
+
+  it("keeps the scripts step open while a finished script waits to be staged", () => {
+    const steps = sessionSteps(session(), finishedOnly, new Map([["a", staged("a")]]), levelOf);
+    expect(steps).toMatchObject({
+      scriptsDone: false,
+      stageable: true,
+      toStage: 1,
+      unstarted: 2,
+      staged: 1,
+    });
+  });
+
+  it("finishes the scripts step once every unstarted script is staged", () => {
+    const steps = sessionSteps(
+      session(),
+      finishedOnly,
+      new Map([
+        ["a", staged("a")],
+        ["b", staged("b")],
+      ]),
+      levelOf,
+    );
+    expect(steps).toMatchObject({ scriptsDone: true, toStage: 0, unstarted: 2, staged: 2 });
+  });
+
+  it("is not done while a script is still being written", () => {
+    const steps = sessionSteps(
+      session(),
+      scripts,
+      new Map([
+        ["a", staged("a")],
+        ["b", staged("b")],
+      ]),
+      levelOf,
+    );
+    expect(steps.scriptsDone).toBe(false);
+  });
+
+  it("asks to stage again once a staged script is edited", () => {
+    const edited = finishedOnly.map((s) =>
+      s.id === "a"
+        ? { ...s, lines: LINES.map((l, i) => (i === 1 ? { ...l, text: "Khác" } : l)) }
+        : s,
+    );
+    const steps = sessionSteps(
+      session(),
+      edited,
+      new Map([
+        ["a", staged("a")],
+        ["b", staged("b")],
+      ]),
+      levelOf,
+    );
+    expect(steps).toMatchObject({ scriptsDone: false, toStage: 1, staged: 1 });
+  });
+
+  it("counts staging in progress without asking for it again", () => {
+    const steps = sessionSteps(
+      session(),
+      finishedOnly,
+      new Map([
+        ["a", staged("a")],
+        ["b", job("idle", { planning: true })],
+      ]),
+      levelOf,
+    );
+    expect(steps).toMatchObject({ toStage: 0, staging: 1, staged: 1 });
+  });
+
+  it("leaves started videos out of the staging counts", () => {
+    const steps = sessionSteps(
+      session({ approvedAt: "2026-01-02T00:00:00Z", committedScriptIds: ["a"] }),
+      finishedOnly,
+      new Map([
+        ["a", staged("a", { status: "running" })],
+        ["b", staged("b")],
+      ]),
+      levelOf,
+    );
+    expect(steps).toMatchObject({ scriptsDone: true, unstarted: 1, staged: 1, sent: 1 });
   });
 
   it("counts sent videos by state", () => {
@@ -71,25 +187,9 @@ describe("sessionSteps", () => {
         ["a", job("done")],
         ["b", job("running")],
       ]),
+      levelOf,
     );
-    expect(steps).toMatchObject({
-      scriptsDone: true,
-      toSend: 0,
-      sent: 2,
-      done: 1,
-      waiting: 0,
-      running: 1,
-    });
-  });
-
-  it("is not done while a finished script is unsent", () => {
-    const steps = sessionSteps(
-      session({ approvedAt: "2026-01-02T00:00:00Z", committedScriptIds: ["a"] }),
-      scripts,
-      new Map([["a", job("done")]]),
-    );
-    expect(steps.scriptsDone).toBe(false);
-    expect(steps.toSend).toBe(1);
+    expect(steps).toMatchObject({ sent: 2, done: 1, waiting: 0, running: 1 });
   });
 
   it("puts waiting videos first and counts a missing job as waiting", () => {
@@ -97,16 +197,25 @@ describe("sessionSteps", () => {
       session({ approvedAt: "2026-01-02T00:00:00Z", committedScriptIds: ["a", "b"] }),
       scripts,
       new Map([["a", job("running")]]),
+      levelOf,
     );
     expect(steps.waiting).toBe(1);
   });
 
-  it("counts nothing as done or waiting while jobs load", () => {
+  it("counts nothing as done, waiting or staged while jobs load", () => {
     const steps = sessionSteps(
       session({ approvedAt: "2026-01-02T00:00:00Z", committedScriptIds: ["a"] }),
       scripts,
       null,
+      levelOf,
     );
-    expect(steps).toMatchObject({ sent: 1, done: 0, waiting: 0, running: 0 });
+    expect(steps).toMatchObject({
+      scriptsDone: false,
+      sent: 1,
+      done: 0,
+      waiting: 0,
+      running: 0,
+      staged: 0,
+    });
   });
 });

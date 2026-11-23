@@ -1,13 +1,6 @@
 import { boardOrder, estimateSeconds, formatClock, formatSeconds } from "@shared/board";
 import { spentUsd } from "@shared/cost/charges";
-import {
-  batchToMake,
-  costToFinishUsd,
-  costToPreviewUsd,
-  inFlightUsd,
-  stillToPayUsd,
-  unknownPriceSteps,
-} from "@shared/cost/estimate";
+import { costToFinishUsd, inFlightUsd, stillToPayUsd } from "@shared/cost/estimate";
 import { estimateText, type Money, moneyText, paidSoFar } from "@shared/cost/table";
 import { formatCost } from "@shared/credits";
 import { failedUnpaid, videoUntouched } from "@shared/edit-in-place";
@@ -93,15 +86,10 @@ import {
 import { useWorkspace } from "@/lib/workspace";
 import { ImageViewer, type ViewerImage } from "./image-viewer";
 import { LivePlanFold } from "./live-plan";
+import { MakeAll, priceOfThisHold, useBatch } from "./make-all";
 import { Page } from "./page";
-import { QualityChip, VideoQuality } from "./quality-chip";
-import {
-  makeLabel,
-  ReadyCheckDialog,
-  stagingText,
-  useBatchMediaLevel,
-  useMakeVideos,
-} from "./ready-check";
+import { VideoQuality } from "./quality-chip";
+import { stagingText, useMakeVideos } from "./ready-check";
 import { SaveVideosButton } from "./save-videos";
 import { PlanningSteps } from "./shot-brief";
 import { TempoMenu } from "./tempo-menu";
@@ -111,18 +99,6 @@ import { Menu, MenuItem, MenuPopup, MenuSub, MenuSubTrigger, MenuTrigger } from 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const STOP_HOLD_MS = 1200;
-
-function sentVideosBatchAlsoFinishes(
-  sent: Script[],
-  jobs: ReadonlyMap<string, VideoJob>,
-): Script[] {
-  return sent.filter((s) => {
-    const job = jobs.get(s.id);
-    if (!job) return true;
-    if (job.status === "running" || job.status === "waiting") return job.pause && !job.reviewed;
-    return job.status !== "done";
-  });
-}
 
 export function VideosList({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
@@ -149,7 +125,6 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   const committed = committedIds(session, board.scripts);
   const finished = finishedScripts(board.scripts);
   const sent = finished.filter((s) => committed.includes(s.id));
-  const rest = finished.filter((s) => !committed.includes(s.id));
 
   const notStarted = finished.filter((s) => {
     const job = state.jobs.get(s.id);
@@ -162,179 +137,60 @@ export function VideosList({ sessionId }: { sessionId: string }) {
       settings: { mediaLevel: id === seriesLevel ? null : id },
     });
 
-  const batchButtonMakesOnlyThisVideo =
-    rest.length <= 1 && sentVideosBatchAlsoFinishes(sent, state.jobs).length === 0;
-
-  const card = (script: Script) => (
-    <VideoCard
-      key={script.id}
-      sessionId={sessionId}
-      script={script}
-      number={order.indexOf(script) + 1}
-      committed={committed.includes(script.id)}
-      job={state.jobs.get(script.id) ?? null}
-      averages={state.averages}
-      make={make}
-      hasOwnMakeButton={!batchButtonMakesOnlyThisVideo}
-      notStarted={notStarted}
-      onBatchLevel={setBatchLevel}
-    />
-  );
-
   return (
     <Page className="pt-0">
-      <SettingsBar sessionId={sessionId} />
-      <ul className="flex flex-col gap-4">{sent.map(card)}</ul>
-      {rest.length > 0 && (
-        <section className={cn(committed.length > 0 && "mt-8")}>
-          {committed.length > 0 && (
-            <h3 className="mb-3 text-sm text-muted-foreground tabular-nums">
-              Chưa tạo {rest.length} video
-            </h3>
-          )}
-          <ul className="flex flex-col gap-4">{rest.map(card)}</ul>
-        </section>
-      )}
-      {make.dialog}
+      <div className="sticky top-0 z-10 mb-1 bg-background py-2">
+        <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
+          <SaveVideosButton sessionId={sessionId} />
+        </div>
+      </div>
+      <ul className="flex flex-col gap-4">
+        {sent.map((script) => (
+          <VideoCard
+            key={script.id}
+            sessionId={sessionId}
+            script={script}
+            number={order.indexOf(script) + 1}
+            job={state.jobs.get(script.id) ?? null}
+            averages={state.averages}
+            make={make}
+            notStarted={notStarted}
+            onBatchLevel={setBatchLevel}
+          />
+        ))}
+      </ul>
     </Page>
   );
 }
 
 export function VideosToolbar({ sessionId }: { sessionId: string }) {
-  const board = useBoard(sessionId);
-  const session = useWorkspace().sessions.find((s) => s.id === sessionId);
-  const state = useVideoJobs(sessionId);
-  const makeAll = useMakeVideos({ sessionId });
+  const batch = useBatch(sessionId);
   const all = useAction();
-  if (!board || !session || !state) return null;
-  const order = boardOrder(board.scripts);
-  const committed = committedIds(session, board.scripts);
-  const finished = finishedScripts(board.scripts);
-  const sent = finished.filter((s) => committed.includes(s.id));
-  const rest = finished.filter((s) => !committed.includes(s.id));
-  const restIds = rest.map((s) => s.id);
-  const jobOf = (scriptId: string) => state.jobs.get(scriptId);
-  const scriptOf = (scriptId: string) => finished.find((s) => s.id === scriptId);
-  const atLevel = (scriptId: string): VideoJob | undefined => {
-    const job = jobOf(scriptId);
-    if (!job?.plan || job.planning || job.status !== "idle") return job;
-    const level = makeAll.levelOf(scriptId);
-    return level === mediaLevel(job.level).id ? job : (planAtLevel(job, level) ?? job);
-  };
-  const priceOf = (scriptId: string) => batchToMake([atLevel(scriptId)]).usd;
-  const staged = (s: Script) => readyToMake(jobOf(s.id), s, makeAll.levelOf(s.id));
-  const stagingOfScript = (s: Script) => stagingOf(jobOf(s.id), s, makeAll.levelOf(s.id));
-  const isStaging = (script: Script) => stagingOfScript(script).status === "staging";
-  const stagedRest = rest.filter(staged);
-  const stalled = sentVideosBatchAlsoFinishes(sent, state.jobs);
-  const stagedStalled = stalled.filter(staged);
-  const sum = (list: Script[]) => batchToMake(list.map((s) => atLevel(s.id))).usd;
-  const count = stagedRest.length + stagedStalled.length;
-  const staging = [...rest, ...stalled].filter(isStaging).length;
-  const unstaged = [...rest, ...stalled].filter((s) => stagingOfScript(s).canStage);
+  if (!batch) return null;
+  const { stalled, stagingOfScript } = batch;
+  const staging = stalled.filter((s) => stagingOfScript(s).status === "staging").length;
+  const unstaged = stalled.filter((s) => stagingOfScript(s).canStage);
   const stageAll = () =>
     all.run(() => api.invoke("video:stage", { sessionId, scriptIds: unstaged.map((s) => s.id) }));
-  const showAll = rest.length + stalled.length > 1 || rest.length === 1;
-
-  const label = (hold: boolean) => {
-    const verb = hold ? "Giữ để tạo" : "Tạo";
-    if (stagedStalled.length === 0)
-      return makeLabel(stagedRest.length, {
-        hold,
-        remaining: committed.length > 0,
-        number: stagedRest[0] ? order.indexOf(stagedRest[0]) + 1 : undefined,
-      });
-    return `${verb} hết ${count} video`;
-  };
-  const allUsd = sum(stagedRest) + sum(stagedStalled);
-  const runAll = (scriptIds: string[]) => api.invoke("video:make-all", { sessionId, scriptIds });
-  const holdAll = () => all.run(() => runAll(stagedRest.map((s) => s.id)));
-  const error = all.error ?? makeAll.error;
-  const checkFirst = rest.length > 0 && makeAll.needsCheck(restIds);
+  const several = stalled.length > 1;
 
   return (
     <div className="flex items-center gap-2.5">
-      {showAll && (
-        <>
-          {error && <span className="text-xs text-destructive-foreground">{error}</span>}
-          {staging > 0 && (
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {stagingText(staging)}
-            </span>
-          )}
-          {unstaged.length > 0 && (
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-              {unstaged.length} video chưa dàn dựng
-              <Button variant="outline" size="xs" onClick={stageAll}>
-                Dàn dựng
-              </Button>
-            </span>
-          )}
-          {checkFirst ? (
-            <Button onClick={() => makeAll.open(restIds)}>
-              {label(false)}
-              {count > 0 && <ButtonPrice>{estimateText(allUsd)}</ButtonPrice>}
-            </Button>
-          ) : (
-            count > 0 && (
-              <HoldButton onHold={holdAll}>
-                {label(true)}
-                <ButtonPrice>{estimateText(allUsd)}</ButtonPrice>
-              </HoldButton>
-            )
-          )}
-        </>
+      {several && all.error && (
+        <span className="text-xs text-destructive-foreground">{all.error}</span>
       )}
-      <ReadyCheckDialog
-        sessionId={sessionId}
-        scope={makeAll.scope ?? []}
-        open={makeAll.scope !== null}
-        onOpenChange={(next) => {
-          if (!next) makeAll.close();
-        }}
-        spend={{
-          priceOf: (scriptId) => {
-            const script = scriptOf(scriptId);
-            return script && staged(script) ? priceOf(scriptId) : null;
-          },
-          staging: (scriptId) => {
-            const script = rest.find((s) => s.id === scriptId);
-            return Boolean(script && isStaging(script));
-          },
-          extra: {
-            usd: sum(stagedStalled),
-            count: stagedStalled.length,
-            staging: stalled.filter(isStaging).length,
-          },
-          run: runAll,
-        }}
-      />
-    </div>
-  );
-}
-
-function SettingsBar({ sessionId }: { sessionId: string }) {
-  const { sessions, series } = useWorkspace();
-  const session = sessions.find((s) => s.id === sessionId);
-  const own = series.find((s) => s.id === session?.seriesId);
-  const seriesLevel = mediaLevel(own?.mediaLevel).id;
-  const level = useBatchMediaLevel(sessionId);
-  const { error, run } = useAction();
-  const set = (id: string) =>
-    run(() =>
-      api.invoke("session:update", {
-        id: sessionId,
-        settings: { mediaLevel: id === seriesLevel ? null : id },
-      }),
-    );
-  return (
-    <div className="sticky top-0 z-10 mb-1 bg-background py-2">
-      <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-1.5">
-        <span className="text-xs text-muted-foreground">Thiết lập</span>
-        <QualityChip value={level.id} onChange={set} seriesDefault={seriesLevel} />
-        {error && <span className="text-xs text-destructive-foreground">{error}</span>}
-        <SaveVideosButton sessionId={sessionId} />
-      </div>
+      {several && staging > 0 && (
+        <span className="text-xs text-muted-foreground tabular-nums">{stagingText(staging)}</span>
+      )}
+      {several && unstaged.length > 0 && (
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+          {unstaged.length} video chưa dàn dựng
+          <Button variant="outline" size="xs" onClick={stageAll}>
+            Dàn dựng
+          </Button>
+        </span>
+      )}
+      <MakeAll sessionId={sessionId} batch={batch} withUnsent={false} />
     </div>
   );
 }
@@ -352,11 +208,6 @@ function LevelLabel({ job, batchLevel }: { job: VideoJob | null; batchLevel?: st
       </TooltipPopup>
     </Tooltip>
   );
-}
-
-function priceOfThisHold(job: VideoJob): string {
-  const usd = (stopsForPreview(job) ? costToPreviewUsd(job) : costToFinishUsd(job)) ?? 0;
-  return `${estimateText(usd)}${unknownPriceSteps(job) ? " +?" : ""}`;
 }
 
 const hasPlanTable = (job: VideoJob) => Boolean(job.live);
@@ -560,22 +411,18 @@ function VideoCard({
   sessionId,
   script,
   number,
-  committed,
   job: saved,
   averages,
   make,
-  hasOwnMakeButton,
   notStarted,
   onBatchLevel,
 }: {
   sessionId: string;
   script: Script;
   number: number;
-  committed: boolean;
   job: VideoJob | null;
   averages: StepAverages;
   make: ReturnType<typeof useMakeVideos>;
-  hasOwnMakeButton: boolean;
   notStarted: number;
   onBatchLevel: (level: MediaLevelId) => Promise<unknown>;
 }) {
@@ -655,19 +502,7 @@ function VideoCard({
 
   let cost: string | null = null;
   let action: ReactNode = null;
-  if (!committed) {
-    if (hasOwnMakeButton)
-      action = (
-        <Button
-          variant="outline"
-          onClick={() =>
-            make.needsCheck([script.id]) ? make.open([script.id]) : make.make([script.id])
-          }
-        >
-          Tạo video
-        </Button>
-      );
-  } else if (staging.status === "staging") {
+  if (staging.status === "staging") {
     action = (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <LoaderCircle className="size-3.5 animate-spin" />
@@ -747,15 +582,8 @@ function VideoCard({
   const restorable = Boolean(view && canRestore(view) && switchable);
   const deletable = Boolean(job && view && !chosen && switchable && view.status !== "running");
   const tryable = toTry.length > 0;
-  const hasMenu = committed || fixOrTalk || restorable || deletable || tryable;
-
   return (
-    <li
-      className={cn(
-        "rounded-xl border bg-card p-4 transition-opacity",
-        !committed && "opacity-55 focus-within:opacity-100 hover:opacity-100",
-      )}
-    >
+    <li className="rounded-xl border bg-card p-4">
       <div className="flex min-h-9 items-center gap-2.5">
         <span className="w-5 text-xs text-muted-foreground tabular-nums">#{number}</span>
         <h3 className="min-w-0 flex-1 truncate font-semibold">
@@ -767,110 +595,106 @@ function VideoCard({
           )}
         </h3>
         {action}
-        {hasMenu && (
-          <Menu>
-            <MenuTrigger render={<Button variant="ghost-muted" size="icon-sm" aria-label="Thêm" />}>
-              <Ellipsis />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              {committed && (
-                <MenuItem
-                  onClick={() =>
-                    run(async () => {
-                      await editAsNewVersion(sessionId, script.id);
-                      await navigate({
-                        to: "/sessions/$sessionId/scripts",
-                        params: { sessionId },
-                      });
-                    })
-                  }
-                >
-                  <Pencil />
-                  Sửa kịch bản
-                </MenuItem>
-              )}
-              {fixOrTalk && view && (
-                <MenuItem
-                  onClick={() =>
-                    run(async () => {
-                      if (!working && selected) {
-                        await api.invoke("video:version", {
-                          ...ids,
-                          action: "focus",
-                          version: selected,
-                        });
-                      }
-                      addRefs(sessionId, [script.id]);
-                      requestChatFocus(sessionId);
-                    })
-                  }
-                >
-                  {canFix(view) ? <WandSparkles /> : <MessageSquarePlus />}
-                  {canFix(view) ? "Sửa video" : "Nhắc trong chat"}
-                </MenuItem>
-              )}
-              {tryable && (
-                <MenuSub>
-                  <MenuSubTrigger>
-                    <Layers />
-                    Thử chất lượng khác
-                  </MenuSubTrigger>
-                  <MenuPopup side="inline-end" align="start" className="min-w-44">
-                    {toTry.map((level) => {
-                      const usd = priceOfVersion(level.id);
-                      return (
-                        <MenuItem
-                          key={level.id}
-                          disabled={usd === null}
-                          onClick={() => {
-                            setOffer(null);
-                            setTrying(level.id);
-                          }}
-                        >
-                          <span className="flex-1">{level.label}</span>
-                          <span className="pl-3 text-xs text-muted-foreground tabular-nums">
-                            ~{formatCost(usd ?? 0)}
-                          </span>
-                        </MenuItem>
-                      );
-                    })}
-                  </MenuPopup>
-                </MenuSub>
-              )}
-              {restorable && view && (
-                <MenuItem
-                  onClick={() => run(() => api.invoke("video:restore", { ...ids, ...versionArg }))}
-                >
-                  <History />
-                  {previousIsNewer(view) ? "Bản sau" : "Bản trước"}
-                </MenuItem>
-              )}
-              {deletable && (
-                <MenuItem
-                  destructive
-                  onClick={() =>
-                    run(async () => {
+        <Menu>
+          <MenuTrigger render={<Button variant="ghost-muted" size="icon-sm" aria-label="Thêm" />}>
+            <Ellipsis />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem
+              onClick={() =>
+                run(async () => {
+                  await editAsNewVersion(sessionId, script.id);
+                  await navigate({
+                    to: "/sessions/$sessionId/scripts",
+                    params: { sessionId },
+                  });
+                })
+              }
+            >
+              <Pencil />
+              Sửa kịch bản
+            </MenuItem>
+            {fixOrTalk && view && (
+              <MenuItem
+                onClick={() =>
+                  run(async () => {
+                    if (!working && selected) {
                       await api.invoke("video:version", {
                         ...ids,
-                        action: "delete",
-                        version: selected as string,
+                        action: "focus",
+                        version: selected,
                       });
-                      setTab(null);
-                    })
-                  }
-                >
-                  <Trash2 />
-                  Xóa bản này
-                </MenuItem>
-              )}
-              {several && job && (
-                <MenuItem disabled className="cursor-default tabular-nums text-muted-foreground">
-                  Tổng đã chi {moneyText(paidSoFar(job))}
-                </MenuItem>
-              )}
-            </MenuPopup>
-          </Menu>
-        )}
+                    }
+                    addRefs(sessionId, [script.id]);
+                    requestChatFocus(sessionId);
+                  })
+                }
+              >
+                {canFix(view) ? <WandSparkles /> : <MessageSquarePlus />}
+                {canFix(view) ? "Sửa video" : "Nhắc trong chat"}
+              </MenuItem>
+            )}
+            {tryable && (
+              <MenuSub>
+                <MenuSubTrigger>
+                  <Layers />
+                  Thử chất lượng khác
+                </MenuSubTrigger>
+                <MenuPopup side="inline-end" align="start" className="min-w-44">
+                  {toTry.map((level) => {
+                    const usd = priceOfVersion(level.id);
+                    return (
+                      <MenuItem
+                        key={level.id}
+                        disabled={usd === null}
+                        onClick={() => {
+                          setOffer(null);
+                          setTrying(level.id);
+                        }}
+                      >
+                        <span className="flex-1">{level.label}</span>
+                        <span className="pl-3 text-xs text-muted-foreground tabular-nums">
+                          ~{formatCost(usd ?? 0)}
+                        </span>
+                      </MenuItem>
+                    );
+                  })}
+                </MenuPopup>
+              </MenuSub>
+            )}
+            {restorable && view && (
+              <MenuItem
+                onClick={() => run(() => api.invoke("video:restore", { ...ids, ...versionArg }))}
+              >
+                <History />
+                {previousIsNewer(view) ? "Bản sau" : "Bản trước"}
+              </MenuItem>
+            )}
+            {deletable && (
+              <MenuItem
+                destructive
+                onClick={() =>
+                  run(async () => {
+                    await api.invoke("video:version", {
+                      ...ids,
+                      action: "delete",
+                      version: selected as string,
+                    });
+                    setTab(null);
+                  })
+                }
+              >
+                <Trash2 />
+                Xóa bản này
+              </MenuItem>
+            )}
+            {several && job && (
+              <MenuItem disabled className="cursor-default tabular-nums text-muted-foreground">
+                Tổng đã chi {moneyText(paidSoFar(job))}
+              </MenuItem>
+            )}
+          </MenuPopup>
+        </Menu>
       </div>
 
       <div className="mt-1 flex min-h-7 flex-wrap items-center gap-x-2.5 gap-y-1 pl-7.5 text-xs">

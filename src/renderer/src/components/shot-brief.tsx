@@ -3,13 +3,12 @@ import { unstarted } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
 import type { Reworded } from "@shared/reworded";
 import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "@shared/scene";
-import { OUTDATED_TEXT } from "@shared/staging-status";
 import type { JobShot, VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
-import { STAGE_LABEL, stagingOf, useVideoLevel } from "@/lib/staging";
+import { stagingOf, useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -54,41 +53,26 @@ export function ShotBrief({
   const { error, run } = useAction();
   const [editing, setEditing] = useState<number | null>(null);
   const ids = { sessionId, scriptId: script.id };
-  const stage = (again = false) =>
-    run(() =>
-      api.invoke("video:stage", { sessionId, scriptIds: [script.id], ...(again ? { again } : {}) }),
-    );
 
   if (script.status !== "ready") return null;
   const staging = script.staging?.trim();
   const errorLine = error && <p className="text-xs text-destructive-foreground">{error}</p>;
-  const { status, reasons, canStage } = stagingOf(job, script, level);
+  const { status } = stagingOf(job, script, level);
 
   if (job?.planning) {
     return (
       <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>
         <PlanningSteps steps={job.planningSteps?.length ? job.planningSteps : ["Đọc kịch bản"]} />
-        <Button
-          variant="ghost-muted"
-          size="xs"
-          onClick={() => run(() => api.invoke("video:stage-stop", ids))}
-        >
-          Dừng
-        </Button>
         {errorLine}
       </div>
     );
   }
 
   if (!job?.plan) {
+    if (!staging && !error) return null;
     return (
       <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>
         {staging && <StagingNote text={staging} />}
-        {canStage && (
-          <Button variant="outline" size="xs" onClick={() => stage()}>
-            {STAGE_LABEL[status]}
-          </Button>
-        )}
         {errorLine}
       </div>
     );
@@ -96,7 +80,6 @@ export function ShotBrief({
 
   const open = unstarted(job);
   const outdated = status === "outdated";
-  const reason = reasons[0];
   const changed = open ? job.reworded : undefined;
   const changedScene = (i: number) => Array.isArray(changed?.scenes) && changed.scenes.includes(i);
   const keyframes = job.live?.plan.keyframes ?? [];
@@ -107,7 +90,6 @@ export function ShotBrief({
     );
   };
   const whole = (job.direction ?? []).filter((d) => !d.words);
-  const plannedBeforeBriefsWereSentences = job.shots.some((shot) => !sceneBrief(shot));
   const pendingWish = (shot: JobShot) => {
     const wanted = directionAt(job.direction, shot.text)?.want;
     if (!wanted || !job.stagedDirection) return undefined;
@@ -123,14 +105,6 @@ export function ShotBrief({
 
   return (
     <div data-shot-brief className={cn("flex flex-col gap-3", className)}>
-      {outdated && reason && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {OUTDATED_TEXT[reason]}
-          <Button variant="outline" size="xs" onClick={() => stage()}>
-            Cập nhật
-          </Button>
-        </div>
-      )}
       {changed && !outdated && <RewordedNote changed={changed} />}
       {staging && <StagingNote text={staging} />}
       {whole.length > 0 && (
@@ -156,11 +130,6 @@ export function ShotBrief({
             </li>
           ))}
         </ul>
-      )}
-      {open && !outdated && plannedBeforeBriefsWereSentences && (
-        <Button variant="outline" size="xs" className="self-start" onClick={() => stage(true)}>
-          Dàn dựng lại
-        </Button>
       )}
       <ol className={cn("flex flex-col divide-y divide-border", outdated && "opacity-60")}>
         {job.shots.map((shot, i) => (

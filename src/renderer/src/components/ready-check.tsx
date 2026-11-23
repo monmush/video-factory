@@ -61,17 +61,7 @@ export interface Spend {
 
 export const stagingText = (count: number) => `${count} video đang dàn dựng`;
 
-export function useMakeVideos({
-  sessionId,
-  waiting,
-  onStarted,
-  approveOnly,
-}: {
-  sessionId: string;
-  waiting?: boolean;
-  onStarted?: () => void | Promise<void>;
-  approveOnly?: boolean;
-}) {
+export function useMakeVideos({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const { assets } = useWorkspace();
   const { opts, level, levelOf } = useCheckOpts(sessionId);
@@ -80,64 +70,20 @@ export function useMakeVideos({
     return { model: at.speaker, resolution: fitResolution(at.speaker, at.output) };
   };
   const [scope, setScope] = useState<string[] | null>(null);
-  const action = useAction();
-
-  const checkFor = (ids: string[]) => (board ? readyCheck(board.scripts, ids, assets, opts) : null);
 
   const needsCheck = (ids: string[]) => {
-    const check = checkFor(ids);
+    const check = board ? readyCheck(board.scripts, ids, assets, opts) : null;
     return !check || needsAttention(check) || check.toMake.length === 0;
   };
 
-  const open = (ids: string[]) => {
-    action.clear();
-    setScope(ids);
-  };
-
-  const close = () => setScope(null);
-
-  const make = async (ids: string[]) => {
-    const check = checkFor(ids);
-    if (!check || waiting) return;
-    if (needsAttention(check) || check.toMake.length === 0) {
-      open(ids);
-      return;
-    }
-    const ok = await action.run(() =>
-      api.invoke(
-        "session:approve",
-        sessionId,
-        check.toMake.map((c) => c.script.id),
-      ),
-    );
-    if (ok) await action.run(async () => onStarted?.());
-  };
-
-  const dialog = (
-    <ReadyCheckDialog
-      sessionId={sessionId}
-      scope={scope ?? []}
-      waiting={waiting}
-      approveOnly={approveOnly}
-      open={scope !== null}
-      onOpenChange={(next) => {
-        if (!next) close();
-      }}
-      onApproved={() => onStarted?.()}
-    />
-  );
-
   return {
     needsCheck,
-    open,
-    close,
+    open: (ids: string[]) => setScope(ids),
+    close: () => setScope(null),
     scope,
-    make,
-    error: action.error,
     level,
     levelOf,
     batchFor,
-    dialog,
   };
 }
 
@@ -158,19 +104,13 @@ export function ReadyCheckDialog({
   scope,
   open,
   onOpenChange,
-  onApproved,
-  waiting,
-  approveOnly,
   spend,
 }: {
   sessionId: string;
   scope: string[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onApproved?: () => void | Promise<void>;
-  waiting?: boolean;
-  approveOnly?: boolean;
-  spend?: Spend;
+  spend: Spend;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -179,13 +119,8 @@ export function ReadyCheckDialog({
           <ReadyCheckBody
             sessionId={sessionId}
             scope={scope}
-            waiting={waiting}
-            approveOnly={approveOnly}
             spend={spend}
-            onDone={async () => {
-              onOpenChange(false);
-              await onApproved?.();
-            }}
+            onDone={() => onOpenChange(false)}
           />
         )}
       </DialogPopup>
@@ -196,31 +131,25 @@ export function ReadyCheckDialog({
 function ReadyCheckBody({
   sessionId,
   scope,
-  waiting,
-  approveOnly,
   spend,
   onDone,
 }: {
   sessionId: string;
   scope: string[];
-  waiting?: boolean;
-  approveOnly?: boolean;
-  spend?: Spend;
-  onDone: () => Promise<void>;
+  spend: Spend;
+  onDone: () => void;
 }) {
   const board = useBoard(sessionId);
-  const { assets, sessions } = useWorkspace();
-  const session = sessions.find((s) => s.id === sessionId);
+  const { assets } = useWorkspace();
   const { opts } = useCheckOpts(sessionId);
   const [editing, setEditing] = useState<Asset | null>(null);
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const { error, run } = useAction();
-  if (!board || !session) return null;
+  if (!board) return null;
 
   const order = boardOrder(board.scripts).map((s) => s.id);
   const number = (c: ScriptCheck) => `#${order.indexOf(c.script.id) + 1}`;
   const check = readyCheck(board.scripts, scope, assets, opts);
-  const make = check.toMake.length;
   const toMakeIds = check.toMake.map((c) => c.script.id);
   const characters = assets.filter((a) => a.kind === "character");
   const name = (id: string) => check.characters.get(id)?.name ?? "?";
@@ -228,23 +157,12 @@ function ReadyCheckBody({
   const linkSpeaker = (speaker: string, characterId: string) =>
     run(() => api.invoke("board:link-speaker", { sessionId, speaker, characterId }));
 
-  const approve = async () => {
-    const ok = await run(() => api.invoke("session:approve", sessionId, toMakeIds));
-    if (ok) await run(onDone);
-  };
-
-  const stagedIds = spend ? toMakeIds.filter((id) => spend.priceOf(id) !== null) : [];
-  const total = spend ? stagedIds.length + spend.extra.count : 0;
-  const spendUsd = spend
-    ? stagedIds.reduce((n, id) => n + (spend.priceOf(id) ?? 0), 0) + spend.extra.usd
-    : 0;
-  const staging = spend
-    ? toMakeIds.filter((id) => spend.staging(id)).length + spend.extra.staging
-    : 0;
+  const stagedIds = toMakeIds.filter((id) => spend.priceOf(id) !== null);
+  const total = stagedIds.length + spend.extra.count;
+  const spendUsd = stagedIds.reduce((n, id) => n + (spend.priceOf(id) ?? 0), 0) + spend.extra.usd;
+  const staging = toMakeIds.filter((id) => spend.staging(id)).length + spend.extra.staging;
   const makeAll = async () => {
-    if (!spend) return;
-    const ok = await run(() => spend.run(stagedIds));
-    if (ok) await run(onDone);
+    if (await run(() => spend.run(stagedIds))) onDone();
   };
 
   const keepPlacePhotos = (place: Asset) =>
@@ -266,17 +184,7 @@ function ReadyCheckBody({
   const sharedGroups = [...new Set(shared.map((m) => m.voiceId))].map((voiceId) =>
     shared.filter((m) => m.voiceId === voiceId),
   );
-  const title = approveOnly
-    ? make
-      ? `Duyệt ${make} kịch bản`
-      : "Duyệt kịch bản"
-    : spend
-      ? total
-        ? `Tạo ${total} video`
-        : "Tạo video"
-      : make
-        ? `Tạo ${make} video`
-        : "Tạo video";
+  const title = total ? `Tạo ${total} video` : "Tạo video";
   const hasProblems =
     check.blocked.length + overTarget.length + sharedGroups.length + check.places.length > 0;
 
@@ -285,7 +193,7 @@ function ReadyCheckBody({
       <DialogHeader>
         <DialogTitle>{title}</DialogTitle>
       </DialogHeader>
-      {(hasProblems || waiting || error) && (
+      {(hasProblems || error) && (
         <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto p-5">
           {hasProblems && (
             <div className="flex flex-col gap-2">
@@ -387,30 +295,19 @@ function ReadyCheckBody({
             </div>
           )}
 
-          {waiting && <p className="text-muted-foreground">Đang viết kịch bản…</p>}
           {error && <p className="text-destructive-foreground">{error}</p>}
         </div>
       )}
       <DialogFooter className="justify-end">
         <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>
-        {spend ? (
-          <>
-            {staging > 0 && (
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {stagingText(staging)}
-              </span>
-            )}
-            {total > 0 && (
-              <HoldButton disabled={waiting} onHold={makeAll}>
-                {makeLabel(total)}
-                <ButtonPrice>{estimateText(spendUsd)}</ButtonPrice>
-              </HoldButton>
-            )}
-          </>
-        ) : (
-          <Button disabled={waiting || make === 0} onClick={approve}>
-            {approveOnly ? title : "Tiếp tục"}
-          </Button>
+        {staging > 0 && (
+          <span className="text-xs text-muted-foreground tabular-nums">{stagingText(staging)}</span>
+        )}
+        {total > 0 && (
+          <HoldButton onHold={makeAll}>
+            {makeLabel(total)}
+            <ButtonPrice>{estimateText(spendUsd)}</ButtonPrice>
+          </HoldButton>
         )}
       </DialogFooter>
 

@@ -2,6 +2,7 @@ import { videoLevel } from "@shared/batch-settings";
 import type { Script } from "@shared/ipc";
 import type { MediaLevelId } from "@shared/media-level";
 import {
+  needsStaging,
   type OutdatedReason,
   outdatedReasons,
   type StagingStatus,
@@ -24,8 +25,6 @@ export interface ScriptStaging {
   canStage: boolean;
 }
 
-const ASKABLE: readonly StagingStatus[] = ["none", "outdated", "failed"];
-
 export function stagingOf(
   job: Parameters<typeof stagingStatus>[0],
   script: Script,
@@ -35,7 +34,7 @@ export function stagingOf(
   return {
     status,
     reasons: outdatedReasons(job, script, level),
-    canStage: stageable(script) && ASKABLE.includes(status),
+    canStage: stageable(script) && needsStaging(status),
   };
 }
 

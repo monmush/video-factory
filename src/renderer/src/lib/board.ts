@@ -71,6 +71,7 @@ export interface BoardView {
   activeId: string | null;
   testId: string | null;
   previewAll: boolean;
+  focusId: string | null;
 }
 
 export const FULL_CARDS_MAX = 6;
@@ -84,6 +85,7 @@ const DEFAULT_VIEW: BoardView = {
   activeId: null,
   testId: null,
   previewAll: false,
+  focusId: null,
 };
 
 export const testCardId = (view: BoardView, finishedIds: string[]): string | null =>
@@ -115,6 +117,12 @@ export function toggleRef(sessionId: string, scriptId: string): boolean {
   });
   emit();
   return added;
+}
+
+export function requestCardFocus(sessionId: string, scriptId: string) {
+  const current = views.get(sessionId) ?? DEFAULT_VIEW;
+  views.set(sessionId, { ...current, focusId: scriptId });
+  emit();
 }
 
 let pendingChatFocus: string | null = null;

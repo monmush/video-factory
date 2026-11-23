@@ -739,7 +739,7 @@ export const TOOLS = [
         }
         throw error;
       }
-      return `Đã lưu. #${number} sẽ được dàn dựng lại theo ý này ngay khi bạn trả lời xong (miễn phí, khoảng một phút). Trả lời một câu ngắn và chỉ chỗ xem, ví dụ: "Đang dàn dựng lại #${number}, xem ở tab Kịch bản › Dàn dựng."`;
+      return `Đã lưu. #${number} sẽ được dàn dựng lại theo ý này ngay khi bạn trả lời xong (miễn phí, khoảng một phút). Trả lời một câu ngắn và chỉ chỗ xem, ví dụ: "Đang dàn dựng lại #${number}, xem ở bước Dàn dựng."`;
     },
   }),
 

@@ -39,6 +39,10 @@ export function outdatedReasons(
   return reasons;
 }
 
+const ASKABLE: readonly StagingStatus[] = ["none", "outdated", "failed"];
+
+export const needsStaging = (status: StagingStatus) => ASKABLE.includes(status);
+
 export const stageable = (script: BoardScript) =>
   script.status === "ready" && spokenLines(script.lines).length > 0;
 

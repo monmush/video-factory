@@ -15,6 +15,7 @@ import {
 } from "@shared/ipc";
 import { findHash, matchScripts } from "@shared/mentions";
 import { canFix } from "@shared/video-fix";
+import { useMatches } from "@tanstack/react-router";
 import {
   Check,
   ChevronDown,
@@ -56,6 +57,7 @@ const isSetupFailure = (kind: ChatError["kind"] | undefined) =>
 export function SessionChat({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const [view, setView] = useBoardView(sessionId);
+  const onStaging = useMatches().some((m) => m.routeId === "/sessions/$sessionId/staging");
   const live = useChatLive(sessionId);
   const [info, refreshInfo, setInfoLocal] = useChatInfo();
   const [text, setText, clearText] = useDraft(`session-chat:${sessionId}`, "");
@@ -313,7 +315,9 @@ export function SessionChat({ sessionId }: { sessionId: string }) {
           placeholder={
             scripts.length === 0
               ? "Bạn muốn làm video về chủ đề gì"
-              : "Hỏi hoặc yêu cầu thay đổi kịch bản"
+              : onStaging
+                ? "Hỏi hoặc yêu cầu thay đổi dàn dựng"
+                : "Hỏi hoặc yêu cầu thay đổi kịch bản"
           }
           submitLabel={running ? "Gửi sau khi xong" : "Gửi"}
           onDropFiles={info?.mode === "pipeline" ? undefined : stage}

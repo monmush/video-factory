@@ -186,7 +186,6 @@ import { dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
 import { nativeVoiceOn } from "../settings";
 import { getWorkspace } from "../store";
-import { textAiIsOwn } from "../text-ai";
 import { logUsage, openFalRequests } from "../usage";
 import { checkStill } from "./checks";
 import { clipAddedLettering } from "./clip-check";
@@ -746,9 +745,12 @@ export async function stopStaging(sessionId: string, scriptId: string): Promise<
   return null;
 }
 
-export function planCommitted(sessionId: string, scriptIds: string[]): void {
-  if (!textAiIsOwn()) return;
-  void stage(sessionId, scriptIds).catch(logStaging);
+export async function assertStaged(sessionId: string, scriptIds: string[]): Promise<void> {
+  for (const scriptId of scriptIds) {
+    if ((await stagingOf(sessionId, scriptId)).status !== "ready") {
+      throw new Error("Dàn dựng kịch bản trước khi tạo video");
+    }
+  }
 }
 
 export async function direct(

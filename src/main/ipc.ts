@@ -128,12 +128,14 @@ export function registerIpc() {
     await video.abandonSessions([id]);
     return deleteSession(id);
   });
-  handle("session:approve", async (sessionId, scriptIds) => {
+  const staged = async (sessionId: string, scriptIds?: string[]) => {
     const ids = await board.scriptsToCommit(sessionId, scriptIds);
-    const session = await approveSession(sessionId, ids);
-    video.planCommitted(sessionId, ids);
-    return session;
-  });
+    await video.assertStaged(sessionId, ids);
+    return ids;
+  };
+  handle("session:approve", async (sessionId, scriptIds) =>
+    approveSession(sessionId, await staged(sessionId, scriptIds)),
+  );
 
   handle("board:get", board.getBoard);
   handle("chat:send", chat.send);
@@ -291,8 +293,7 @@ export function registerIpc() {
   );
   handle("video:make-all", async ({ sessionId, scriptIds }) => {
     if (scriptIds.length) {
-      const ids = await board.scriptsToCommit(sessionId, scriptIds);
-      await approveSession(sessionId, ids);
+      await approveSession(sessionId, await staged(sessionId, scriptIds));
     }
     return video.runAll(sessionId);
   });

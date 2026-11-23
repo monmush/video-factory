@@ -1,7 +1,7 @@
 import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "@shared/board";
 import { editsInPlace } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
-import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
+import { committedIds } from "@shared/ready-check";
 import { hasVideo } from "@shared/session-steps";
 import type { VideoJob } from "@shared/video-job";
 import { Link } from "@tanstack/react-router";
@@ -44,20 +44,18 @@ import {
   FULL_CARDS_MAX,
   requestChatFocus,
   startScriptDrag,
-  testCardId,
   toggleRef,
   useBoard,
   useBoardView,
 } from "@/lib/board";
 import { useLiveWriting } from "@/lib/chat";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
-import { type ScriptStaging, STAGE_LABEL, useStaging } from "@/lib/staging";
+import { type ScriptStaging, stagingOf, useStaging, useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { ProductPicker } from "./product-picker";
-import { ShotBrief } from "./shot-brief";
 import { Button } from "./ui/button";
 import {
   ContextMenu,
@@ -70,7 +68,6 @@ import { MenuItem } from "./ui/menu";
 import { Textarea } from "./ui/textarea";
 
 const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
-const DIMMED = "opacity-50 hover:opacity-80 focus-within:opacity-80";
 
 interface CardActions {
   variant: (id: string, direction?: string) => void;
@@ -88,7 +85,7 @@ interface CardActions {
   editLine: (id: string, edit: LineEdit) => Promise<LineSaved | null | "failed">;
   removeLine: (id: string, removal: Omit<LineEdit, "text">) => Promise<boolean>;
   undoChange: (id: string) => void;
-  stage: (id: string) => void;
+  stageMany: (ids: string[]) => void;
 }
 
 interface LineEdit {
@@ -129,6 +126,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const [view, setView] = useBoardView(sessionId);
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
+  const askedFocus = view.focusId;
   const [notice, setNotice] = useState<Notice | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
   const [customiseId, setCustomiseId] = useState<string | null>(null);
@@ -143,6 +141,12 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     const timer = setTimeout(() => setNotice(null), 8000);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (!askedFocus) return;
+    setFocusId(askedFocus);
+    setView({ focusId: null });
+  }, [askedFocus, setView]);
 
   useEffect(() => {
     if (!focusId) return;
@@ -163,18 +167,6 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const refs = view.refs.filter((id) => scripts.some((s) => s.id === id));
   const selected = selection.filter((id) => scripts.some((s) => s.id === id));
   const layout = boardLayout(view, scripts.length);
-  const finished = finishedScripts(board.scripts);
-  const nudge = !session.approvedAt && isFirstBatch(session, sessions) && finished.length > 1;
-  const testId = nudge
-    ? testCardId(
-        view,
-        finished.map((s) => s.id),
-      )
-    : null;
-  const isDimmed = (id: string) => nudge && id !== testId && !view.previewAll;
-  const testChoice = nudge
-    ? { isTest: (id: string) => id === testId, pick: (id: string) => setView({ testId: id }) }
-    : null;
 
   const run = action.run;
   const showLineSaved = (saved: LineSaved, inPlaceText: string) => {
@@ -249,7 +241,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       if (ok && removed) showLineSaved(removed, "Đã xóa lời thoại");
       return ok;
     },
-    stage: (id) => run(() => api.invoke("video:stage", { sessionId, scriptIds: [id] })),
+    stageMany: (ids) => run(() => api.invoke("video:stage", { sessionId, scriptIds: ids })),
     undoChange: (id) =>
       run(async () => {
         await api.invoke("board:undo-change", { sessionId, scriptId: id });
@@ -373,8 +365,6 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     dragProps,
     customiseId,
     clearCustomise: () => setCustomiseId(null),
-    isDimmed,
-    testChoice,
   };
 
   return (
@@ -494,8 +484,6 @@ interface SharedProps {
   };
   customiseId: string | null;
   clearCustomise: () => void;
-  isDimmed: (id: string) => boolean;
-  testChoice: { isTest: (id: string) => boolean; pick: (id: string) => void } | null;
 }
 
 function moveFocus(
@@ -589,7 +577,6 @@ function ListView({
                   "group relative flex cursor-pointer items-stretch rounded-lg outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
                   isActive ? "bg-accent" : "hover:bg-accent/60",
                   isSelected && "ring-2 ring-ring/60 ring-inset",
-                  shared.isDimmed(script.id) && DIMMED,
                 )}
                 onClick={(e) => {
                   if (!shared.onSelectClick(e, script.id)) setView({ activeId: script.id });
@@ -657,7 +644,6 @@ function ScriptCard({
   const isSent = job !== undefined;
   const assets = useWorkspace().assets;
   const [prompting, setPrompting] = useState(false);
-  const [tab, setTab] = useState<CardTab>("lines");
   const staging = useStaging(shared.sessionId, script);
   useEffect(() => {
     if (customiseId !== script.id) return;
@@ -686,10 +672,8 @@ function ScriptCard({
   const liveWriting = useLiveWriting(script.id);
   const writing = script.status === "writing" || liveWriting;
   const isRef = refs.includes(script.id);
-  const dimmed = shared.isDimmed(script.id);
   const inPlace = editsInPlace(isSent, job);
-  const lineEditable =
-    script.status === "ready" && !liveWriting && !script.changing && !(inGallery && dimmed);
+  const lineEditable = script.status === "ready" && !liveWriting && !script.changing;
   const shownLines = script.lines.map((line, i) =>
     editing?.index === i && lineEditable
       ? { ...line, text: editing.text }
@@ -765,36 +749,17 @@ function ScriptCard({
           "group relative flex flex-col rounded-xl border bg-card p-4 shadow-xs/5 outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
           "cursor-grab active:cursor-grabbing",
           inGallery && selected.includes(script.id) && "ring-2 ring-ring/60",
-          inGallery && dimmed && cn(DIMMED, "cursor-pointer"),
         )}
-        title={inGallery && dimmed ? "Chọn làm video thử" : undefined}
         onKeyDown={(e) => inGallery && onCardKey(e, script.id)}
         onClick={(e) => {
-          if (!inGallery || shared.onSelectClick(e, script.id)) return;
-          if (dimmed && isCardClick(e)) shared.testChoice?.pick(script.id);
+          if (inGallery) shared.onSelectClick(e, script.id);
         }}
         {...shared.dragProps(script, number)}
       >
         <DragHandle className="top-[19px] left-0.5" />
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
-            {!isSent && <StagingMark scriptId={script.id} staging={staging} actions={actions} />}
-            {script.status === "ready" && script.lines.length > 0 && (
-              <CardTabs value={tab} onChange={setTab} staging={staging} />
-            )}
-            {isSent && <SentBadge sessionId={shared.sessionId} job={job} staging={staging} />}
-            {!inGallery &&
-              shared.testChoice &&
-              script.status === "ready" &&
-              !shared.testChoice.isTest(script.id) && (
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => shared.testChoice?.pick(script.id)}
-                >
-                  Chọn làm video thử
-                </Button>
-              )}
+            <CardBadge sessionId={shared.sessionId} job={job} staging={staging} />
           </CardMeta>
           {script.title ? (
             <h3 className="mt-1.5 font-semibold leading-snug text-balance" data-selectable>
@@ -805,9 +770,7 @@ function ScriptCard({
           )}
         </header>
 
-        {tab === "staging" && script.status === "ready" && script.lines.length > 0 ? (
-          <ShotBrief sessionId={shared.sessionId} script={script} className="mt-3" />
-        ) : script.lines.length > 0 ? (
+        {script.lines.length > 0 ? (
           <div className="relative mt-3">
             <dl
               key={revealAt ?? "quiet"}
@@ -952,7 +915,6 @@ function CompactCard({
   const isRef = refs.includes(script.id);
   const liveWriting = useLiveWriting(script.id);
   const writing = script.status === "writing" || liveWriting;
-  const dimmed = shared.isDimmed(script.id);
   const staging = useStaging(shared.sessionId, script);
   return (
     <CardMenu script={script} shared={shared} canOpen>
@@ -966,13 +928,10 @@ function CompactCard({
         className={cn(
           "group relative flex cursor-pointer flex-col rounded-xl border bg-card p-3.5 shadow-xs/5 outline-none transition-opacity hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring",
           selected.includes(script.id) && "ring-2 ring-ring/60",
-          dimmed && DIMMED,
         )}
-        title={dimmed ? "Chọn làm video thử" : undefined}
         onClick={(e) => {
           if (shared.onSelectClick(e, script.id) || !isCardClick(e)) return;
-          if (dimmed) shared.testChoice?.pick(script.id);
-          else actions.open(script.id);
+          actions.open(script.id);
         }}
         onKeyDown={(e) => onCardKey(e, script.id)}
         {...shared.dragProps(script, number)}
@@ -980,11 +939,7 @@ function CompactCard({
         <DragHandle className="top-[17px] left-0.5" />
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
-            {isSent ? (
-              <SentBadge sessionId={shared.sessionId} job={job} staging={staging} />
-            ) : (
-              <StagingMark scriptId={script.id} staging={staging} actions={actions} />
-            )}
+            <CardBadge sessionId={shared.sessionId} job={job} staging={staging} />
           </CardMeta>
           <h3 className="mt-1 line-clamp-2 font-semibold leading-snug text-balance">
             {script.title || <Bars count={1} className="pt-1" />}
@@ -1070,6 +1025,7 @@ function CardMenu({
   const { refs, actions, selected } = shared;
   const group = selected.length > 1 && selected.includes(script.id) ? selected : null;
   const isSent = shared.jobOf(script.id) !== undefined;
+  const toStage = useStageable(shared.sessionId, group ?? [script.id]);
 
   return (
     <ContextMenu>
@@ -1081,6 +1037,12 @@ function CardMenu({
               <MessageSquarePlus />
               Nhắc {group.length} kịch bản trong chat
             </MenuItem>
+            {toStage.length > 0 && (
+              <MenuItem onClick={() => actions.stageMany(toStage)}>
+                <Clapperboard />
+                Dàn dựng {toStage.length} kịch bản
+              </MenuItem>
+            )}
             <GroupPinItem ids={group} shared={shared} />
             <ContextMenuSeparator />
             <MenuItem destructive onClick={() => actions.removeMany(group)}>
@@ -1096,14 +1058,12 @@ function CardMenu({
                 Mở
               </MenuItem>
             )}
-            {shared.testChoice &&
-              script.status === "ready" &&
-              !shared.testChoice.isTest(script.id) && (
-                <MenuItem onClick={() => shared.testChoice?.pick(script.id)}>
-                  <Clapperboard />
-                  Chọn làm video thử
-                </MenuItem>
-              )}
+            {toStage.length > 0 && (
+              <MenuItem onClick={() => actions.stageMany(toStage)}>
+                <Clapperboard />
+                Dàn dựng
+              </MenuItem>
+            )}
             {isSent && (
               <MenuItem onClick={() => actions.edit(script.id)}>
                 <Pencil />
@@ -1220,40 +1180,25 @@ function VersionTag({ script }: { script: Script }) {
   return <span className="whitespace-nowrap">· bản {script.version}</span>;
 }
 
-function StagingMark({
-  scriptId,
-  staging,
-  actions,
-}: {
-  scriptId: string;
-  staging: ScriptStaging;
-  actions: CardActions;
-}) {
-  if (staging.status === "staging") {
-    return (
-      <span className="flex shrink-0 items-center gap-1 text-2xs whitespace-nowrap">
-        <LoaderCircle className="size-3 animate-spin" />
-        <span className="shimmer-text">Đang dàn dựng</span>
-      </span>
-    );
-  }
-  if (!staging.canStage) return null;
-  return (
-    <Button
-      variant="outline"
-      size="xs"
-      className="h-5 px-1.5 text-2xs"
-      onClick={(e) => {
-        e.stopPropagation();
-        actions.stage(scriptId);
-      }}
-    >
-      {STAGE_LABEL[staging.status]}
-    </Button>
-  );
+function useStageable(sessionId: string, ids: string[]): string[] {
+  const board = useBoard(sessionId);
+  const jobs = useVideoJobs(sessionId);
+  const levelOf = useVideoLevel(sessionId);
+  if (!board || !jobs) return [];
+  return ids.filter((id) => {
+    const script = board.scripts.find((s) => s.id === id);
+    return script && stagingOf(jobs.jobs.get(id), script, levelOf(id)).canStage;
+  });
 }
 
-function SentBadge({
+const STAGING_LINK: Partial<Record<ScriptStaging["status"], string>> = {
+  staging: "Đang dàn dựng",
+  ready: "Đã dàn dựng",
+  outdated: "Dàn dựng cũ",
+  failed: "Lỗi dàn dựng",
+};
+
+function CardBadge({
   sessionId,
   job,
   staging,
@@ -1262,20 +1207,38 @@ function SentBadge({
   job: VideoJob | null | undefined;
   staging: ScriptStaging;
 }) {
+  const label = STAGING_LINK[staging.status];
+  if (label) {
+    return (
+      <Link
+        to="/sessions/$sessionId/staging"
+        params={{ sessionId }}
+        className={cn(
+          "flex shrink-0 items-center gap-1 text-2xs whitespace-nowrap text-muted-foreground hover:text-foreground",
+          staging.status === "failed" && "text-destructive-foreground",
+        )}
+      >
+        {staging.status === "staging" && <LoaderCircle className="size-3 animate-spin" />}
+        {label}
+      </Link>
+    );
+  }
+  return job === undefined ? null : <SentBadge sessionId={sessionId} job={job} />;
+}
+
+function SentBadge({ sessionId, job }: { sessionId: string; job: VideoJob | null }) {
   const label =
-    staging.status === "staging"
-      ? "Đang dàn dựng"
-      : !job || job.status === "idle"
-        ? "Chờ tạo"
-        : hasVideo(job)
-          ? "Có video"
-          : job.status === "review"
-            ? "Chờ xem cảnh chính"
-            : job.status === "stopped"
-              ? "Video đã dừng"
-              : job.status === "failed"
-                ? "Video lỗi"
-                : "Đang tạo video";
+    !job || job.status === "idle"
+      ? "Chờ tạo"
+      : hasVideo(job)
+        ? "Có video"
+        : job.status === "review"
+          ? "Chờ xem cảnh chính"
+          : job.status === "stopped"
+            ? "Video đã dừng"
+            : job.status === "failed"
+              ? "Video lỗi"
+              : "Đang tạo video";
   return (
     <Link
       to="/sessions/$sessionId/videos"
@@ -1288,50 +1251,6 @@ function SentBadge({
       <Clapperboard className="size-3" />
       {label}
     </Link>
-  );
-}
-
-type CardTab = "lines" | "staging";
-const CARD_TABS: { id: CardTab; label: string }[] = [
-  { id: "lines", label: "Lời thoại" },
-  { id: "staging", label: "Dàn dựng" },
-];
-
-function CardTabs({
-  value,
-  onChange,
-  staging,
-}: {
-  value: CardTab;
-  onChange: (tab: CardTab) => void;
-  staging: ScriptStaging;
-}) {
-  return (
-    <fieldset className="flex shrink-0 rounded-[var(--control-radius)] border p-px">
-      <legend className="sr-only">Xem</legend>
-      {CARD_TABS.map((t) => (
-        <Button
-          key={t.id}
-          size="xs"
-          variant="ghost-muted"
-          className={cn("h-5 px-1.5 text-2xs", value === t.id && "bg-accent text-foreground")}
-          aria-pressed={value === t.id}
-          onClick={() => onChange(t.id)}
-        >
-          {staging.status === "staging" && t.id === "staging" ? (
-            <span className="shimmer-text" title="Đang dàn dựng">
-              {t.label}
-            </span>
-          ) : staging.status === "failed" && t.id === "staging" ? (
-            <span className="text-destructive-foreground" title="Chưa lên được dàn dựng">
-              {t.label}
-            </span>
-          ) : (
-            t.label
-          )}
-        </Button>
-      ))}
-    </fieldset>
   );
 }
 

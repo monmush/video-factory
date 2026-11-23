@@ -11,7 +11,7 @@ import { HomePage } from "./screens/home";
 import { NotFound } from "./screens/not-found";
 import { SeriesPage } from "./screens/series";
 import { SeriesNewPage } from "./screens/series-new";
-import { ScriptsPage, SessionLayout, VideosPage } from "./screens/session";
+import { ScriptsPage, SessionLayout, StagingPage, VideosPage } from "./screens/session";
 import { SettingsPage } from "./screens/settings";
 
 const rootRoute = createRootRoute({ component: AppShell, notFoundComponent: NotFound });
@@ -48,6 +48,12 @@ const scriptsRoute = createRoute({
   getParentRoute: () => sessionRoute,
   path: "scripts",
   component: ScriptsPage,
+});
+
+const stagingRoute = createRoute({
+  getParentRoute: () => sessionRoute,
+  path: "staging",
+  component: StagingPage,
 });
 
 const videosRoute = createRoute({
@@ -89,6 +95,7 @@ const routeTree = rootRoute.addChildren([
   sessionRoute.addChildren([
     sessionIndexRoute,
     scriptsRoute,
+    stagingRoute,
     videosRoute,
     retiredSessionSettingsRoute,
   ]),
