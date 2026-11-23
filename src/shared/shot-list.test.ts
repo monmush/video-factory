@@ -82,6 +82,36 @@ describe("readShotList", () => {
     );
   });
 
+  it("drops a picture no shot starts from only when every shot has its picture", () => {
+    const leftover = {
+      id: "spare",
+      kind: "character",
+      character: "Ba",
+      people: ["Ba"],
+      framing: "close",
+      description: "Ba smiles.",
+    };
+    const extra = readShotList(
+      changed((a) => a.pictures?.splice(2, 0, leftover)),
+      CTX,
+      NO_MOTION,
+    );
+    expect(extra.errors).toEqual([]);
+    expect(extra.list.pictures.map((p) => p.id)).toEqual(["master", "an", "ba-ots", "plate"]);
+    expect(extra.repaired).toEqual(['Picture "spare": no shot starts from it; removed.']);
+
+    const dangling = readShotList(
+      changed((a) => {
+        a.pictures?.push(leftover);
+        ((a.shots as Record<string, unknown>[])[2] as Record<string, unknown>).picture = "spar";
+      }),
+      CTX,
+      NO_MOTION,
+    );
+    expect(dangling.repaired).toEqual([]);
+    expect(dangling.errors.join(" ")).toMatch(/"spare": no shot starts from it/);
+  });
+
   it("refuses motion when the recipe has none, and needs its text when it has", () => {
     const motion = changed((a) => {
       const s = (a.shots as Record<string, unknown>[])[1] as Record<string, unknown>;

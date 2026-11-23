@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { deleteSession } from "@anthropic-ai/claude-agent-sdk";
 import { BrowserWindow } from "electron";
+import { boardOrder } from "../../shared/board";
 import {
+  type Board,
   type ChatAttachment,
   type ChatError,
   type ChatLive,
@@ -219,13 +221,26 @@ function armIdle(sessionId: string) {
   }, CLOSE_IDLE_CLAUDE_AFTER_MS);
 }
 
-async function messageContent(sessionId: string, user: ChatMessage) {
+function handEditedNumbers(b: Board): string[] {
+  const ordered = boardOrder(b.scripts);
+  return (b.handEdited ?? []).flatMap((id) => {
+    const n = ordered.findIndex((s) => s.id === id) + 1;
+    return n ? [`#${n}`] : [];
+  });
+}
+
+const handEditNote = (numbers: string[]) =>
+  numbers.length
+    ? `(Ghi chú của ứng dụng, người dùng không thấy: kể từ lượt trước, người dùng đã tự sửa trên bảng ${numbers.join(", ")}. Đọc lại bằng read_scripts trước khi sửa các kịch bản này; không viết lại lời cũ bạn còn nhớ.)\n\n`
+    : "";
+
+async function messageContent(sessionId: string, user: ChatMessage, editedByHand: string[]) {
   const ordered = await board.orderedScripts(sessionId);
   const numbers = (user.refs ?? []).flatMap((id) => {
     const n = ordered.findIndex((s) => s.id === id) + 1;
     return n ? [`#${n}`] : [];
   });
-  const text = `${numbers.length ? `Kịch bản đính kèm: ${numbers.join(", ")}\n\n` : ""}${user.text}`;
+  const text = `${handEditNote(editedByHand)}${numbers.length ? `Kịch bản đính kèm: ${numbers.join(", ")}\n\n` : ""}${user.text}`;
   if (!user.attachments?.length) return text;
   return [...(await attachmentBlocks(sessionId, user.attachments)), { type: "text", text }];
 }
@@ -240,11 +255,15 @@ async function drain(sessionId: string) {
       const current = await board.getBoard(sessionId).catch(() => null);
       const next = current?.messages.find((m) => m.role === "user" && m.queued);
       if (!next) break;
+      const touched = new Set<string>();
+      const releaseStaging = video.holdStaging(sessionId, touched);
       try {
-        await runTurn(sessionId, next);
+        await runTurn(sessionId, next, touched);
       } catch (error) {
         console.error("[chat] turn could not run", error);
         break;
+      } finally {
+        releaseStaging();
       }
     }
   } finally {
@@ -253,7 +272,7 @@ async function drain(sessionId: string) {
   if (!s.closed) armIdle(sessionId);
 }
 
-async function runTurn(sessionId: string, user: ChatMessage) {
+async function runTurn(sessionId: string, user: ChatMessage, touched: Set<string>) {
   const s = state(sessionId);
   const mode = chatMode();
   const current = await board.getBoard(sessionId);
@@ -286,12 +305,15 @@ async function runTurn(sessionId: string, user: ChatMessage) {
   s.turn = turn;
   if (s.idle) clearTimeout(s.idle);
 
-  await board.mutateBoard(sessionId, (b) => {
+  const editedByHand = await board.mutateBoard(sessionId, (b) => {
     const m = b.messages.find((x) => x.id === user.id);
     if (m) m.queued = false;
+    const edited = handEditedNumbers(b);
+    delete b.handEdited;
     board.clearMarks(b);
     const index = b.messages.findIndex((x) => x.id === user.id);
     b.messages.splice(index + 1, 0, reply);
+    return edited;
   });
   board.runningRequests.delete(user.id);
 
@@ -373,7 +395,7 @@ async function runTurn(sessionId: string, user: ChatMessage) {
 
   const host: ToolHost = {
     sessionId,
-    log: { messageId: reply.id, touched: new Set() },
+    log: { messageId: reply.id, touched },
     label(text) {
       void changeMessage(sessionId, reply.id, (m) => {
         const part = [...(m.parts ?? [])]
@@ -401,7 +423,7 @@ async function runTurn(sessionId: string, user: ChatMessage) {
     const runner = await runnerFor(sessionId, choice, mode);
     stopRunner = () => runner.stop();
     result = await runner.run({
-      content: await messageContent(sessionId, user),
+      content: await messageContent(sessionId, user, editedByHand),
       text: user.text,
       refs: user.refs ?? [],
       host,
@@ -419,7 +441,7 @@ async function runTurn(sessionId: string, user: ChatMessage) {
       const fresh = await runnerFor(sessionId, choice, mode);
       stopRunner = () => fresh.stop();
       result = await fresh.run({
-        content: await messageContent(sessionId, user),
+        content: await messageContent(sessionId, user, editedByHand),
         text: user.text,
         refs: user.refs ?? [],
         host,

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { CUTOUT_USD } from "../shared/cost/rates";
 import type { ImageRef, StagedImage } from "../shared/ipc";
 import { mediaUrl } from "../shared/ipc";
-import { CUTOUT_USD } from "../shared/product-shot";
 import { assetDir, stagingDir } from "./media";
 import { placePhotoPath } from "./place-check";
 import { falClient, providerMode } from "./providers";

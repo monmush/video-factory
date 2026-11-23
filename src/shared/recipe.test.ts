@@ -48,7 +48,7 @@ const direction = (): LiveDirection =>
       level: "detailed",
       guidanceNote: "",
     },
-    costs: { rows: [], knownUsd: 0, unknownSteps: 0, budgetUsd: 4, seconds: 0 },
+    costs: { rows: [], knownUsd: 0, unknownSteps: 0, seconds: 0 },
     warnings: [],
     rates: {
       "img/edit": { usd: 0.08, unit: "images" },

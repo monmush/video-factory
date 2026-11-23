@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { estimateUsd, estimateVoiceUsd, FRAME_USD } from "./board";
+import { estimateVoiceUsd } from "./board";
+import { spentUsd } from "./cost/charges";
+import { withInUsePaid } from "./cost/charges.fixture";
+import { costToFinishUsd, inFlightUsd } from "./cost/estimate";
+import { CUTOUT_USD, STILL_USD as FRAME_USD } from "./cost/rates";
 import type { ScriptLine } from "./ipc";
-import { CUTOUT_USD } from "./product-shot";
 import { rulesPlan, type ShotPlan } from "./shot-plan";
 import {
   applyPlan,
   billedSeconds,
-  costToFinishUsd,
   followBatch,
   frameFor,
   type JobShot,
   jobPhase,
   lineSpans,
-  lossIfStoppedUsd,
   madeByProvider,
   migrateJob,
   modelLocked,
@@ -27,7 +28,6 @@ import {
   settle,
   shotFailed,
   shotModel,
-  spentUsd,
   stopJob,
   type VideoJob,
   withShotAudio,
@@ -167,7 +167,7 @@ describe("shot list", () => {
     ]);
     expect(jobPhase({ ...j, status: "running" })).toBe("plan");
     expect(nextActions({ ...j, status: "running" }, new Set())).toEqual([{ kind: "plan" }]);
-    expect(costToFinishUsd(j)).toBeCloseTo(estimateUsd(j.lines, { frames: true }));
+    expect(costToFinishUsd(j)).toBeNull();
   });
 
   it("makes the wide still first, one per character on screen, and one per detail", () => {
@@ -209,7 +209,7 @@ describe("costs", () => {
 
   it("without an environment, frames cost nothing", () => {
     expect(costToFinishUsd(job({ useEnvironment: false }))).toBeCloseTo(
-      costToFinishUsd(job()) - 3 * FRAME_USD,
+      (costToFinishUsd(job()) ?? Number.NaN) - 3 * FRAME_USD,
     );
   });
 
@@ -235,14 +235,15 @@ describe("costs", () => {
     expect(costToFinishUsd(j)).toBeCloseTo(4 * FRAME_USD + 2 * 3 * VIDEO_USD_PER_SEC);
   });
 
-  it("stopping loses what is spent plus what is rendering; finishing excludes both", () => {
+  it("what is rendering may still be billed; finishing excludes it and what is spent", () => {
     const j = readyForShots();
     patch(j.shots, 0, { state: "done", clipSec: 4, costUsd: 4 * VIDEO_USD_PER_SEC });
     patch(j.shots, 1, { state: "rendering", requestId: "r1" });
+    const paid = withInUsePaid(j);
     const spent = 0.01 + 3 * FRAME_USD + 4 * VIDEO_USD_PER_SEC;
-    expect(spentUsd(j)).toBeCloseTo(spent);
-    expect(lossIfStoppedUsd(j)).toBeCloseTo(spent + 3 * VIDEO_USD_PER_SEC);
-    expect(costToFinishUsd(j)).toBeCloseTo(3 * 3 * VIDEO_USD_PER_SEC);
+    expect(spentUsd(paid)).toBeCloseTo(spent);
+    expect(inFlightUsd(paid)).toBeCloseTo(3 * VIDEO_USD_PER_SEC);
+    expect(costToFinishUsd(paid)).toBeCloseTo(3 * 3 * VIDEO_USD_PER_SEC);
   });
 
   it("a result already logged and still downloading is counted once", () => {
@@ -250,7 +251,8 @@ describe("costs", () => {
     const usd = 3 * VIDEO_USD_PER_SEC;
     patch(j.shots, 1, { state: "rendering", requestId: "r1", resultUrl: "u", costUsd: usd });
     patch(j.frames, 0, { file: undefined, requestId: "f1", resultUrl: "u", costUsd: FRAME_USD });
-    expect(lossIfStoppedUsd(j)).toBeCloseTo(spentUsd(j));
+    const paid = withInUsePaid(j);
+    expect(inFlightUsd(paid)).toBe(0);
   });
 
   it("bills short lines at the minimum shot length", () => {
@@ -286,9 +288,7 @@ describe("speaking-shot model", () => {
     expect(shotModel(j, j.shots[0] as JobShot).id).toBe(videoModel().id);
     patch(j.shots, 1, { state: "rendering", requestId: "r1", model: "omnihuman-v2" });
     expect(shotModel(j, j.shots[1] as JobShot).endpoint).toBe("bytedance/omnihuman/v2");
-    expect(lossIfStoppedUsd(j)).toBeCloseTo(
-      0.01 + 3 * FRAME_USD + 3 * VIDEO_USD_PER_SEC + 4 * 0.105,
-    );
+    expect(inFlightUsd(j)).toBeCloseTo(3 * VIDEO_USD_PER_SEC + 4 * 0.105);
   });
 
   it("an unknown job model falls back to the default", () => {
@@ -301,14 +301,6 @@ describe("speaking-shot model", () => {
     patch(j.shots, 0, { audioSec: 400 });
     expect(shotModel(j, j.shots[0] as JobShot).id).toBe(videoModel().id);
     expect(shotModel(j, j.shots[1] as JobShot).id).toBe("omnihuman-v2");
-  });
-
-  it("the estimate before the plan uses the job's model", () => {
-    const j = { ...fresh(), model: "kling-avatar-v2-pro" };
-    expect(costToFinishUsd(j)).toBeCloseTo(
-      estimateUsd(j.lines, { frames: true, model: "kling-avatar-v2-pro" }),
-    );
-    expect(costToFinishUsd(j)).toBeGreaterThan(costToFinishUsd(fresh()));
   });
 });
 
@@ -435,6 +427,14 @@ describe("transitions", () => {
 });
 
 describe("next actions and resume", () => {
+  it("waits for a staging already in progress instead of starting a second one", () => {
+    const sentWhileStaging: VideoJob = { ...fresh(), status: "running", planning: true };
+    expect(nextActions(sentWhileStaging, new Set())).toEqual([]);
+    expect(nextActions({ ...sentWhileStaging, planning: undefined }, new Set())).toEqual([
+      { kind: "plan" },
+    ]);
+  });
+
   it("follows the cheap steps first: voice, then frames, then shots", () => {
     expect(nextActions(job({ status: "running" }), new Set())).toEqual([{ kind: "voice" }]);
     const voiced = withShotAudio(

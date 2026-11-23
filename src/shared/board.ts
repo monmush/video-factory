@@ -1,11 +1,17 @@
+import { VOICE_USD_PER_CHAR } from "./cost/rates";
 import { withoutCues } from "./cues";
-import type { Script, ScriptLine } from "./ipc";
-import { levelMediaUsd, type MediaLevel, mediaLevel } from "./media-level";
-import { videoModel, videoUsd } from "./video-models";
+import type { Board, Script, ScriptLine } from "./ipc";
 
 export function boardOrder(scripts: Script[]): Script[] {
   const live = scripts.filter((s) => !s.deletedAt);
   return [...live.filter((s) => s.pinned), ...live.filter((s) => !s.pinned)];
+}
+
+export function clearMarks(board: Board) {
+  for (const s of board.scripts) {
+    s.mark = null;
+    delete s.changeUndo;
+  }
 }
 
 export const DEFAULT_TARGET_SEC = 45;
@@ -14,7 +20,6 @@ const BREATH_BETWEEN_LINES_SEC = 0.3;
 export const MAX_HOLDS_SEC = 4;
 const HOLDS_PRICED_AT_THEIR_CAP_BEFORE_PLAN_SEC = MAX_HOLDS_SEC;
 const TYPICAL_LINE_COUNT = 10;
-const TYPICAL_SYLLABLES_PER_LINE = 14;
 const SMALLEST_SYLLABLE_BUDGET = 20;
 
 export const syllables = (lines: Pick<ScriptLine, "text">[]) =>
@@ -48,62 +53,11 @@ export function syllableBudget(seconds: number): number {
   );
 }
 
-export const VOICE_USD_PER_CHAR = 0.08 / 1000;
-
-export const FRAME_USD = 0.12;
-
-const speakingCharacters = (lines: Partial<Pick<ScriptLine, "characterId">>[]) => [
-  ...new Set(lines.flatMap((l) => l.characterId ?? [])),
-];
-
-const lineSeconds = (line: Pick<ScriptLine, "text">) =>
-  syllables([line]) / SPEECH_RATE + BREATH_BETWEEN_LINES_SEC;
-
-export interface EstimateOpts {
-  frames?: boolean;
-  model?: string | null;
-  resolution?: string | null;
-  cutoutUsd?: number;
-  level?: string | null;
-}
-
-const estimateVideoUsd = (
-  lines: Pick<ScriptLine, "text">[],
-  model?: string | null,
-  resolution?: string | null,
-) =>
-  lines.length
-    ? videoUsd(videoModel(model), estimateSeconds(lines), lines.map(lineSeconds), resolution)
-    : 0;
-
 const spokenChars = (lines: Pick<ScriptLine, "text">[]) =>
   lines.reduce((n, line) => n + line.text.trim().length, 0);
 
 export const estimateVoiceUsd = (lines: Pick<ScriptLine, "text">[]) =>
   spokenChars(lines) * VOICE_USD_PER_CHAR;
-
-export const estimateUsd = (
-  lines: (Pick<ScriptLine, "text"> & Partial<Pick<ScriptLine, "characterId">>)[],
-  opts: EstimateOpts = {},
-) =>
-  opts.level && opts.frames
-    ? estimateVoiceUsd(lines) +
-      levelMediaUsd(mediaLevel(opts.level), estimateSeconds(lines)) +
-      (opts.cutoutUsd ?? 0)
-    : estimateVideoUsd(lines, opts.model, opts.resolution) +
-      estimateVoiceUsd(lines) +
-      (opts.frames ? speakingCharacters(lines).length * FRAME_USD + (opts.cutoutUsd ?? 0) : 0);
-
-export const TYPICAL_LINES: (Pick<ScriptLine, "text"> & Pick<ScriptLine, "characterId">)[] =
-  Array.from({ length: TYPICAL_LINE_COUNT }, (_, i) => ({
-    characterId: i % 2 ? "b" : "a",
-    text: Array(TYPICAL_SYLLABLES_PER_LINE).fill("trà").join(" "),
-  }));
-
-export function levelEstimateUsd(level: MediaLevel, seconds = DEFAULT_TARGET_SEC): number {
-  const voicePerSec = estimateVoiceUsd(TYPICAL_LINES) / estimateSeconds(TYPICAL_LINES);
-  return levelMediaUsd(level, seconds) + voicePerSec * Math.max(1, seconds);
-}
 
 export function formatSeconds(seconds: number): string {
   const s = Math.round(seconds);
@@ -112,3 +66,8 @@ export function formatSeconds(seconds: number): string {
 }
 
 export const formatSecondsShort = (seconds: number) => `${Math.round(seconds)}s`;
+
+export function formatClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}

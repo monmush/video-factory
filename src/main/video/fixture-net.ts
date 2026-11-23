@@ -15,3 +15,11 @@ export function fixtureNetwork(): void {
     });
   }
 }
+
+export function fixtureTimesForShot(variable: string, shotNumber: number): number {
+  for (const part of (process.env[variable] ?? "").split(",")) {
+    const [n, times] = part.trim().split("x");
+    if (Number(n) === shotNumber) return Number(times ?? 1) || 1;
+  }
+  return 0;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeconds, estimateUsd, estimateVoiceUsd } from "./board";
+import { estimateSeconds, estimateVoiceUsd } from "./board";
 import type { Asset, Script, Session } from "./ipc";
 import {
   assertCommitted,
@@ -74,16 +74,15 @@ describe("readyCheck", () => {
       script("2", [line("c")]),
       script("3", [line("a"), line("b")]),
     ];
-    const check = readyCheck(scripts, ["1", "2", "3"], [a, b, noPhoto], null);
+    const check = readyCheck(scripts, ["1", "2", "3"], [a, b, noPhoto]);
     expect(check.blocked.map((c) => c.script.id)).toEqual(["1", "2"]);
     expect(check.blocked[0]?.blockers).toEqual([{ kind: "unknown-speaker", speaker: "Bà Tư" }]);
     expect(check.blocked[1]?.blockers).toEqual([{ kind: "no-image", characterId: "c" }]);
     expect(check.toMake.map((c) => c.script.id)).toEqual(["3"]);
-    expect(check.usd).toBeCloseTo(estimateUsd(scripts[2]?.lines ?? []));
   });
 
   it("treats a deleted character as not in the library", () => {
-    const check = readyCheck([script("1", [line("gone")])], ["1"], [a], null);
+    const check = readyCheck([script("1", [line("gone")])], ["1"], [a]);
     expect(check.blocked).toHaveLength(1);
   });
 
@@ -93,24 +92,9 @@ describe("readyCheck", () => {
       script("2", [line("a")], { status: "failed" }),
       script("3", [line("a")], { pinned: true }),
     ];
-    const check = readyCheck(scripts, ["1", "2", "3"], [a], null);
+    const check = readyCheck(scripts, ["1", "2", "3"], [a]);
     expect(check.checks.map((c) => c.script.id)).toEqual(["3", "1"]);
-    expect(readyCheck(scripts, ["1"], [a], null).checks).toHaveLength(1);
-  });
-
-  it("makes only the cards the balance covers, in board order", () => {
-    const scripts = ["1", "2", "3"].map((id) => script(id, [line("a")]));
-    const each = estimateUsd(scripts[0]?.lines ?? []);
-    const check = readyCheck(scripts, ["1", "2", "3"], [a], each * 2.5);
-    expect(check.toMake.map((c) => c.script.id)).toEqual(["1", "2"]);
-    expect(check.balance?.affordable).toBe(2);
-    expect(check.balance?.after).toBeCloseTo(each * 0.5);
-  });
-
-  it("never blocks on an unknown balance", () => {
-    const check = readyCheck([script("1", [line("a")])], ["1"], [a], null);
-    expect(check.balance).toBeNull();
-    expect(check.toMake).toHaveLength(1);
+    expect(readyCheck(scripts, ["1"], [a]).checks).toHaveLength(1);
   });
 
   it("warns past the script's own target, never a fixed length", () => {
@@ -124,7 +108,6 @@ describe("readyCheck", () => {
       ],
       ["short-target", "long-target", "no-target"],
       [a],
-      null,
     );
     expect(check.checks.map((c) => c.overTarget)).toEqual([true, false, false]);
   });
@@ -135,7 +118,6 @@ describe("readyCheck", () => {
       [script("1", [line("a"), line("b")]), script("2", [line("b")])],
       ["1", "2"],
       same,
-      null,
     );
     expect(check.cast.map((m) => [m.character.id, m.voiceId, m.sharesVoice])).toEqual([
       ["a", "mai", true],
@@ -178,21 +160,18 @@ describe("commits and the first batch", () => {
 describe("needsAttention", () => {
   const cast = [character("a", { voiceId: "mai" }), character("b", { voiceId: "tuan-anh" })];
   const fine = script("1", [line("a"), line("b")], { brief: { kind: "topic" } });
-  const one = estimateUsd(fine.lines);
 
   it("starts without a dialog when nothing needs fixing", () => {
-    expect(needsAttention(readyCheck([fine], ["1"], cast, null))).toBe(false);
-    expect(needsAttention(readyCheck([fine], ["1"], cast, one + 1))).toBe(false);
+    expect(needsAttention(readyCheck([fine], ["1"], cast))).toBe(false);
   });
 
-  it("asks first for a blocked video, a warning or a short balance", () => {
+  it("asks first for a blocked video or a warning", () => {
     const unknown = script("2", [line(null)]);
-    expect(needsAttention(readyCheck([fine, unknown], ["1", "2"], cast, null))).toBe(true);
+    expect(needsAttention(readyCheck([fine, unknown], ["1", "2"], cast))).toBe(true);
     const same = [character("a", { voiceId: "mai" }), character("b", { voiceId: "mai" })];
-    expect(needsAttention(readyCheck([fine], ["1"], same, null))).toBe(true);
+    expect(needsAttention(readyCheck([fine], ["1"], same))).toBe(true);
     const long = script("3", fine.lines, { brief: { kind: "topic", targetSec: 1 } });
-    expect(needsAttention(readyCheck([long], ["3"], cast, null))).toBe(true);
-    expect(needsAttention(readyCheck([fine], ["1"], cast, one / 2))).toBe(true);
+    expect(needsAttention(readyCheck([long], ["3"], cast))).toBe(true);
   });
 
   it("warns, without blocking, about a series place whose photo shows people or packaging", () => {
@@ -203,11 +182,11 @@ describe("needsAttention", () => {
       images: [{ id: "p", file: "p.png", placeCheck: { people, packaging: null, checkedAt } }],
     });
     const assets = [...cast, place("yard", true), place("hall", false)];
-    const flagged = readyCheck([fine], ["1"], assets, null, { placeIds: ["yard", "hall"] });
+    const flagged = readyCheck([fine], ["1"], assets, { placeIds: ["yard", "hall"] });
     expect(flagged.places.map((p) => p.id)).toEqual(["yard"]);
     expect(flagged.toMake).toHaveLength(1);
     expect(needsAttention(flagged)).toBe(true);
-    const other = readyCheck([fine], ["1"], assets, null, { placeIds: ["hall"] });
+    const other = readyCheck([fine], ["1"], assets, { placeIds: ["hall"] });
     expect(other.places).toEqual([]);
     expect(needsAttention(other)).toBe(false);
   });

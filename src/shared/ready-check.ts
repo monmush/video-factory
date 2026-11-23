@@ -1,7 +1,7 @@
-import { boardOrder, type EstimateOpts, estimateSeconds, estimateUsd } from "./board";
+import { boardOrder, estimateSeconds } from "./board";
 import type { Asset, Script, Session } from "./ipc";
 import { flaggedPlaces } from "./place-check";
-import { cutoutUsd } from "./product-shot";
+import type { VoiceMode } from "./speech-models";
 import { resolveVoice, takenVoiceIds, type VoiceId } from "./voices";
 
 const WARNED_PAST_OWN_TARGET_SHARE = 0.2;
@@ -36,7 +36,6 @@ export type Blocker =
 export interface ScriptCheck {
   script: Script;
   seconds: number;
-  usd: number;
   blockers: Blocker[];
   overTarget: boolean;
 }
@@ -54,8 +53,6 @@ export interface ReadyCheck {
   cast: CastMember[];
   characters: Map<string, Asset>;
   seconds: number;
-  usd: number;
-  balance: { before: number; after: number; affordable: number } | null;
   toMake: ScriptCheck[];
   places: Asset[];
 }
@@ -69,11 +66,7 @@ function unknownSpeakers(script: Script, assets: readonly Asset[]): string[] {
   return [...new Map(names.map((n) => [speakerKey(n), n])).values()];
 }
 
-export function checkScript(
-  script: Script,
-  assets: readonly Asset[],
-  opts: EstimateOpts = {},
-): ScriptCheck {
+export function checkScript(script: Script, assets: readonly Asset[]): ScriptCheck {
   const seconds = estimateSeconds(script.lines);
   const blockers: Blocker[] = unknownSpeakers(script, assets).map((speaker) => ({
     kind: "unknown-speaker",
@@ -90,10 +83,6 @@ export function checkScript(
   return {
     script,
     seconds,
-    usd: estimateUsd(script.lines, {
-      ...opts,
-      cutoutUsd: opts.cutoutUsd ?? cutoutUsd(script.productIds, assets),
-    }),
     blockers,
     overTarget: target ? seconds > target * (1 + WARNED_PAST_OWN_TARGET_SHARE) : false,
   };
@@ -103,17 +92,11 @@ export function readyCheck(
   scripts: Script[],
   scope: readonly string[],
   assets: readonly Asset[],
-  balanceUsd: number | null,
-  {
-    placeIds = [],
-    ...opts
-  }: EstimateOpts & {
-    placeIds?: readonly string[];
-  } = {},
+  { placeIds = [], voiceMode }: { placeIds?: readonly string[]; voiceMode?: VoiceMode } = {},
 ): ReadyCheck {
   const checks = finishedScripts(scripts)
     .filter((s) => scope.includes(s.id))
-    .map((s) => checkScript(s, assets, opts));
+    .map((s) => checkScript(s, assets));
   const makeable = checks.filter((c) => c.blockers.length === 0);
   const blocked = checks.filter((c) => c.blockers.length > 0);
 
@@ -125,29 +108,11 @@ export function readyCheck(
     const character = characters.get(id) as Asset;
     return { character, voiceId: resolveVoice(character, takenVoiceIds(assets, id)) };
   });
+  const dubbed = voiceMode !== "native";
   const cast = voices.map((v) => ({
     ...v,
-    sharesVoice: voices.some((o) => o !== v && o.voiceId === v.voiceId),
+    sharesVoice: dubbed && voices.some((o) => o !== v && o.voiceId === v.voiceId),
   }));
-
-  const sum = (list: ScriptCheck[], key: "seconds" | "usd") => list.reduce((n, c) => n + c[key], 0);
-
-  let toMake = makeable;
-  let balance: ReadyCheck["balance"] = null;
-  if (balanceUsd !== null && Number.isFinite(balanceUsd)) {
-    let left = balanceUsd;
-    toMake = [];
-    for (const c of makeable) {
-      if (c.usd > left) break;
-      left -= c.usd;
-      toMake.push(c);
-    }
-    balance = {
-      before: balanceUsd,
-      after: balanceUsd - sum(toMake, "usd"),
-      affordable: toMake.length,
-    };
-  }
 
   return {
     checks,
@@ -155,10 +120,8 @@ export function readyCheck(
     blocked,
     cast,
     characters,
-    seconds: sum(makeable, "seconds"),
-    usd: sum(makeable, "usd"),
-    balance,
-    toMake,
+    seconds: makeable.reduce((n, c) => n + c.seconds, 0),
+    toMake: makeable,
     places: flaggedPlaces(placeIds, assets),
   };
 }
@@ -167,5 +130,4 @@ export const needsAttention = (check: ReadyCheck) =>
   check.blocked.length > 0 ||
   check.makeable.some((c) => c.overTarget) ||
   check.cast.some((m) => m.sharesVoice) ||
-  check.places.length > 0 ||
-  (check.balance !== null && check.balance.affordable < check.makeable.length);
+  check.places.length > 0;

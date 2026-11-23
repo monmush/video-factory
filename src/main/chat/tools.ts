@@ -1,6 +1,8 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { z } from "zod";
 import { DEFAULT_TARGET_SEC, estimateSeconds } from "../../shared/board";
+import { spentUsd } from "../../shared/cost/charges";
+import { moneyText, paidSoFar } from "../../shared/cost/table";
 import { formatCost } from "../../shared/credits";
 import { directionAt } from "../../shared/direction";
 import type { Asset, ChatPart, Script } from "../../shared/ipc";
@@ -8,7 +10,7 @@ import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
 import { mixProblem } from "../../shared/product-mix";
 import type { PlannedShot } from "../../shared/shot-plan";
 import { canFix, type FixChange } from "../../shared/video-fix";
-import { frameFor, isGenerated, jobPhase, spentUsd, type VideoJob } from "../../shared/video-job";
+import { frameFor, isGenerated, jobPhase, type VideoJob } from "../../shared/video-job";
 import * as board from "../board";
 import { dataFile } from "../paths";
 import { setProduct } from "../product-change";
@@ -140,7 +142,7 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[]) {
   });
   const whole = (job.direction ?? []).filter((d) => !d.words);
   return [
-    `Video #${number}: ${STATUS[job.status]}; ${job.shots.length} cảnh; đã dùng ${formatCost(spentUsd(job))}.`,
+    `Video #${number}: ${STATUS[job.status]}; ${job.shots.length} cảnh; đã dùng ${moneyText(paidSoFar(job))}.`,
     job.planning ? "Đang lên dàn dựng." : job.plan ? "" : "Chưa lên dàn dựng.",
     whole.length ? `Ý người dùng cho cả video:\n${whole.map((d) => `- ${d.want}`).join("\n")}` : "",
     job.previous?.final

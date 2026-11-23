@@ -58,10 +58,12 @@ export function ProductImportDialog({
   open,
   onOpenChange,
   onCreated,
+  initialImages,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (assets: Asset[]) => void;
+  initialImages?: StagedImage[];
 }) {
   const [guard, setGuard] = useState<"work-in-flight" | "photos-added" | null>(null);
   const [closeRequests, setCloseRequests] = useState(0);
@@ -82,6 +84,7 @@ export function ProductImportDialog({
             closeRequests={closeRequests}
             onGuardChange={setGuard}
             onCreated={onCreated}
+            initialImages={initialImages}
             onDone={() => {
               setGuard(null);
               onOpenChange(false);
@@ -97,18 +100,23 @@ function ImportBoard({
   closeRequests,
   onGuardChange,
   onCreated,
+  initialImages = [],
   onDone,
 }: {
   closeRequests: number;
   onGuardChange: (guard: "work-in-flight" | "photos-added" | null) => void;
   onCreated?: (assets: Asset[]) => void;
+  initialImages?: StagedImage[];
   onDone: () => void;
 }) {
   const workspace = useWorkspace();
-  const [photos, setPhotos] = useState<Map<string, Photo>>(new Map());
+  const [firstPhotos] = useState(() => initialImages.slice(0, MAX_IMPORT_PHOTOS));
+  const [photos, setPhotos] = useState<Map<string, Photo>>(
+    () => new Map(firstPhotos.map((s) => [s.id, { key: s.id, url: s.url }])),
+  );
   const [phase, setPhase] = useState<"pick" | "review">("pick");
   const [groups, setGroups] = useState<Group[]>([]);
-  const [unassigned, setUnassigned] = useState<string[]>([]);
+  const [unassigned, setUnassigned] = useState<string[]>(() => firstPhotos.map((s) => s.id));
   const [skipped, setSkipped] = useState<{ key: string; reason: string }[]>([]);
   const [grouping, setGrouping] = useState(false);
   const [adding, setAdding] = useState(false);

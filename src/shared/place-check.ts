@@ -1,12 +1,35 @@
 import type { Asset, AssetImage, PlaceFinding } from "./ipc";
 
-export const isFlagged = (finding: PlaceFinding | null | undefined): finding is PlaceFinding =>
+const foundSomething = (finding: PlaceFinding | null | undefined): finding is PlaceFinding =>
   Boolean(finding && (finding.people || finding.packaging));
 
+export const isFlagged = (finding: PlaceFinding | null | undefined): finding is PlaceFinding =>
+  foundSomething(finding) && !finding.accepted;
+
+export const isAccepted = (finding: PlaceFinding | null | undefined): finding is PlaceFinding =>
+  foundSomething(finding) && Boolean(finding.accepted);
+
 export function findingLabel(finding: PlaceFinding | null | undefined): string | null {
-  if (!isFlagged(finding)) return null;
+  if (!foundSomething(finding)) return null;
   if (finding.people && finding.packaging) return "Có người và hộp có chữ";
-  return finding.people ? "Có người trong ảnh" : "Có hộp có chữ";
+  return finding.people ? "Có người" : "Có hộp có chữ";
+}
+
+export function findingReason(finding: PlaceFinding | null | undefined): string | null {
+  if (!foundSomething(finding)) return null;
+  if (finding.people && finding.packaging) {
+    return "Người và hộp này có thể xuất hiện lại trong video, chữ dễ bị méo.";
+  }
+  return finding.people
+    ? "Người này có thể xuất hiện lại trong video."
+    : "Hộp này có thể xuất hiện lại trong video, chữ dễ bị méo.";
+}
+
+export function placeWarning(placeName: string, finding: PlaceFinding | null | undefined) {
+  const label = findingLabel(finding);
+  const reason = findingReason(finding);
+  if (!label || !reason) return null;
+  return { what: `Ảnh bối cảnh "${placeName}" ${label.toLocaleLowerCase("vi")}`, why: reason };
 }
 
 const flaggedImages = (place: Pick<Asset, "images">): AssetImage[] =>
@@ -16,6 +39,22 @@ export function flaggedPlaces(placeIds: readonly string[], assets: readonly Asse
   return placeIds
     .map((id) => assets.find((a) => a.id === id && a.kind === "environment"))
     .filter((a): a is Asset => Boolean(a && flaggedImages(a).length));
+}
+
+export function setAccepted(
+  images: readonly AssetImage[],
+  imageIds: readonly string[],
+  accepted: boolean,
+): AssetImage[] {
+  return images.map((image) => {
+    if (!imageIds.includes(image.id) || !foundSomething(image.placeCheck)) return image;
+    const { accepted: _, ...finding } = image.placeCheck;
+    return { ...image, placeCheck: accepted ? { ...finding, accepted } : finding };
+  });
+}
+
+export function withCheck(image: AssetImage, file: string, finding: PlaceFinding): AssetImage {
+  return image.file === file && !image.placeCheck ? { ...image, placeCheck: finding } : image;
 }
 
 export function readFinding(answer: { people?: unknown; packaging?: unknown }): PlaceFinding {

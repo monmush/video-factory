@@ -1,20 +1,15 @@
-import { formatSeconds, levelEstimateUsd } from "@shared/board";
-import { formatCost } from "@shared/credits";
+import { estimateText } from "@shared/cost/table";
 import {
   type MediaLevel,
   type MediaLevelId,
   mediaLevel,
   OFFERED_LEVELS,
 } from "@shared/media-level";
-import { MenuSideCard, SampleLoop, sampleAsset, useShownRow } from "./menu-side-card";
-import {
-  Menu,
-  MenuPopup,
-  MenuRadioGroup,
-  MenuRadioItem,
-  MenuSeparator,
-  MenuTrigger,
-} from "./ui/menu";
+import { ChevronDown } from "lucide-react";
+import type { ComponentProps, ReactElement } from "react";
+import { cn } from "@/lib/utils";
+import { MenuSideCard, useShownRow } from "./menu-side-card";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
 import { SettingChip } from "./ui/setting-chip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
@@ -28,22 +23,74 @@ export function QualityChip({
   seriesDefault?: MediaLevelId;
 }) {
   const current = mediaLevel(value);
+  return (
+    <QualityMenu
+      value={value}
+      onChange={onChange}
+      seriesDefault={seriesDefault}
+      trigger={(props) => <SettingChip {...props} label="Chất lượng" value={current.label} />}
+    />
+  );
+}
+
+export function VideoQuality({
+  value,
+  onChange,
+  price,
+}: {
+  value: MediaLevelId;
+  onChange: (value: MediaLevelId) => void;
+  price: (level: MediaLevel) => number | null;
+}) {
+  const current = mediaLevel(value);
+  return (
+    <QualityMenu
+      value={value}
+      onChange={onChange}
+      price={price}
+      trigger={(props) => (
+        <button
+          type="button"
+          aria-label={`Chất lượng: ${current.label}`}
+          {...props}
+          className={cn(
+            "-mx-1 inline-flex h-6 cursor-pointer items-center gap-0.5 rounded-md px-1 text-xs font-medium text-foreground outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent/60",
+          )}
+        >
+          {current.label}
+          <ChevronDown className="size-3 text-muted-foreground" aria-hidden />
+        </button>
+      )}
+    />
+  );
+}
+
+function QualityMenu({
+  value,
+  onChange,
+  seriesDefault,
+  price,
+  trigger,
+}: {
+  value: MediaLevelId;
+  onChange: (value: MediaLevelId) => void;
+  seriesDefault?: MediaLevelId;
+  price?: (level: MediaLevel) => number | null;
+  trigger: (props: ComponentProps<"button">) => ReactElement;
+}) {
+  const current = mediaLevel(value);
   const series = seriesDefault ? mediaLevel(seriesDefault).id : undefined;
   const { shown, clear, row } = useShownRow<MediaLevel>();
+  const priceOf = (level: MediaLevel) => {
+    const usd = price?.(level);
+    return usd === undefined || usd === null ? undefined : estimateText(usd);
+  };
   return (
     <Menu onOpenChange={(open) => !open && clear()}>
       <Tooltip>
-        <TooltipTrigger
-          render={
-            <MenuTrigger
-              render={(props) => (
-                <SettingChip {...props} label="Chất lượng" value={current.label} />
-              )}
-            />
-          }
-        />
+        <TooltipTrigger render={<MenuTrigger render={trigger} />} />
         <TooltipPopup className="w-64 p-0">
-          <LevelCard level={current} />
+          <LevelCard level={current} price={priceOf(current)} />
         </TooltipPopup>
       </Tooltip>
       <MenuPopup align="start" className="relative min-w-56">
@@ -57,18 +104,18 @@ export function QualityChip({
                     Series
                   </span>
                 )}
-                <span className="ml-auto pl-3 text-xs text-muted-foreground tabular-nums">
-                  ~{formatCost(levelEstimateUsd(level))}
-                </span>
+                {priceOf(level) && (
+                  <span className="ml-auto pl-3 text-xs text-muted-foreground tabular-nums">
+                    {priceOf(level)}
+                  </span>
+                )}
               </span>
             </MenuRadioItem>
           ))}
         </MenuRadioGroup>
-        <MenuSeparator />
-        <p className="px-2.5 py-1 text-2xs text-muted-foreground">Ước tính cho một video 45 giây</p>
         {shown && (
           <MenuSideCard>
-            <LevelCard level={shown} />
+            <LevelCard level={shown} price={priceOf(shown)} />
           </MenuSideCard>
         )}
       </MenuPopup>
@@ -76,27 +123,12 @@ export function QualityChip({
   );
 }
 
-const SAMPLE = { loop: "motion-wan.mp4", still: "motion-wan.jpg" };
-
-function LevelCard({ level }: { level: MediaLevel }) {
+export function LevelCard({ level, price }: { level: MediaLevel; price?: string }) {
   return (
     <div className="flex flex-col gap-2 p-2.5 text-xs">
-      <div className="aspect-4/5 w-full overflow-hidden rounded-md bg-muted">
-        {level.motion ? (
-          <SampleLoop file={SAMPLE.loop} poster={SAMPLE.still} className="h-full" />
-        ) : (
-          <img
-            src={sampleAsset(SAMPLE.still)}
-            alt=""
-            className="slow-zoom h-full w-full object-cover"
-          />
-        )}
-      </div>
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-medium">{level.label}</span>
-        <span className="text-muted-foreground tabular-nums">
-          ~{formatCost(levelEstimateUsd(level))}/video {formatSeconds(45)}
-        </span>
+        {price && <span className="text-muted-foreground tabular-nums">{price}</span>}
       </div>
       <ul className="flex flex-col gap-0.5">
         {level.points.map((point) => (

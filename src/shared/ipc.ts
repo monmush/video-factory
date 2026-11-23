@@ -1,5 +1,7 @@
 import type { Note } from "./notes";
+import type { PaidWork } from "./paid-work";
 import type { ProductMix } from "./product-mix";
+import type { ExportPick } from "./video-export";
 import type { FixChange } from "./video-fix";
 import type { StepAverages, VideoJob } from "./video-job";
 
@@ -25,6 +27,7 @@ export interface SessionSettings {
   videoModel?: string;
   resolution?: string;
   mediaLevel?: string;
+  videoLevels?: Record<string, string>;
   productMix?: ProductMix;
 }
 
@@ -74,7 +77,7 @@ export interface Script {
   versionOf?: string;
   version?: number;
   changing?: "product";
-  productUndo?:
+  changeUndo?:
     | { copy: true }
     | { copy?: false; productIds: string[]; lines: ScriptLine[]; staging: string };
   createdAt: string;
@@ -191,6 +194,7 @@ export interface Board {
   scripts: Script[];
   messages: ChatMessage[];
   agent?: { sessionId: string; started: boolean } & ChatModelChoice;
+  handEdited?: string[];
 }
 
 export type AssetKind = "character" | "product" | "environment";
@@ -215,6 +219,7 @@ export interface PlaceFinding {
   people: boolean;
   packaging: string | null;
   checkedAt: string;
+  accepted?: boolean;
 }
 
 export type ImageOrigin = "upload" | "ai";
@@ -425,6 +430,8 @@ export interface DevProfiles {
   profiles: DevProfile[];
 }
 
+export type VideosBeingMade = Record<string, number>;
+
 export interface IpcContract {
   "app:info": { args: []; result: AppInfo };
   "app:open-data-dir": { args: []; result: null };
@@ -432,6 +439,8 @@ export interface IpcContract {
   "dev:create-profile": { args: [name: string]; result: DevProfiles | null };
   "dev:switch-profile": { args: [id: string]; result: null };
   "dev:delete-profile": { args: [id: string]; result: DevProfiles | null };
+  "dev:native-voice": { args: []; result: boolean | null };
+  "dev:set-native-voice": { args: [on: boolean]; result: boolean | null };
   "theme:set": { args: [preference: ThemePreference]; result: null };
   "workspace:get": { args: []; result: Workspace };
   "series:create": { args: [input: SeriesInput]; result: Series };
@@ -516,7 +525,17 @@ export interface IpcContract {
     args: [input: { sessionId: string; scriptId: string; productId: string | null }];
     result: { scriptId: string } | null;
   };
-  "board:undo-product": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  "board:undo-change": { args: [input: { sessionId: string; scriptId: string }]; result: null };
+  "board:edit-line": {
+    args: [
+      input: { sessionId: string; scriptId: string; index: number; was: string; text: string },
+    ];
+    result: { scriptId: string; copied: boolean } | null;
+  };
+  "board:remove-line": {
+    args: [input: { sessionId: string; scriptId: string; index: number; was: string }];
+    result: { scriptId: string; copied: boolean };
+  };
   "assets:pick-images": { args: []; result: StagedImage[] };
   "assets:stage-paths": { args: [paths: string[]]; result: StagedImage[] };
   "assets:create": { args: [input: AssetInput]; result: Asset };
@@ -543,6 +562,10 @@ export interface IpcContract {
   };
   "assets:check-place": { args: [input: { images: ImageRef[] }]; result: (PlaceFinding | null)[] };
   "assets:estimate-clean": { args: []; result: { cost: number } };
+  "assets:accept-place-finding": {
+    args: [input: { assetId: string; imageIds: string[]; accepted: boolean }];
+    result: null;
+  };
   "assets:clean-place-photo": {
     args: [input: { image: ImageRef; finding: PlaceFinding }];
     result: {
@@ -571,6 +594,8 @@ export interface IpcContract {
   "ai:onboarded": { args: []; result: boolean };
   "ai:finish-onboarding": { args: [input: { useClaude: boolean }]; result: null };
   "video:jobs": { args: [sessionId: string]; result: VideoJobs };
+  "video:paid-work": { args: [sessionIds: string[]]; result: PaidWork };
+  "video:making": { args: []; result: VideosBeingMade };
   "video:start": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   "video:plan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
   "video:replan": { args: [input: { sessionId: string; scriptId: string }]; result: null };
@@ -587,25 +612,37 @@ export interface IpcContract {
     result: null;
   };
   "video:fix": {
-    args: [input: { sessionId: string; scriptId: string; changes: FixChange[]; take?: string }];
+    args: [input: { sessionId: string; scriptId: string; changes: FixChange[]; version?: string }];
     result: null;
   };
   "video:restore": {
-    args: [input: { sessionId: string; scriptId: string; take?: string }];
+    args: [input: { sessionId: string; scriptId: string; version?: string }];
     result: null;
   };
-  "video:take": {
+  "video:version": {
     args: [
       input: {
         sessionId: string;
         scriptId: string;
         action: "start" | "use" | "delete" | "focus";
-        model: string;
+        version: string;
       },
     ];
     result: null;
   };
+  "video:level": {
+    args: [input: { sessionId: string; scriptId: string; level: string }];
+    result: null;
+  };
+  "video:tempo": {
+    args: [input: { sessionId: string; scriptId: string; tempo: number }];
+    result: null;
+  };
   "video:save": { args: [input: { sessionId: string; scriptId: string }]; result: string | null };
+  "video:save-many": {
+    args: [input: { sessionId: string; picks: ExportPick[] }];
+    result: { folder: string; failed: ExportPick[] } | null;
+  };
 }
 
 export type IpcChannel = keyof IpcContract;
@@ -617,6 +654,8 @@ export const IPC_CHANNELS = [
   "dev:create-profile",
   "dev:switch-profile",
   "dev:delete-profile",
+  "dev:native-voice",
+  "dev:set-native-voice",
   "theme:set",
   "workspace:get",
   "series:create",
@@ -648,7 +687,9 @@ export const IPC_CHANNELS = [
   "board:pin",
   "board:undo",
   "board:set-product",
-  "board:undo-product",
+  "board:undo-change",
+  "board:edit-line",
+  "board:remove-line",
   "board:link-speaker",
   "assets:pick-images",
   "assets:stage-paths",
@@ -662,6 +703,7 @@ export const IPC_CHANNELS = [
   "assets:generate-angles",
   "assets:check-place",
   "assets:estimate-clean",
+  "assets:accept-place-finding",
   "assets:clean-place-photo",
   "assets:cut-out-product-photo",
   "usage:balances",
@@ -674,6 +716,8 @@ export const IPC_CHANNELS = [
   "ai:onboarded",
   "ai:finish-onboarding",
   "video:jobs",
+  "video:paid-work",
+  "video:making",
   "video:start",
   "video:plan",
   "video:replan",
@@ -683,8 +727,11 @@ export const IPC_CHANNELS = [
   "video:retry-shot",
   "video:fix",
   "video:restore",
-  "video:take",
+  "video:version",
+  "video:level",
+  "video:tempo",
   "video:save",
+  "video:save-many",
 ] as const satisfies readonly IpcChannel[];
 
 export interface IpcEvents {
@@ -693,6 +740,7 @@ export interface IpcEvents {
   "chat:live": { sessionId: string; live: ChatLive | null };
   "video:job": { job: VideoJob; averages: StepAverages };
   "video:job-removed": { sessionId: string; scriptId: string };
+  "video:making": VideosBeingMade;
 }
 
 export type IpcEvent = keyof IpcEvents;
@@ -703,6 +751,7 @@ export const IPC_EVENTS = [
   "chat:live",
   "video:job",
   "video:job-removed",
+  "video:making",
 ] as const satisfies readonly IpcEvent[];
 
 type UnlistedAtCompileTime<All, Listed> =

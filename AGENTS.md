@@ -1,6 +1,6 @@
 # Hy An Video Factory
 
-Read `PROJECT_CONTEXT.md` (a private local file, not in the repository) for the pilot's scope and constraints, `docs/README.md` for the product reference and `docs/TECH_STACK_AND_SKILLS.md` for agreed technology choices. `docs/private/`, `docs/archive/`, `project/`, `prototypes/` and `experiments/` are private and local only; never publish or copy their content into tracked files. Research recommendations are not automatically agreed decisions.
+Read `docs/private/USERS_AND_GOALS.md` first (private, local): who the users are, the product goals in order and the current project goal. Every design or product decision is checked against it. Then `PROJECT_CONTEXT.md` (a private local file, not in the repository) for the pilot's terms and constraints, `docs/README.md` for the product reference and `docs/TECH_STACK_AND_SKILLS.md` for agreed technology choices. `docs/private/`, `docs/archive/`, `project/`, `prototypes/` and `experiments/` are private and local only; never publish or copy their content into tracked files. Research recommendations are not automatically agreed decisions.
 
 Keep the solo workflow lean. Do not introduce a full CI, review orchestration, or project-management framework by default. Use checks appropriate to the actual change. Providers (fal.ai, ElevenLabs) and the MVP architecture (Electron, macOS first, single machine, no backend or database) are agreed. Detailed screen design, job execution and deployment details remain open; do not settle them during unrelated work.
 

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/errors";
+import { useDeleteWarning } from "@/lib/making-videos";
 import { refreshWorkspace } from "@/lib/workspace";
 import { Button } from "./ui/button";
 import { Dialog, DialogClose, DialogFooter, DialogPopup, DialogTitle } from "./ui/dialog";
@@ -19,6 +20,7 @@ export function DeleteSessionDialog({
   const navigate = useNavigate();
   const params = useParams({ strict: false }) as { sessionId?: string };
   const [error, setError] = useState<string | null>(null);
+  const warning = useDeleteWarning(open, [session.id]);
 
   const remove = async () => {
     setError(null);
@@ -46,6 +48,7 @@ export function DeleteSessionDialog({
           <p className="leading-relaxed text-muted-foreground">
             Kịch bản và cuộc trò chuyện sẽ bị xóa. Tệp được chuyển vào Thùng rác của máy.
           </p>
+          {warning && <p className="leading-relaxed text-muted-foreground">{warning}</p>}
           {error && <p className="text-destructive-foreground">{error}</p>}
         </div>
         <DialogFooter className="justify-end">

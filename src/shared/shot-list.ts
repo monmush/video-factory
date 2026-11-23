@@ -62,6 +62,18 @@ export interface ShotListAnswer extends DirectorAnswer {
 
 export interface ShotListCaps {
   motion: boolean;
+  sound?: boolean;
+}
+
+export interface ReadShotList {
+  list: ShotList;
+  errors: string[];
+  repaired: string[];
+}
+
+function withoutSounds(plan: ShotPlan): ShotPlan {
+  const { ambience: _, ...rest } = plan;
+  return { ...rest, shots: plan.shots.map(({ sound: __, ...shot }) => shot) };
 }
 
 const norm = (s: unknown) =>
@@ -154,8 +166,10 @@ export function readShotList(
   answer: ShotListAnswer,
   ctx: PlanContext,
   caps: ShotListCaps,
-): { list: ShotList; errors: string[] } {
-  const { plan, errors } = readDirectorAnswer(answer, ctx);
+): ReadShotList {
+  const read = readDirectorAnswer(answer, ctx);
+  const errors = read.errors;
+  const plan = caps.sound ? read.plan : withoutSounds(read.plan);
   const byName = new Map(ctx.cast.map((c) => [key(c.name), c.id]));
   const person = (where: string, name: unknown) => {
     const id = byName.get(key(name));
@@ -199,9 +213,85 @@ export function readShotList(
       motion: norm(raw.motion),
     };
   });
-  const list: ShotList = { shots: plan, pictures, routes };
+  const { kept, dropped } = withoutLeftoverPictures(pictures, routes);
+  const list: ShotList = { shots: plan, pictures: kept, routes };
   errors.push(...shotListErrors(list, ctx, caps));
-  return { list, errors: [...new Set(errors)] };
+  return {
+    list,
+    errors: [...new Set(errors)],
+    repaired: dropped.map((id) => `Picture "${id}": no shot starts from it; removed.`),
+  };
+}
+
+const LIST_ROUTE_OF = Object.fromEntries(
+  LIST_ROUTES.map((name) => [AS_ROUTE[name], name]),
+) as Record<Route, ShotListRoute>;
+
+export function shotListAnswer(list: ShotList, ctx: PlanContext): ShotListAnswer | null {
+  const names = new Map(ctx.cast.map((c) => [c.id, c.name]));
+  const products = new Map(ctx.products.map((p) => [p.id, p.name]));
+  const known = [
+    ...list.pictures.flatMap((p) => [p.characterId, ...p.people]),
+    ...list.shots.shots.map((s) => s.characterId),
+    ...list.shots.seats.map((s) => s.characterId),
+  ].every((id) => !id || names.has(id));
+  const productsKnown = list.shots.shots.every((s) => !s.productId || products.has(s.productId));
+  if (!known || !productsKnown || list.routes.length !== list.shots.shots.length) return null;
+  const name = (id: string | null) => (id ? (names.get(id) ?? null) : null);
+  const plan = list.shots;
+  return {
+    ambience: plan.ambience ?? null,
+    seats: plan.seats.map((s) => ({
+      character: names.get(s.characterId) ?? "",
+      behind: s.behind,
+      ambient: s.ambient ?? null,
+    })),
+    props: plan.props.map((p) => ({ ...p })),
+    state_changes: plan.stateChanges.map((c) => ({ from_shot: c.fromShot + 1, change: c.change })),
+    pictures: list.pictures.map((p) => ({
+      id: p.id,
+      kind: p.kind,
+      character: name(p.characterId),
+      people: p.people.map((id) => names.get(id) ?? ""),
+      framing: p.framing,
+      description: p.description,
+    })),
+    shots: plan.shots.map((s, i) => {
+      const route = list.routes[i] as ListedRoute;
+      return {
+        n: i + 1,
+        type: s.kind,
+        character: name(s.characterId),
+        framing: s.framing,
+        line: s.line + 1,
+        text: s.text,
+        visual: s.visual,
+        product: s.productId ? (products.get(s.productId) ?? null) : null,
+        why: s.why,
+        hold: s.hold ?? null,
+        brief: s.brief ?? null,
+        sound: s.sound ?? null,
+        picture: route.picture,
+        route: LIST_ROUTE_OF[route.route],
+        motion: route.motion || null,
+      };
+    }),
+  };
+}
+
+function withoutLeftoverPictures(
+  pictures: Picture[],
+  routes: ListedRoute[],
+): { kept: Picture[]; dropped: string[] } {
+  const ids = new Set(pictures.map((p) => p.id));
+  const everyShotHasItsPicture = routes.every((r) => r.picture && ids.has(r.picture));
+  if (!everyShotHasItsPicture) return { kept: pictures, dropped: [] };
+  const started = new Set(routes.map((r) => r.picture));
+  const isLeftover = (p: Picture) => p.kind !== "master" && !started.has(p.id);
+  return {
+    kept: pictures.filter((p) => !isLeftover(p)),
+    dropped: pictures.filter(isLeftover).map((p) => p.id),
+  };
 }
 
 const SIDE: Record<string, string> = {

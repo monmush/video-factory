@@ -1,17 +1,17 @@
+import { costToFinishUsd } from "./cost/estimate";
 import { coverageErrors, holdErrors, type PlannedShot, type ShotPlan } from "./shot-plan";
 import {
-  costToFinishUsd,
-  cutCostUsd,
   frameFor,
   frameIdFor,
   hasInput,
   isGenerated,
+  isNative,
   type JobCut,
   type JobFrame,
   type JobShot,
   madeByProvider,
-  spentUsd,
   type VideoJob,
+  withSpeech,
 } from "./video-job";
 
 export type FixChange =
@@ -32,10 +32,13 @@ export const cutOf = (job: VideoJob): JobCut => ({
   lineSpans: job.lineSpans,
   frames: job.frames,
   shots: job.shots,
+  ...(job.sounds ? { sounds: job.sounds } : {}),
+  ...(job.segments ? { segments: job.segments } : {}),
   ...(job.live ? { routes: job.live.plan.routes } : {}),
   final: job.final,
   finalSec: job.finalSec,
   cutRev: job.cutRev,
+  ...(job.firstPass ? { firstPass: job.firstPass } : {}),
 });
 
 const sameLayout = (a: JobShot[], b: JobShot[]) =>
@@ -76,6 +79,7 @@ export const clearShot = (s: JobShot): JobShot => ({
   sending: undefined,
   resultUrl: undefined,
   costUsd: undefined,
+  costBilled: undefined,
   model: undefined,
   retried: false,
   failures: 0,
@@ -92,6 +96,7 @@ const clearFrame = (f: JobFrame, note?: string): JobFrame => ({
   sending: undefined,
   resultUrl: undefined,
   costUsd: undefined,
+  costBilled: undefined,
   retried: false,
   redone: false,
   check: undefined,
@@ -104,7 +109,9 @@ export class FixError extends Error {}
 export function applyFix(job: VideoJob, changes: FixChange[], now: string): VideoJob {
   if (!canFix(job)) throw new FixError("Video này đang được tạo, chưa sửa được");
   if (!changes.length) throw new FixError("Không có gì để sửa");
-  const total = spentUsd(job);
+  if (isNative(job) && speechExists(job) && changes.some((c) => changesSpeech(job, c))) {
+    throw new FixError(SPEECH_FIXED);
+  }
   let next: VideoJob = {
     ...job,
     rev: (job.rev ?? 0) + 1,
@@ -113,6 +120,7 @@ export function applyFix(job: VideoJob, changes: FixChange[], now: string): Vide
       : {}),
   };
   for (const change of changes) next = applyChange(next, change);
+  if (isNative(next)) next = withSpeech(next);
   return {
     ...next,
     status: "waiting",
@@ -121,9 +129,27 @@ export function applyFix(job: VideoJob, changes: FixChange[], now: string): Vide
     error: undefined,
     phaseStartedAt: undefined,
     assembleProgress: undefined,
-    pastCostUsd: total - cutCostUsd(next),
   };
 }
+
+const SPEECH_FIXED = "Video tự tạo giọng nói chưa sửa được phần lời nói";
+
+const speechExists = (job: VideoJob) =>
+  (job.segments ?? []).some((s) => s.requestId || s.clip || s.state !== "queued");
+
+const framesOfSpeech = (job: VideoJob) => new Set((job.segments ?? []).map((s) => s.frame));
+
+function changesSpeech(job: VideoJob, change: FixChange): boolean {
+  if (change.op === "redo_voice" || change.op === "replace_line") return true;
+  if (change.op === "redo_still") return framesOfSpeech(job).has(change.frame);
+  const shot = job.shots[change.shot];
+  if (!shot) return false;
+  if (shot.speech) return true;
+  return !madeByProvider(shot) && framesOfSpeech(job).has(frameIdFor(shot));
+}
+
+export const speechFixRefused = (job: VideoJob, change: FixChange) =>
+  isNative(job) && speechExists(job) && changesSpeech(job, change);
 
 function applyChange(job: VideoJob, change: FixChange): VideoJob {
   switch (change.op) {
@@ -283,7 +309,7 @@ function replaceLine(job: VideoJob, line: number, parts: PlannedShot[]): VideoJo
     if (shot.kind === "wide") {
       add({ id, kind: "wide", retried: false });
       frames.sort((a, b) => Number(b.kind === "wide") - Number(a.kind === "wide"));
-    } else if (madeByProvider(shot) && shot.characterId) {
+    } else if ((madeByProvider(shot) || shot.speech) && shot.characterId) {
       add({ id, kind: "character", characterId: shot.characterId, retried: false });
     } else if (shot.kind === "detail") {
       const from = origin.get(shot.index);
@@ -355,7 +381,8 @@ function liveAfterFix(
 }
 
 export function fixPriceUsd(job: VideoJob, changes: FixChange[], now: string): number {
-  return Math.max(0, costToFinishUsd(applyFix(job, changes, now)) - costToFinishUsd(job));
+  const after = costToFinishUsd(applyFix(job, changes, now)) ?? 0;
+  return Math.max(0, after - (costToFinishUsd(job) ?? 0));
 }
 
 export function fixScope(job: VideoJob, changes: FixChange[], now: string) {
@@ -384,7 +411,6 @@ export function restorePrevious(job: VideoJob, now: string): VideoJob {
   if (!job.previous?.final) throw new FixError("Không có bản trước");
   if (!canUseCut(job, job.previous)) throw new FixError(OLD_CUT);
   if (!canRestore(job)) throw new FixError("Đợi các cảnh đang quay xong rồi thử lại");
-  const total = spentUsd(job);
   const next: VideoJob = { ...withCut(job, job.previous), previous: cutOf(job) };
   return {
     ...next,
@@ -392,6 +418,5 @@ export function restorePrevious(job: VideoJob, now: string): VideoJob {
     updatedAt: now,
     error: undefined,
     assembleProgress: undefined,
-    pastCostUsd: total - cutCostUsd(next),
   };
 }

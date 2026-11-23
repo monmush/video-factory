@@ -4,7 +4,14 @@ import { basename, extname, join } from "node:path";
 import { nativeImage } from "electron";
 import type { ImageRef, PlaceFinding, StagedImage } from "../shared/ipc";
 import { mediaUrl } from "../shared/ipc";
-import { cleanPrompt, cleanSize, PLACE_CHECK_QUESTION, readFinding } from "../shared/place-check";
+import {
+  cleanPrompt,
+  cleanSize,
+  PLACE_CHECK_QUESTION,
+  readFinding,
+  setAccepted,
+  withCheck,
+} from "../shared/place-check";
 import {
   DEFAULT_IMAGE_MODEL,
   estimateAngles,
@@ -103,9 +110,31 @@ export function carryOverCheck(from: string, to: string): PlaceFinding | undefin
 
 async function record(assetId: string, file: string, finding: PlaceFinding) {
   await mutate((ws) => {
-    const image = ws.assets.find((a) => a.id === assetId)?.images.find((i) => i.file === file);
-    if (image && !image.placeCheck) image.placeCheck = finding;
+    const asset = ws.assets.find((a) => a.id === assetId);
+    if (asset) asset.images = asset.images.map((image) => withCheck(image, file, finding));
   });
+}
+
+export async function acceptPlaceFinding(input: {
+  assetId: string;
+  imageIds: string[];
+  accepted: boolean;
+}): Promise<null> {
+  const { assetId, imageIds, accepted } = input;
+  if (
+    typeof assetId !== "string" ||
+    !Array.isArray(imageIds) ||
+    !imageIds.every((id) => typeof id === "string") ||
+    typeof accepted !== "boolean"
+  ) {
+    throw new Error("Invalid place finding decision");
+  }
+  await mutate((ws) => {
+    const place = ws.assets.find((a) => a.id === assetId && a.kind === "environment");
+    if (!place) throw new Error(`Place not found: ${assetId}`);
+    place.images = setAccepted(place.images, imageIds, accepted);
+  });
+  return null;
 }
 
 export async function checkPlaceImages(refs: ImageRef[]): Promise<(PlaceFinding | null)[]> {

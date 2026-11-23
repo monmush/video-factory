@@ -1,9 +1,18 @@
 import { closeAll as closeChats } from "./chat/runtime";
 import { stopClaudeProcesses } from "./claude-code";
-import { stopRunner } from "./video/runner";
+import { finishRunner, flushRunner } from "./video/runner";
 
-export function shutDownServices() {
+function stopServices() {
   closeChats();
   stopClaudeProcesses();
-  stopRunner();
+}
+
+export async function finishWorkAndShutDown(withinMs: number) {
+  stopServices();
+  await finishRunner(withinMs);
+}
+
+export async function saveAndShutDown(withinMs: number) {
+  stopServices();
+  await flushRunner(withinMs);
 }

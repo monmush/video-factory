@@ -3,11 +3,18 @@ import { access, copyFile, readFile, rename, writeFile } from "node:fs/promises"
 import { basename, extname, join } from "node:path";
 import { app } from "electron";
 import { outputResolution, outputSize } from "../../shared/batch-settings";
-import { syllables, VOICE_USD_PER_CHAR } from "../../shared/board";
+import { syllables } from "../../shared/board";
+import { frameUsd, shotEstimateUsd } from "../../shared/cost/estimate";
+import {
+  calculated,
+  type ResultCost,
+  STILL_USD,
+  VOICE_USD_PER_CHAR,
+} from "../../shared/cost/rates";
 import { voiceText } from "../../shared/cues";
 import type { Asset } from "../../shared/ipc";
 import { fitDuration, placeholderOf, placeholdersIn, readMediaUrl } from "../../shared/live-plan";
-import { speakPrompt, withNoCaptions } from "../../shared/prompt-text";
+import { speakPrompt, withCleanFrame } from "../../shared/prompt-text";
 import {
   type Alignment,
   type Gaze,
@@ -18,26 +25,32 @@ import {
 } from "../../shared/shot-plan";
 import {
   billedSeconds,
-  frameUsd,
   type JobFrame,
   type JobShot,
   lineSpans,
   liveSeconds,
-  shotEstimateUsd,
   shotModel,
   type VideoJob,
 } from "../../shared/video-job";
 import { clipUsd, type VideoModel } from "../../shared/video-models";
 import { resolveVoice, takenVoiceIds } from "../../shared/voices";
-import { DEFAULT_IMAGE_MODEL, historicalAverageImageCost, MODELS } from "../angles";
-import { type Fal, falCancel, falPoll, falSubmit } from "../fal";
+import { DEFAULT_IMAGE_MODEL, MODELS } from "../angles";
+import {
+  type Canceller,
+  type CancelOutcome,
+  type Fal,
+  falCancel,
+  falPoll,
+  falSubmit,
+} from "../fal";
 import { uploadFile, uploadImages } from "../fal-upload";
 import { assetDir } from "../media";
+import { duringBlockingPaidCall } from "../paid-calls";
 import { elevenLabsClient, falClient, providerMode } from "../providers";
 import { logUsage } from "../usage";
 import { PROVIDER_VOICES, VOICE_DIRECTION } from "../voices";
 import { fixtureClip, loopAudio, padAudio, probeSeconds, type Size } from "./ffmpeg";
-import { fixtureNetwork } from "./fixture-net";
+import { fixtureNetwork, fixtureTimesForShot } from "./fixture-net";
 import { shotEndpoint } from "./shot-models";
 
 const VOICE_MODEL = "eleven_v4";
@@ -60,6 +73,7 @@ export interface VoiceResult {
   spans: { start: number; end: number }[];
   costUsd: number;
   chars: number;
+  requestId?: string;
   timing?: { alignment: Alignment; lineChars: LineChars[] };
 }
 
@@ -81,7 +95,7 @@ export async function generateVoice(
 
   if (isFixture()) {
     fixtureNetwork();
-    await wait(3000);
+    await duringBlockingPaidCall(() => wait(3000));
     let at = 0;
     const spans = job.lines.map((line) => {
       const seconds = Math.max(0.8, syllables([line]) / 3.7);
@@ -97,24 +111,28 @@ export async function generateVoice(
   if (saved) return finishVoice(out, saved, inputs.length);
 
   const client = await elevenLabsClient();
-  const { data, rawResponse } = await client.textToDialogue
-    .convertWithTimestamps(
-      {
-        modelId: VOICE_MODEL,
-        languageCode: "vi",
-        inputs,
-        outputFormat: "mp3_44100_128",
-        audioEffects: { distance: 0, sendLevel: 0, pan: 0 },
-      },
-      { maxRetries: 0, timeoutInSeconds: 180 },
-    )
-    .withRawResponse();
+  const { data, rawResponse } = await duringBlockingPaidCall(() =>
+    client.textToDialogue
+      .convertWithTimestamps(
+        {
+          modelId: VOICE_MODEL,
+          languageCode: "vi",
+          inputs,
+          outputFormat: "mp3_44100_128",
+          audioEffects: { distance: 0, sendLevel: 0, pan: 0 },
+        },
+        { maxRetries: 0, timeoutInSeconds: 180 },
+      )
+      .withRawResponse(),
+  );
   const bytes = Buffer.from(data.audioBase64, "base64");
   if (!bytes.length) throw new Error("Không nhận được giọng đọc");
   const billed = Number(rawResponse.headers.get("x-character-count")) || chars;
+  const requestId = rawResponse.headers.get("request-id") ?? undefined;
   const record: SavedVoice = {
     inputs,
     billed,
+    ...(requestId ? { requestId } : {}),
     costUsd: billed * VOICE_USD_PER_CHAR,
     voiceSegments: data.voiceSegments ?? [],
     alignment: data.alignment,
@@ -128,7 +146,7 @@ export async function generateVoice(
     provider: "elevenlabs",
     purpose: "video-voice",
     model: VOICE_MODEL,
-    requestId: rawResponse.headers.get("request-id") ?? undefined,
+    requestId,
     characters: billed,
     cost: record.costUsd,
     costIsEstimate: true,
@@ -142,6 +160,7 @@ interface SavedVoice {
   inputs: { text: string; voiceId: string }[];
   billed: number;
   costUsd: number;
+  requestId?: string;
   voiceSegments: {
     dialogueInputIndex: number;
     characterStartIndex: number;
@@ -177,6 +196,7 @@ async function finishVoice(
     spans,
     costUsd: voice.costUsd,
     chars: voice.billed,
+    ...(voice.requestId ? { requestId: voice.requestId } : {}),
     timing: timingOf(voice.alignment, voice.voiceSegments, lineCount),
   };
 }
@@ -383,7 +403,7 @@ export async function submitFrame(
 export type StepPoll =
   | { state: "pending" }
   | { state: "failed"; message: string }
-  | { state: "done"; url: string; costUsd: number | null; seconds?: number };
+  | { state: "done"; url: string; cost: ResultCost; seconds?: number };
 
 const FIXTURE_FRAME_MS = 3000;
 
@@ -393,19 +413,17 @@ export async function pollFrame(job: VideoJob, frame: JobFrame): Promise<StepPol
     const elapsed = Date.now() - Date.parse(frame.submittedAt ?? new Date().toISOString());
     return elapsed < FIXTURE_FRAME_MS
       ? { state: "pending" }
-      : { state: "done", url: "fixture:cover", costUsd: 0.12 };
+      : { state: "done", url: "fixture:cover", cost: calculated(STILL_USD) };
   }
   const client = await fal();
   const model = MODELS[DEFAULT_IMAGE_MODEL];
-  const unit = await historicalAverageImageCost(DEFAULT_IMAGE_MODEL);
   const result = await falPoll<{ images?: { url: string }[] }>(
     client,
     model.endpoint,
     frame.requestId as string,
     {
       purpose: "video-frame",
-      cost: () => unit,
-      costIsEstimate: true,
+      cost: () => STILL_USD,
       sessionId: job.sessionId,
       scriptId: job.scriptId,
     },
@@ -414,7 +432,7 @@ export async function pollFrame(job: VideoJob, frame: JobFrame): Promise<StepPol
   if (result.state === "failed") return result;
   const url = result.data.images?.[0]?.url;
   if (!url) return { state: "failed", message: "Không nhận được ảnh" };
-  return { state: "done", url, costUsd: unit };
+  return { state: "done", url, cost: result.cost };
 }
 
 export async function submitShot(
@@ -457,13 +475,8 @@ export async function submitShot(
 
 const fixtureShotMs = (shot: JobShot) => 5000 + ((shot.index * 7) % 5) * 1000;
 
-function fixtureFailures(shotNumber: number): number {
-  for (const part of (process.env.HYAN_FIXTURE_FAIL ?? "").split(",")) {
-    const [n, times] = part.trim().split("x");
-    if (Number(n) === shotNumber) return Number(times ?? 1) || 1;
-  }
-  return 0;
-}
+const fixtureFailures = (shotNumber: number) =>
+  fixtureTimesForShot("HYAN_FIXTURE_FAIL", shotNumber);
 
 export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> {
   const model = shotModel(job, shot);
@@ -478,7 +491,7 @@ export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> 
     return {
       state: "done",
       url: "fixture:shot",
-      costUsd: clipUsd(model, seconds, job.resolution),
+      cost: calculated(clipUsd(model, seconds, job.resolution)),
       seconds,
     };
   }
@@ -489,7 +502,6 @@ export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> 
     purpose: "video-shot",
     model: model.id,
     cost: (data) => clipUsd(model, secondsOf(data), job.resolution),
-    costIsEstimate: true,
     sessionId: job.sessionId,
     scriptId: job.scriptId,
     shot: shot.index,
@@ -499,26 +511,26 @@ export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> 
   const url = read(result.data).url;
   if (!url) return { state: "failed", message: "Không nhận được video" };
   const seconds = secondsOf(result.data);
-  return { state: "done", url, costUsd: clipUsd(model, seconds, job.resolution), seconds };
+  return { state: "done", url, cost: result.cost, seconds };
 }
 
-export async function cancelFrame(frame: JobFrame): Promise<void> {
-  if (isFixture() || !frame.requestId) return;
-  const endpoint = frame.endpoint ?? MODELS[DEFAULT_IMAGE_MODEL].endpoint;
-  await cancel(endpoint, frame.requestId);
+const NOTHING_BILLABLE_WAS_SENT: CancelOutcome = "removed";
+
+export async function cancelFrame(
+  frame: JobFrame,
+  cancel: Canceller = falCancel,
+): Promise<CancelOutcome> {
+  if (isFixture() || !frame.requestId) return NOTHING_BILLABLE_WAS_SENT;
+  return cancel(frame.endpoint ?? MODELS[DEFAULT_IMAGE_MODEL].endpoint, frame.requestId);
 }
 
-async function cancel(endpoint: string, requestId: string) {
-  try {
-    await falCancel(await fal(), endpoint, requestId);
-  } catch (error) {
-    console.warn("[video] cancel:", (error as Error).message);
-  }
-}
-
-export async function cancelShot(job: VideoJob, shot: JobShot): Promise<void> {
-  if (isFixture() || !shot.requestId) return;
-  await cancel(shot.endpoint ?? shotModel(job, shot).endpoint, shot.requestId);
+export async function cancelShot(
+  job: VideoJob,
+  shot: JobShot,
+  cancel: Canceller = falCancel,
+): Promise<CancelOutcome> {
+  if (isFixture() || !shot.requestId) return NOTHING_BILLABLE_WAS_SENT;
+  return cancel(shot.endpoint ?? shotModel(job, shot).endpoint, shot.requestId);
 }
 
 export async function download(
@@ -652,7 +664,7 @@ export async function pollLiveFrame(job: VideoJob, frame: JobFrame): Promise<Ste
     const elapsed = Date.now() - Date.parse(frame.submittedAt ?? new Date().toISOString());
     return elapsed < FIXTURE_FRAME_MS
       ? { state: "pending" }
-      : { state: "done", url: "fixture:cover", costUsd: unit };
+      : { state: "done", url: "fixture:cover", cost: calculated(unit) };
   }
   const client = await fal();
   const result = await falPoll<unknown>(
@@ -662,7 +674,6 @@ export async function pollLiveFrame(job: VideoJob, frame: JobFrame): Promise<Ste
     {
       purpose: "video-frame",
       cost: () => unit,
-      costIsEstimate: true,
       sessionId: job.sessionId,
       scriptId: job.scriptId,
     },
@@ -671,7 +682,7 @@ export async function pollLiveFrame(job: VideoJob, frame: JobFrame): Promise<Ste
   if (result.state === "failed") return result;
   const url = readMediaUrl(result.data, "image");
   if (!url) return { state: "failed", message: "Không nhận được ảnh" };
-  return { state: "done", url, costUsd: unit };
+  return { state: "done", url, cost: result.cost };
 }
 
 export async function submitLiveShot(
@@ -686,7 +697,7 @@ export async function submitLiveShot(
   if (!live || !route?.endpoint || !route.input)
     throw new Error("Cảnh này không có trong kế hoạch");
   const endpoint = route.endpoint;
-  let input = withNoCaptions(route.input);
+  let input = withCleanFrame(route.input);
   const paths = new Map<string, { path: string; audio?: boolean }>();
   for (const name of placeholdersIn(input)) {
     if (name === "keyframe") paths.set(name, { path: framePath });
@@ -727,13 +738,17 @@ export async function pollLiveShot(job: VideoJob, shot: JobShot): Promise<StepPo
       return { state: "failed", message: "Lỗi giả lập" };
     }
     if (elapsed < fixtureShotMs(shot)) return { state: "pending" };
-    return { state: "done", url: "fixture:shot", costUsd: usd, seconds: liveSeconds(shot) };
+    return {
+      state: "done",
+      url: "fixture:shot",
+      cost: calculated(usd),
+      seconds: liveSeconds(shot),
+    };
   }
   const client = await fal();
   const result = await falPoll<unknown>(client, shot.endpoint as string, shot.requestId as string, {
     purpose: "video-shot",
     cost: () => usd,
-    costIsEstimate: true,
     sessionId: job.sessionId,
     scriptId: job.scriptId,
     shot: shot.index,
@@ -742,5 +757,5 @@ export async function pollLiveShot(job: VideoJob, shot: JobShot): Promise<StepPo
   if (result.state === "failed") return result;
   const url = readMediaUrl(result.data, "video");
   if (!url) return { state: "failed", message: "Không nhận được video" };
-  return { state: "done", url, costUsd: usd };
+  return { state: "done", url, cost: result.cost };
 }

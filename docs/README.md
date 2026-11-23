@@ -1,6 +1,6 @@
 # Hy An Video Factory — docs
 
-Updated 19 November 2026. The Electron app under `src/` covers series, the shared library, the script board with a session chat agent, a staged plan per script ("Dàn dựng"), and video generation (voice, stills, speaking and motion shots, local assembly with subtitles, fixes in place). Two videos were finished live on 13 November; everything built since 16 November has run in fixture mode only. No video has been accepted by the pilot client, and repeatable economics are not validated.
+Updated 23 November 2026. The Electron app under `src/` covers series, the shared library, the script board with a session chat agent, a staged plan per script ("Dàn dựng"), and video generation (voice, stills, speaking and motion shots, local assembly with subtitles, fixes in place). Two videos were finished live on 13 November and three more on 21 November, when a future operator went from first launch to a finished video in 27 minutes; parts built since 16 November have still run in fixture mode only. No video has been accepted by the pilot client, and repeatable economics are not validated.
 
 These documents are the lasting product reference and are tracked in git. Private material (business context, client observations, expenses, research) is kept locally in `docs/private/` and `docs/archive/`, which are not published. `PROJECT_CONTEXT.md` and `project/TODO.md` are also private local files.
 
@@ -16,7 +16,7 @@ These documents are the lasting product reference and are tracked in git. Privat
 | [Scripts to videos](VIDEO_COMMIT_DECISIONS.md) | Ready check, all-in price, Quality levels, "one video first", moving between Kịch bản and Video, batch button | Built; changing Quality after scripts exist is an open design problem |
 | [Video generation](VIDEO_GENERATION_DECISIONS.md) | Recipe, shot list and build, pipeline, speaking-shot models, subtitles, stop and resume, never pay twice | Built; two videos finished live, the rest fixture mode |
 | [Directing rules](DIRECTING_RULES.md) | Rules that turn a script into a shot plan, prompt building, still checks, product shots, failure table, flexible direction | Built; the 19 November changes not yet seen live |
-| [Reviewing and fixing videos](VIDEO_REVIEW_DECISIONS.md) | Fixes in place, the pause, series look, learned preferences ("Ghi nhớ"), takes with another model | Built, fixture mode only; takes hidden, fate open |
+| [Reviewing and fixing videos](VIDEO_REVIEW_DECISIONS.md) | Fixes in place, the pause, series look, learned preferences ("Ghi nhớ"), another quality level for a finished video | Built, fixture mode only |
 | [Voices](VOICE_DECISIONS.md) | Character voice catalogue, suggestion rules, shared acoustics, open items | Built; shared room sound not built |
 | [Design lessons](DESIGN_LESSONS.md) | What repeated feedback teaches: no dead ends, primary colour, prices, holds | Current rules |
 
@@ -29,7 +29,7 @@ These documents are the lasting product reference and are tracked in git. Privat
 
 ## Local only (not published)
 
-- `docs/private/`: the product brief, feasibility results, user observation at the pilot client and its guide, the pilot's script reference and the expense log.
+- `docs/private/`: users and goals (read first: who we build for, the product goals in order, the current project goal), the product brief, feasibility results, the two user sessions at the pilot client and the observation guide, the pilot's script reference and the expense log.
 - `docs/archive/`: finished one-time material, by date (`2026-11-19/README.md` says what each item was and where its content went).
 - `PROJECT_CONTEXT.md`, `project/TODO.md`, `assets/`, `experiments/`, `prototypes/`, `references/hyan/`, `references/ui-patterns/`.
 - Tracked reference: [T3 Code reference pack](../references/t3code/README.md), the source of the ported UI primitives.

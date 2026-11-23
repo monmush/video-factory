@@ -1,4 +1,3 @@
-import { estimateSeconds, levelEstimateUsd } from "./board";
 import type { ScriptLine } from "./ipc";
 import {
   costTable,
@@ -17,6 +16,7 @@ import {
 } from "./live-plan";
 import type { MediaLevel } from "./media-level";
 import {
+  MOTION_OF_A_STILL_MOMENT,
   STILL_BEFORE_SPEAKING,
   STILL_FORMAT,
   STILL_IDENTITY,
@@ -32,6 +32,7 @@ import {
   type RoleModel,
 } from "./recipe";
 import type { Picture, ShotList } from "./shot-list";
+import type { ShotKind } from "./shot-plan";
 
 const MAIN_PERSON_PHOTOS = 3;
 const OTHER_PERSON_PHOTOS = 2;
@@ -111,6 +112,91 @@ function shareReferences(groups: Ref[][], budget: number): Ref[] {
   }
   return groups.flatMap((g, i) => g.slice(0, taken[i]));
 }
+
+const promptIn = (input: Record<string, unknown> | null) =>
+  typeof input?.prompt === "string" ? input.prompt : undefined;
+
+const stillMove = (keyframe: string | null): PlannedRoute => ({
+  route: "still-move",
+  keyframe,
+  endpoint: null,
+  input: null,
+});
+
+function motionRoute(
+  role: RoleModel,
+  keyframe: string | null,
+  prompt: string,
+  seconds: number,
+): PlannedRoute {
+  const body = fill(role.input, { prompt }) as Record<string, unknown>;
+  return {
+    route: "motion",
+    keyframe,
+    endpoint: role.endpoint,
+    input: fitDuration(schemaOf(role), body, seconds).input,
+  };
+}
+
+export interface ShotAtLevel {
+  kind: ShotKind;
+  seconds: number;
+  ambient?: string;
+  routes: PlannedRoute[];
+  wasMoving: boolean;
+}
+
+export function speakingRoute(
+  speak: RoleModel,
+  base: PlannedRoute,
+  shot: Pick<ShotAtLevel, "kind" | "ambient">,
+): PlannedRoute {
+  const prompt = promptIn(base.input) ?? speakPrompt(shot.kind === "listener", shot.ambient);
+  return {
+    route: "lip-sync",
+    keyframe: base.keyframe,
+    endpoint: speak.endpoint,
+    input: fill(speak.input, { prompt }) as Record<string, unknown>,
+  };
+}
+
+export function routeAtLevel(recipe: Recipe, shot: ShotAtLevel): PlannedRoute {
+  const [base, ...others] = shot.routes;
+  if (!base) throw new Error("A shot without a route cannot change level.");
+  const all = [base, ...others];
+  if (base.route === "lip-sync") {
+    const same = all.find((r) => r.route === "lip-sync" && r.endpoint === recipe.speak.endpoint);
+    if (same) return { ...same, keyframe: base.keyframe };
+    return speakingRoute(recipe.speak, base, shot);
+  }
+  if (base.route === "product") return base;
+  const motion = recipe.motion;
+  if (!motion) return base.route === "motion" ? stillMove(base.keyframe) : base;
+  const moving = all.find((r) => r.route === "motion");
+  if (moving?.endpoint === motion.endpoint) return { ...moving, keyframe: base.keyframe };
+  if (moving) {
+    const prompt = promptIn(moving.input) ?? MOTION_OF_A_STILL_MOMENT;
+    return motionRoute(motion, base.keyframe, prompt, shot.seconds);
+  }
+  const stillOnlyForWantOfMotion =
+    !shot.wasMoving && (shot.kind === "wide" || shot.kind === "listener");
+  return stillOnlyForWantOfMotion
+    ? motionRoute(motion, base.keyframe, MOTION_OF_A_STILL_MOMENT, shot.seconds)
+    : base;
+}
+
+export function roleModels(roles: readonly RoleModel[]): {
+  rates: Record<string, Rate>;
+  schemas: Record<string, ModelSchema>;
+} {
+  return {
+    rates: Object.fromEntries(roles.map((r) => [r.endpoint, r.rate])),
+    schemas: Object.fromEntries(roles.map((r) => [r.endpoint, schemaOf(r)])),
+  };
+}
+
+export const recipeModels = (recipe: Recipe) =>
+  roleModels([recipe.stills, recipe.speak, ...(recipe.motion ? [recipe.motion] : [])]);
 
 export function buildDirection(input: BuildInput): LiveDirection {
   const { list, recipe, cast } = input;
@@ -267,7 +353,6 @@ export function buildDirection(input: BuildInput): LiveDirection {
     steps,
     rates,
     schemas,
-    levelEstimateUsd(input.level, estimateSeconds(input.lines)),
     steps.reduce((n, s) => n + s.seconds, 0),
   );
   return {

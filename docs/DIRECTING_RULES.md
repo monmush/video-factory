@@ -28,7 +28,7 @@ As built:
 - **Holds (C15; 13 Nov).** After the joke or turning point and after the final line, the shot that ends the line carries `hold`: 1–2 s of silence before the next line or the end. The last shot always holds at least 1 s (code sets it when the plan does not; the rules-only plan holds 1 s). Holds add up to at most 4 s, the last shot's included.
 - **Sounds without words (13 Nov).** A line may end with `[cười]`, `[cười khẽ]` or `[thở dài]` ([voices](VOICE_DECISIONS.md)). It stays in the text of the line's last shot, is voiced, never subtitled, and the director holds after it.
 - **Ambient motion (S3; 13 Nov, experiment).** Each seat also gets one short English clause of gentle motion that really happens behind that character in this place ("bamboo leaves stir in a light breeze"). Optional.
-- **One retry** with the broken rules listed, then the **rules-only plan** (one speaker shot per line, correct eyelines), so a video is never blocked by the director. The rules-only plan is also used without a place or without text AI (fixture mode with fal selected).
+- **One retry** with the broken rules listed (since 20 Nov 2026 the shot-list path first asks for a small correction, then one full rewrite: [video generation](VIDEO_GENERATION_DECISIONS.md), "Staging calls"), then the **rules-only plan** (one speaker shot per line, correct eyelines), so a video is never blocked by the director. The rules-only plan is also used without a place or without text AI (fixture mode with fal selected).
 - Prompt, answers and plan are saved in the video's folder (`director-prompt.md`, `director-answer-N.json`, `plan.json`) for whoever maintains the rules.
 
 ## 19 November 2026: flexible direction

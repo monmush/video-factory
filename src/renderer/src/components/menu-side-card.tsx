@@ -1,15 +1,6 @@
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
-const files = import.meta.glob<string>("../assets/model-samples/*.{mp4,jpg}", {
-  eager: true,
-  query: "?url",
-  import: "default",
-});
-
-export const sampleAsset = (file?: string) =>
-  file ? Object.entries(files).find(([path]) => path.endsWith(`/${file}`))?.[1] : undefined;
-
 export function useShownRow<T>() {
   const [shown, setShown] = useState<T | null>(null);
   return {
@@ -43,30 +34,5 @@ export function MenuSideCard({ children, className }: { children: ReactNode; cla
     >
       {children}
     </div>
-  );
-}
-
-export function SampleLoop({
-  file,
-  poster,
-  className,
-}: {
-  file?: string;
-  poster?: string;
-  className?: string;
-}) {
-  const src = sampleAsset(file);
-  if (!src) return null;
-  return (
-    <video
-      key={src}
-      src={src}
-      poster={sampleAsset(poster)}
-      autoPlay
-      muted
-      loop
-      playsInline
-      className={cn("w-full rounded-md bg-muted object-cover", className)}
-    />
   );
 }

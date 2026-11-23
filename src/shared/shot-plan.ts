@@ -1,6 +1,7 @@
 import { MAX_HOLDS_SEC, SPEECH_RATE, syllables } from "./board";
 import { withoutCues } from "./cues";
 import type { ScriptLine } from "./ipc";
+import { cleanSoundText } from "./sound";
 
 export type ShotKind = "speaker" | "listener" | "wide" | "detail";
 export type Framing = "medium_close" | "close";
@@ -26,6 +27,7 @@ export interface PlannedShot {
   why: string;
   hold?: number;
   brief?: string;
+  sound?: string;
 }
 
 export interface ShotPlan {
@@ -34,6 +36,7 @@ export interface ShotPlan {
   props: { name: string; where: string }[];
   stateChanges: { fromShot: number; change: string }[];
   shots: PlannedShot[];
+  ambience?: string;
   problems?: string[];
 }
 
@@ -111,8 +114,10 @@ interface RawShot {
   why?: string;
   hold?: number | null;
   brief?: string | null;
+  sound?: string | null;
 }
 export interface DirectorAnswer {
+  ambience?: string | null;
   seats?: { character?: string; behind?: string; ambient?: string | null }[];
   props?: { name?: string; where?: string }[];
   state_changes?: { from_shot?: number; change?: string }[];
@@ -306,6 +311,7 @@ export function readDirectorAnswer(
     }
     const hold = s.hold === null || s.hold === undefined ? undefined : Number(s.hold);
     const shot = { kind: kind ?? "speaker", characterId, framing, productId };
+    const sound = kind && kind !== "speaker" ? cleanSoundText(s.sound) : "";
     return {
       ...shot,
       line: line ? lineIndex : 0,
@@ -314,6 +320,7 @@ export function readDirectorAnswer(
       why: norm(String(s.why ?? "")),
       ...(hold ? { hold } : {}),
       ...(cleanBrief(s.brief) ? { brief: cleanBrief(s.brief) } : {}),
+      ...(sound ? { sound } : {}),
     };
   });
 
@@ -352,6 +359,7 @@ export function readDirectorAnswer(
   const lastShot = shots.at(-1);
   if (lastShot && (lastShot.hold ?? 0) < LAST_SHOT_MIN_HOLD_SEC)
     lastShot.hold = LAST_SHOT_MIN_HOLD_SEC;
+  const ambience = cleanSoundText(answer.ambience);
   const plan: ShotPlan = {
     source: "ai",
     seats: seatsFor(ctx.cast.map((c) => c.id)).map((s) => ({
@@ -366,6 +374,7 @@ export function readDirectorAnswer(
       .filter((c) => c.change && Number(c.from_shot) >= 1)
       .map((c) => ({ fromShot: Number(c.from_shot) - 1, change: norm(String(c.change)) })),
     shots,
+    ...(ambience ? { ambience } : {}),
   };
   return { plan, errors };
 }

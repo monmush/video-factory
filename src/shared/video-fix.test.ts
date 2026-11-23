@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { FRAME_USD } from "./board";
+import { redoneCharges, spentUsd } from "./cost/charges";
+import { withInUsePaid } from "./cost/charges.fixture";
+import { STILL_USD as FRAME_USD } from "./cost/rates";
 import type { ScriptLine } from "./ipc";
 import type { PlannedShot, ShotPlan } from "./shot-plan";
 import {
@@ -20,7 +22,6 @@ import {
   resumeJob,
   revFile,
   settle,
-  spentUsd,
   type VideoJob,
   withShotAudio,
 } from "./video-job";
@@ -99,7 +100,7 @@ function done(plan: ShotPlan = PLAN): VideoJob {
       audioSec: 3,
     })),
   );
-  return {
+  return withInUsePaid({
     ...voiced,
     status: "done",
     final: "final.mp4",
@@ -114,9 +115,9 @@ function done(plan: ShotPlan = PLAN): VideoJob {
       state: "done",
       clip: `shot-${s.index}.mp4`,
       clipSec: 3,
-      ...(s.kind === "speaker" ? { costUsd: 3 * VIDEO_USD_PER_SEC } : {}),
+      ...(s.kind === "speaker" ? { costUsd: 3 * VIDEO_USD_PER_SEC, requestId: `r${s.index}` } : {}),
     })),
-  };
+  });
 }
 
 describe("redoing one shot", () => {
@@ -290,18 +291,25 @@ describe("the previous cut", () => {
     const job = done();
     const fixing = applyFix(job, [{ op: "redo_shot", shot: 0 }], LATER);
     expect(canRestore(fixing)).toBe(false);
-    const fixed: VideoJob = {
+    const fixed: VideoJob = withInUsePaid({
       ...fixing,
       status: "done",
       final: "final-r1.mp4",
       shots: fixing.shots.map((s) =>
         s.index === 0
-          ? { ...s, state: "done", clip: "shot-01-r1.mp4", costUsd: 3 * VIDEO_USD_PER_SEC }
+          ? {
+              ...s,
+              state: "done",
+              clip: "shot-01-r1.mp4",
+              requestId: "r0-fix",
+              costUsd: 3 * VIDEO_USD_PER_SEC,
+            }
           : s,
       ),
-    };
+    });
     const spent = spentUsd(fixed);
     expect(spent).toBeCloseTo(spentUsd(job) + 3 * VIDEO_USD_PER_SEC);
+    expect(redoneCharges(fixed).map((c) => c.requestId)).toEqual(["r0"]);
     const back = restorePrevious(fixed, LATER);
     expect([back.final, back.shots[0]?.clip, back.status]).toEqual([
       "final.mp4",
@@ -309,6 +317,7 @@ describe("the previous cut", () => {
       "done",
     ]);
     expect(spentUsd(back)).toBeCloseTo(spent);
+    expect(redoneCharges(back).map((c) => c.requestId)).toEqual(["r0-fix"]);
     const again = restorePrevious(back, LATER);
     expect([again.final, again.shots[0]?.clip]).toEqual(["final-r1.mp4", "shot-01-r1.mp4"]);
     expect(spentUsd(again)).toBeCloseTo(spent);

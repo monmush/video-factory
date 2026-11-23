@@ -16,6 +16,7 @@ export function Breadcrumb() {
   if (routeIds.includes("/settings")) current = "Cài đặt";
   else if (routeIds.includes("/series/new")) current = "Series mới";
   else if (session) current = session.name;
+  else if (leaf?.routeId === "/") current = "Bắt đầu";
 
   const showParent = series && current;
 

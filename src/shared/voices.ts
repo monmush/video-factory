@@ -316,3 +316,23 @@ export function takenVoiceIds(assets: readonly Asset[], exceptId?: string): Voic
     return voice ? [voice.id] : [];
   });
 }
+
+const SPOKEN_VOICES: Record<VoiceGender, Record<VoiceAge, string>> = {
+  female: {
+    young: "A young Vietnamese woman in her twenties with a bright, natural voice",
+    middle: "A Vietnamese woman in her forties with a warm, steady voice",
+    old: "An elderly Vietnamese woman with a warm, slightly soft voice",
+  },
+  male: {
+    young: "A young Vietnamese man in his twenties with a clear, friendly voice",
+    middle: "A Vietnamese man in his forties with a warm, conversational voice",
+    old: "An elderly Vietnamese man with a deep, warm, unhurried voice",
+  },
+};
+
+const ACCENT_SPOKEN = "speaking with a standard Northern Vietnamese (Hanoi) accent";
+
+export function voiceDescription(traits: VoiceTraits): string {
+  const voice = SPOKEN_VOICES[traits.gender ?? "female"][traits.age ?? "middle"];
+  return `${voice}, ${ACCENT_SPOKEN}.`;
+}

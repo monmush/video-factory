@@ -208,20 +208,6 @@
   animation: line-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-@keyframes slow-zoom {
-  from {
-    transform: scale(1);
-  }
-  to {
-    transform: scale(1.08);
-  }
-}
-@utility slow-zoom {
-  @media (prefers-reduced-motion: no-preference) {
-    animation: slow-zoom 6s ease-in-out infinite alternate;
-  }
-}
-
 @keyframes hold-nudge {
   25% {
     transform: translateX(-3px);

@@ -1,3 +1,5 @@
+import type { JobSound } from "./sound";
+import type { JobSegment } from "./speech";
 import {
   type JobFrame,
   type JobShot,
@@ -16,8 +18,11 @@ export interface RequestRecord {
   scriptId?: string;
   frame?: string;
   shot?: number;
+  sound?: string;
+  segment?: string;
   attempt?: string;
   model?: string;
+  seconds?: number;
   productId?: string;
   photoId?: string;
   photoFile?: string;
@@ -55,6 +60,18 @@ const latest = (records: RequestRecord[]) =>
   );
 
 export function withSending(job: VideoJob, step: JobStep, attempt: string): VideoJob {
+  if ("segment" in step) {
+    return {
+      ...job,
+      segments: job.segments?.map((s) => (s.id === step.segment ? { ...s, sending: attempt } : s)),
+    };
+  }
+  if ("sound" in step) {
+    return {
+      ...job,
+      sounds: (job.sounds ?? []).map((s) => (s.id === step.sound ? { ...s, sending: attempt } : s)),
+    };
+  }
   if ("frame" in step) {
     return {
       ...job,
@@ -80,6 +97,8 @@ export function reconcileJob(job: VideoJob, open: readonly RequestRecord[]): Rec
   const known = new Set<string>();
   for (const f of job.frames) if (f.requestId) known.add(f.requestId);
   for (const s of job.shots) if (s.requestId) known.add(s.requestId);
+  for (const s of job.sounds ?? []) if (s.requestId) known.add(s.requestId);
+  for (const s of job.segments ?? []) if (s.requestId) known.add(s.requestId);
   const carriesAnAttemptMark = (r: RequestRecord) => Boolean(r.attempt);
   const mine = open.filter(
     (r) =>
@@ -134,7 +153,54 @@ export function reconcileJob(job: VideoJob, open: readonly RequestRecord[]): Rec
     };
   });
 
-  return changed ? { job: { ...job, frames, shots }, attached } : { job, attached };
+  const sounds = job.sounds?.map((s): JobSound => {
+    if (!s.sending) return s;
+    changed = true;
+    const { sending, ...rest } = s;
+    if (s.requestId || s.file || s.dropped) return rest;
+    const record = latest(
+      mine.filter((r) => r.purpose === "video-sound" && r.sound === s.id && r.attempt === sending),
+    );
+    if (!record?.endpoint) return rest;
+    attached.push(`sound ${s.id} ← ${record.requestId}`);
+    return { ...rest, requestId: record.requestId, submittedAt: record.at };
+  });
+
+  const segments = job.segments?.map((s): JobSegment => {
+    if (!s.sending) return s;
+    changed = true;
+    const { sending, ...rest } = s;
+    if (s.requestId || s.clip || s.resultUrl || (s.state !== "queued" && s.state !== "stopped"))
+      return rest;
+    const record = latest(
+      mine.filter(
+        (r) => r.purpose === "video-speech" && r.segment === s.id && r.attempt === sending,
+      ),
+    );
+    if (!record?.model) return rest;
+    attached.push(`speech ${s.id} ← ${record.requestId}`);
+    return {
+      ...rest,
+      state: "rendering",
+      requestId: record.requestId,
+      submittedAt: record.at,
+      model: record.model,
+      ...(record.seconds ? { seconds: record.seconds } : {}),
+    };
+  });
+
+  return changed
+    ? {
+        job: {
+          ...job,
+          frames,
+          shots,
+          ...(sounds ? { sounds } : {}),
+          ...(segments ? { segments } : {}),
+        },
+        attached,
+      }
+    : { job, attached };
 }
 
 export function openCutout(

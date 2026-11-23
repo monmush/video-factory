@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ChatEffort, TextProvider, ThemePreference } from "../shared/ipc";
+import { devFeatures } from "./dev";
 import { dataFile, writeJsonAtomic } from "./paths";
 
 interface Settings {
@@ -8,6 +9,7 @@ interface Settings {
   chatModel: string;
   chatEffort: ChatEffort | null;
   onboarded: boolean;
+  nativeVoice: boolean;
 }
 
 const FILE = "settings.json";
@@ -17,6 +19,7 @@ const defaults: Settings = {
   chatModel: "opus",
   chatEffort: "medium",
   onboarded: false,
+  nativeVoice: false,
 };
 
 export function readSettings(): Settings {
@@ -30,3 +33,5 @@ export function readSettings(): Settings {
 export async function writeSettings(patch: Partial<Settings>): Promise<void> {
   await writeJsonAtomic(dataFile(FILE), { ...readSettings(), ...patch });
 }
+
+export const nativeVoiceOn = () => devFeatures() && readSettings().nativeVoice === true;

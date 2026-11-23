@@ -1,9 +1,9 @@
 import { access, copyFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { CUTOUT_USD } from "../../shared/cost/rates";
 import type { Asset } from "../../shared/ipc";
 import {
   alphaBox,
-  CUTOUT_USD,
   meanColour,
   originals,
   PARALLAX,
@@ -15,6 +15,7 @@ import {
 import { requestOverdue, timedOutMessage } from "../../shared/request-deadline";
 import { openCutout } from "../../shared/request-reconcile";
 import { falCall, falCancel, falPoll, falSubmit } from "../fal";
+import { mayStillBeBilled } from "../fal-queue";
 import { uploadImages } from "../fal-upload";
 import { assetDir } from "../media";
 import { falClient, providerMode } from "../providers";
@@ -28,8 +29,25 @@ const PROMPT_KEEPING_PRODUCT_WITHOUT_HOLDING_HAND =
 
 const cutoutFile = (imageId: string) => `${imageId}.cutout.png`;
 
-const running = new Map<string, Promise<CutoutResult | null>>();
-const cutting = new Map<string, Promise<{ usable: boolean; paid: boolean }>>();
+export interface PaidCutout {
+  usd: number;
+  billed: boolean;
+  requestId: string;
+}
+
+interface PhotoCutout {
+  usable: boolean;
+  paid: PaidCutout | null;
+}
+
+export interface CutoutResult {
+  file: string | null;
+  inUse: PaidCutout | null;
+  paid: PaidCutout[];
+}
+
+const running = new Map<string, Promise<CutoutResult>>();
+const cutting = new Map<string, Promise<PhotoCutout>>();
 
 export class CutoutStopped extends Error {
   constructor() {
@@ -37,16 +55,17 @@ export class CutoutStopped extends Error {
   }
 }
 
-export interface CutoutResult {
-  file: string;
-  costUsd: number;
+export class CutoutTimedOut extends Error {
+  constructor(readonly paid: PaidCutout[]) {
+    super(timedOutMessage("cutout"));
+  }
 }
 
 export function productCutout(
   product: Asset,
   dir: string,
   alive: () => boolean,
-): Promise<CutoutResult | null> {
+): Promise<CutoutResult> {
   const key = `${product.id}|${dir}`;
   const current = running.get(key);
   if (current) return current;
@@ -97,7 +116,7 @@ async function queuedCutout(
   source: string,
   out: string,
   alive: () => boolean,
-): Promise<void> {
+): Promise<PaidCutout> {
   const client = await falClient();
   const open = openCutout(await openFalRequests(), productId, photo.id, photo.file);
   let requestId = open?.requestId;
@@ -115,8 +134,10 @@ async function queuedCutout(
   for (;;) {
     if (!alive()) throw new CutoutStopped();
     if (requestOverdue("cutout", sentAt, Date.now())) {
-      await falCancel(client, CUTOUT_ENDPOINT, requestId);
-      throw new Error(timedOutMessage("cutout"));
+      const outcome = await falCancel(CUTOUT_ENDPOINT, requestId);
+      throw new CutoutTimedOut(
+        mayStillBeBilled(outcome) ? [{ usd: CUTOUT_USD, billed: false, requestId }] : [],
+      );
     }
     const result = await falPoll<{ image?: { url?: string } }>(client, CUTOUT_ENDPOINT, requestId, {
       purpose: "product-cutout",
@@ -124,7 +145,9 @@ async function queuedCutout(
       cost: () => CUTOUT_USD,
       keep: (data) => fetchTo(data.image?.url, out),
     });
-    if (result.state === "done") return;
+    if (result.state === "done") {
+      return { usd: result.cost.usd ?? CUTOUT_USD, billed: result.cost.billed, requestId };
+    }
     if (result.state === "failed") throw new Error(result.message);
     await wait(CUTOUT_POLL_MS);
   }
@@ -134,7 +157,7 @@ function photoCutout(
   productId: string,
   photo: { id: string; file: string },
   alive: () => boolean,
-): Promise<{ usable: boolean; paid: boolean }> {
+): Promise<PhotoCutout> {
   const key = `${productId}|${photo.id}`;
   const current = cutting.get(key);
   if (current) return current;
@@ -145,9 +168,9 @@ function photoCutout(
       () => true,
       () => false,
     );
-    if (!kept) {
-      await queuedCutout(productId, photo, join(assetDir(productId), photo.file), path, alive);
-    }
+    const paid = kept
+      ? null
+      : await queuedCutout(productId, photo, join(assetDir(productId), photo.file), path, alive);
     const usable = await isUsableCutout(path);
     await mutate((ws) => {
       const image = ws.assets
@@ -155,7 +178,7 @@ function photoCutout(
         ?.images.find((i) => i.id === photo.id);
       if (image) image.cutout = { file: name, usable };
     });
-    return { usable, paid: !kept };
+    return { usable, paid };
   })().finally(() => cutting.delete(key));
   cutting.set(key, task);
   return task;
@@ -174,33 +197,40 @@ async function makeCutout(
   product: Asset,
   dir: string,
   alive: () => boolean,
-): Promise<CutoutResult | null> {
+): Promise<CutoutResult> {
   const file = `cutout-${product.id}.png`;
   const photos = originals(product);
-  if (!photos.length) return null;
+  const none: CutoutResult = { file: null, inUse: null, paid: [] };
+  if (!photos.length) return none;
   if (providerMode() === "fixture") {
     await fixtureCutout(
       join(assetDir(product.id), (photos[0] as { file: string }).file),
       join(dir, file),
     );
-    return { file, costUsd: 0 };
+    return { file, inUse: null, paid: [] };
   }
-  let spent = 0;
+  const paid: PaidCutout[] = [];
   for (const photo of photos) {
     const saved = photo.cutout;
     if (saved && !saved.usable) continue;
+    let inUse: PaidCutout | null = null;
     if (!saved) {
-      const made = await photoCutout(product.id, photo, alive);
-      if (made.paid) spent += CUTOUT_USD;
+      const made = await photoCutout(product.id, photo, alive).catch((error) => {
+        throw error instanceof CutoutTimedOut
+          ? new CutoutTimedOut([...paid, ...error.paid])
+          : error;
+      });
+      if (made.paid) paid.push(made.paid);
       if (!made.usable) continue;
+      inUse = made.paid;
     }
     await copyFile(
       join(assetDir(product.id), saved?.file ?? cutoutFile(photo.id)),
       join(dir, file),
     );
-    return { file, costUsd: spent };
+    return { file, inUse, paid };
   }
-  return null;
+  return { ...none, paid };
 }
 
 async function layers(plate: string, cutout: string, size: Size) {

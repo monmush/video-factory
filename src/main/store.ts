@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { BrowserWindow, shell } from "electron";
-import { migrateSettings, outputResolution } from "../shared/batch-settings";
+import {
+  migrateSettings,
+  outputResolution,
+  withBatchLevel,
+  withVideoLevel,
+} from "../shared/batch-settings";
 import {
   type AssetKind,
   SERIES_ASSET_FIELD,
   type Series,
   type SeriesInput,
   type Session,
+  type SessionSettings,
   type Workspace,
 } from "../shared/ipc";
 import { mediaLevel } from "../shared/media-level";
@@ -156,15 +162,14 @@ export function updateSession(input: {
     if (input.name !== undefined) session.name = input.name.trim() || session.name;
     if (input.pinned !== undefined) setPinned(session, input.pinned);
     if (input.settings) {
-      const next = { ...session.settings };
+      let next: SessionSettings = { ...session.settings };
       const { videoModel: model, resolution } = input.settings;
       if (model === null) delete next.videoModel;
       else if (model !== undefined) next.videoModel = videoModel(model).id;
       if (resolution === null) delete next.resolution;
       else if (resolution !== undefined) next.resolution = outputResolution(resolution);
       const level = input.settings.mediaLevel;
-      if (level === null) delete next.mediaLevel;
-      else if (level !== undefined) next.mediaLevel = mediaLevel(level).id;
+      if (level !== undefined) next = withBatchLevel(next, level);
       const mix = input.settings.productMix;
       if (mix === null || (mix && mix.length === 0)) delete next.productMix;
       else if (mix) {
@@ -185,6 +190,19 @@ export function updateSession(input: {
     }
     session.updatedAt = now();
     return session;
+  });
+}
+
+export function setVideoLevel(sessionId: string, scriptId: string, level: string): Promise<null> {
+  return mutate((ws) => {
+    const session = ws.sessions.find((s) => s.id === sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    const series = ws.series.find((s) => s.id === session.seriesId);
+    const settings = withVideoLevel(session, series, scriptId, level);
+    if (Object.keys(settings).length) session.settings = settings;
+    else delete session.settings;
+    session.updatedAt = now();
+    return null;
   });
 }
 

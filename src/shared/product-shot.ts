@@ -1,7 +1,5 @@
 import type { Asset, AssetImage } from "./ipc";
 
-export const CUTOUT_USD = 0.03;
-
 const TONE_MATCH_TO_PLATE_ENABLED = true;
 const TONE_STRENGTH = 0.5;
 export const TONE_CAP = 0.08;
@@ -62,16 +60,6 @@ const usableImage = (product: Pick<Asset, "images">) =>
 export function cutoutsToMake(product: Pick<Asset, "images">): number {
   if (usableImage(product)) return 0;
   return originals(product).filter((i) => !i.cutout).length;
-}
-
-export function cutoutUsd(
-  productIds: readonly string[],
-  assets: readonly Pick<Asset, "id" | "images">[],
-): number {
-  return productIds.reduce((n, id) => {
-    const product = assets.find((a) => a.id === id);
-    return n + (product ? cutoutsToMake(product) * CUTOUT_USD : 0);
-  }, 0);
 }
 
 export function placement(

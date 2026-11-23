@@ -1,12 +1,7 @@
-import type { OutputResolution } from "../../shared/batch-settings";
-import { type VideoModelId, videoModel } from "../../shared/video-models";
+import { type SpeakRequest, speakInput } from "../../shared/speak-request";
+import { VIDEO_MODELS, type VideoModelId, videoModel } from "../../shared/video-models";
 
-export interface ShotRequest {
-  imageUrl: string;
-  audioUrl: string;
-  prompt: string;
-  resolution: OutputResolution;
-}
+export type ShotRequest = SpeakRequest;
 
 export interface ShotResult {
   url?: string;
@@ -28,41 +23,12 @@ const readVideo = (data: unknown): ShotResult => {
   };
 };
 
-const kling: ShotEndpoint = {
-  input: (r) => ({
-    image_url: r.imageUrl,
-    audio_url: r.audioUrl,
-    prompt: r.prompt,
-    enable_safety_checker: true,
-  }),
-  read: readVideo,
-};
-
-const MINIMAX_SIZE_IN_A_720P_VIDEO = "768P";
-
-const minimax: ShotEndpoint = {
-  input: (r) => ({
-    image_url: r.imageUrl,
-    audio_url: r.audioUrl,
-    resolution: r.resolution === "1080p" ? "1080P" : MINIMAX_SIZE_IN_A_720P_VIDEO,
-    enable_safety_checker: true,
-  }),
-  read: readVideo,
-};
-
-export const SHOT_ENDPOINTS: Record<VideoModelId, ShotEndpoint> = {
-  "kling-avatar-v2-standard": kling,
-  "kling-avatar-v2-pro": kling,
-  "omnihuman-v2": {
-    input: (r) => ({ image_url: r.imageUrl, audio_url: r.audioUrl, prompt: r.prompt }),
-    read: readVideo,
-  },
-  "fabric-1-720p": {
-    input: (r) => ({ image_url: r.imageUrl, audio_url: r.audioUrl, resolution: "720p" }),
-    read: readVideo,
-  },
-  "minimax-h3-lipsync": minimax,
-};
+export const SHOT_ENDPOINTS = Object.fromEntries(
+  VIDEO_MODELS.map((m) => [
+    m.id,
+    { input: (r: ShotRequest) => speakInput(m.id, r), read: readVideo },
+  ]),
+) as Record<VideoModelId, ShotEndpoint>;
 
 export const shotEndpoint = (id: string): ShotEndpoint =>
   SHOT_ENDPOINTS[videoModel(id).id as VideoModelId];

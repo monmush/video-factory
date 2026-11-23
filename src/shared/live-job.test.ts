@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { estimateVoiceUsd } from "./board";
+import { withInUsePaid } from "./cost/charges.fixture";
+import { costToFinishUsd, shotEstimateUsd } from "./cost/estimate";
+import { costPanel } from "./cost/table";
 import {
   cheaperAlternatives,
   emptyRecord,
@@ -19,15 +23,12 @@ import { mediaLevel } from "./media-level";
 import { MAX_BUSY_ANSWERS } from "./net-error";
 import {
   applyLivePlan,
-  costToFinishUsd,
   followBatch,
   frameDeps,
-  liveCostTable,
   madeByProvider,
   newJob,
   nextActions,
   shotAttemptFailed,
-  shotEstimateUsd,
   stepReportedFailure,
   stepThrew,
   type VideoJob,
@@ -169,7 +170,7 @@ function plannedJob(): VideoJob {
   const record = session();
   const { plan, errors } = readLivePlan(answer(), ctx, record);
   expect(errors).toEqual([]);
-  const live = liveDirection(plan, record, LINES, level, {
+  const live = liveDirection(plan, record, LINES, {
     connection: "signed-in",
     model: null,
     ms: 0,
@@ -279,18 +280,25 @@ describe("a planned job", () => {
 
   it("shows the same price on the table and the hold, before and after the voice", () => {
     const job = plannedJob();
-    const table = liveCostTable(job);
-    expect(table?.knownUsd).toBeCloseTo(costToFinishUsd(job));
-    expect(table?.knownUsd).toBeCloseTo((job.live?.costs.rows[0]?.usd ?? 0) + 0.24 + 0.8);
-    expect(table?.knownUsd).toBeCloseTo(job.live?.costs.knownUsd ?? 0);
-    const voiced = {
+    const table = costPanel(job);
+    expect(table?.estimateUsd).toBeCloseTo(costToFinishUsd(job) ?? Number.NaN);
+    expect(table?.estimateUsd).toBeCloseTo((job.live?.costs.rows[0]?.usd ?? 0) + 0.24 + 0.8);
+    expect(table?.estimateUsd).toBeCloseTo(job.live?.costs.knownUsd ?? 0);
+    expect(table?.paid).toBeNull();
+    const voiced = withInUsePaid({
       ...job,
+      status: "running" as const,
       dialogue: "d.mp3",
       voiceCostUsd: 0.01,
       shots: job.shots.map((s) => ({ ...s, start: 0, end: 6, audioSec: 6 })),
-    };
-    expect(liveCostTable(voiced)?.knownUsd).toBeCloseTo(0.01 + costToFinishUsd(voiced));
-    expect(liveCostTable(voiced)?.rows.at(-1)).toMatchObject({ quantity: "6 giây" });
+    });
+    const after = costPanel(voiced);
+    expect(after?.estimateUsd).toBeCloseTo(
+      estimateVoiceUsd(LINES) + (costToFinishUsd(voiced) ?? Number.NaN),
+    );
+    expect(after?.paid).toEqual({ usd: 0.01, billed: false });
+    expect(after?.leftUsd).toBeCloseTo(costToFinishUsd(voiced) ?? Number.NaN);
+    expect(after?.steps.at(-1)).toMatchObject({ quantity: "6 giây" });
   });
 
   it("falls back after a planned shot fails twice", () => {
@@ -320,12 +328,12 @@ describe("a planned job", () => {
         s.index === 0 ? { ...s, state: "done", clip: "c.mp4", costUsd: null } : s,
       ),
     };
-    const table = liveCostTable(made);
-    expect(table?.rows.find((r) => r.step.startsWith("Cảnh 1"))).toMatchObject({
-      usd: null,
-      paid: true,
+    const table = costPanel(made);
+    expect(table?.steps.find((r) => r.label.startsWith("Cảnh 1"))).toMatchObject({
+      estimateUsd: null,
+      paid: { usd: null, billed: false },
     });
-    expect(table?.unknownSteps).toBe(liveCostTable(job)?.unknownSteps);
+    expect(table?.unknownSteps).toBe(costPanel(job)?.unknownSteps);
   });
 
   it("keeps its own size and models whatever the batch says", () => {

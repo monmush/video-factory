@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
-import { boardOrder, DEFAULT_TARGET_SEC } from "../shared/board";
+import { boardOrder, clearMarks, DEFAULT_TARGET_SEC } from "../shared/board";
 import {
   type Board,
   type ChatMessage,
@@ -11,6 +11,13 @@ import {
   type Series,
   type Session,
 } from "../shared/ipc";
+import {
+  applyLineEdit,
+  applyLineRemoval,
+  type LineEdit,
+  type LineRemoval,
+  rememberHandEdit,
+} from "../shared/line-edit";
 import { mentionedProducts, newTopicProducts } from "../shared/product-mix";
 import { checkScript, committedIds, finishedScripts } from "../shared/ready-check";
 import { copyScript } from "../shared/versions";
@@ -230,12 +237,7 @@ export function newScript(fields: Pick<Script, "brief"> & Partial<Script>): Scri
   };
 }
 
-export function clearMarks(board: Board) {
-  for (const s of board.scripts) {
-    s.mark = null;
-    delete s.productUndo;
-  }
-}
+export { clearMarks };
 
 async function topicProducts(
   sessionId: string,
@@ -444,7 +446,7 @@ async function editScripts(
         const s = b.scripts.find((x) => x.id === before.id);
         if (!s) return;
         if (written)
-          Object.assign(s, written, { mark: "edited", productUndo: undefined, updatedAt: now() });
+          Object.assign(s, written, { mark: "edited", changeUndo: undefined, updatedAt: now() });
         if (written && plan.targetSec) s.brief = { ...s.brief, targetSec: plan.targetSec };
         s.status = "ready";
       }).catch(() => {});
@@ -659,13 +661,13 @@ export async function beginProductChange(
         created = edit.created;
       } else {
         target = insertCopy(b, s);
-        target.productUndo = { copy: true };
+        target.changeUndo = { copy: true };
         created = true;
       }
     } else if (log) {
       recordTouch(b, log, s);
     } else {
-      s.productUndo = {
+      s.changeUndo = {
         productIds: [...s.productIds],
         lines: structuredClone(s.lines),
         staging: s.staging,
@@ -699,27 +701,54 @@ export async function finishProductChange(
         mark: "edited",
         updatedAt: now(),
       });
+      if (!opts.log) rememberHandEdit(b, s.id);
       return structuredClone(s);
     }
     if (opts.created) {
       if (opts.log) dropCopy(b, opts.log, s);
       else s.deletedAt = now();
     } else if (opts.log) dropTouch(b, opts.log, s.id);
-    else delete s.productUndo;
+    else delete s.changeUndo;
     return null;
   });
 }
 
-export async function undoProductChange(
+export async function editLine(
+  sessionId: string,
+  scriptId: string,
+  edit: LineEdit,
+  opts: { copy: boolean },
+): Promise<{ scriptId: string; copied: boolean } | null> {
+  return mutateBoard(sessionId, (b) => {
+    const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
+    if (!s) throw new Error("Không tìm thấy kịch bản");
+    return applyLineEdit(b, s, edit, { copy: opts.copy, id: randomUUID(), now: now() });
+  });
+}
+
+export async function removeLine(
+  sessionId: string,
+  scriptId: string,
+  removal: LineRemoval,
+  opts: { copy: boolean },
+): Promise<{ scriptId: string; copied: boolean }> {
+  return mutateBoard(sessionId, (b) => {
+    const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
+    if (!s) throw new Error("Không tìm thấy kịch bản");
+    return applyLineRemoval(b, s, removal, { copy: opts.copy, id: randomUUID(), now: now() });
+  });
+}
+
+export async function undoChange(
   sessionId: string,
   scriptId: string,
 ): Promise<{ inPlace: boolean }> {
   return mutateBoard(sessionId, (b) => {
     const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
-    const undo = s?.productUndo;
+    const undo = s?.changeUndo;
     if (!s || !undo) throw new Error("Không còn gì để hoàn tác");
     if (s.status === "writing") throw new Error("Kịch bản đang được viết, thử lại sau");
-    delete s.productUndo;
+    delete s.changeUndo;
     if (undo.copy) {
       s.deletedAt = now();
       return { inPlace: false };
@@ -731,6 +760,7 @@ export async function undoProductChange(
       mark: null,
       updatedAt: now(),
     });
+    rememberHandEdit(b, s.id);
     return { inPlace: true };
   });
 }
@@ -752,7 +782,7 @@ export async function agentUpdate(
     if (s.status !== "ready") throw new Error("Kịch bản đang được viết, thử lại sau");
     const { target, copied } = editTarget(b, lockedIds(session, b), log, s);
     if (!copied) recordTouch(b, log, target);
-    Object.assign(target, patch, { mark: "edited", productUndo: undefined, updatedAt: now() });
+    Object.assign(target, patch, { mark: "edited", changeUndo: undefined, updatedAt: now() });
     return { script: structuredClone(target), copied };
   });
 }
@@ -855,7 +885,7 @@ export async function agentRewrite(
           if (created.has(s.id)) dropCopy(b, log, s);
           return { outcome: failed ? ("failed" as const) : ("same" as const) };
         }
-        Object.assign(s, written, { mark: "edited", productUndo: undefined, updatedAt: now() });
+        Object.assign(s, written, { mark: "edited", changeUndo: undefined, updatedAt: now() });
         if (targetSec) s.brief = { ...s.brief, targetSec };
         return { outcome: "changed" as const, script: structuredClone(s) };
       }).catch(() => ({ outcome: "failed" as const }));
@@ -940,7 +970,7 @@ export async function linkSpeaker(
       }
       if (changed) {
         script.updatedAt = now();
-        delete script.productUndo;
+        delete script.changeUndo;
       }
     }
   });

@@ -1,3 +1,4 @@
+import { CUTOUT_USD } from "@shared/cost/rates";
 import { formatCost } from "@shared/credits";
 import { cleanHandleInput, HANDLE_PATTERN, toHandle } from "@shared/handle";
 import {
@@ -13,8 +14,7 @@ import {
   type PlaceFinding,
   type StagedImage,
 } from "@shared/ipc";
-import { findingLabel, isFlagged } from "@shared/place-check";
-import { CUTOUT_USD } from "@shared/product-shot";
+import { findingLabel, findingReason, isAccepted, isFlagged } from "@shared/place-check";
 import {
   guessVoiceTraits,
   suggestVoice,
@@ -319,6 +319,27 @@ function CharacterForm({
           : null,
       "Không làm sạch được ảnh",
     );
+
+  const decidable = (image: DraftImage) => image.ref.source === "asset" && !image.ref.restore;
+
+  const acceptFinding = async (image: DraftImage, accepted: boolean) => {
+    if (image.ref.source !== "asset" || !image.check) return;
+    setError(null);
+    try {
+      await api.invoke("assets:accept-place-finding", {
+        assetId: image.ref.assetId,
+        imageIds: [image.ref.id],
+        accepted,
+      });
+      setImages((current) =>
+        current.map((i) =>
+          i.key === image.key && i.check ? { ...i, check: { ...i.check, accepted } } : i,
+        ),
+      );
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
 
   const cutOut = (key: string) =>
     replaceWith(
@@ -714,22 +735,48 @@ function CharacterForm({
                       <>
                         <p className="text-xs text-warning-foreground">
                           {findingLabel(image.check)}
+                          <span className="block text-muted-foreground">
+                            {findingReason(image.check)}
+                          </span>
                         </p>
                         {!reviewFor(image.key) && (
-                          <HoldButton
-                            size="xs"
-                            tone="outline"
-                            className="self-start"
-                            disabled={cleanBlocked || cleaning.has(image.key)}
-                            onHold={() => clean(image.key)}
-                          >
-                            Giữ để làm sạch
-                            {cleanPrice !== null && (
-                              <ButtonPrice>~{formatCost(cleanPrice)}</ButtonPrice>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <HoldButton
+                              size="xs"
+                              tone="outline"
+                              disabled={cleanBlocked || cleaning.has(image.key)}
+                              onHold={() => clean(image.key)}
+                            >
+                              Giữ để làm sạch
+                              {cleanPrice !== null && (
+                                <ButtonPrice>~{formatCost(cleanPrice)}</ButtonPrice>
+                              )}
+                            </HoldButton>
+                            {decidable(image) && (
+                              <Button
+                                size="xs"
+                                variant="ghost-muted"
+                                disabled={cleaning.has(image.key)}
+                                onClick={() => acceptFinding(image, true)}
+                              >
+                                Giữ nguyên
+                              </Button>
                             )}
-                          </HoldButton>
+                          </div>
                         )}
                       </>
+                    )}
+                    {isPlace && isAccepted(image.check) && decidable(image) && (
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <span title={findingLabel(image.check) ?? undefined}>Đã giữ nguyên</span>
+                        <Button
+                          size="xs"
+                          variant="ghost-muted"
+                          onClick={() => acceptFinding(image, false)}
+                        >
+                          Hoàn tác
+                        </Button>
+                      </div>
                     )}
                     {isProduct && image.cutoutUsable === false && (
                       <p className="text-xs text-warning-foreground">

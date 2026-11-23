@@ -4,8 +4,8 @@ import { app, BrowserWindow, nativeTheme, shell } from "electron";
 import { registerIpc } from "./ipc";
 import { clearStaging, handleMediaProtocol, registerMediaSchemeBeforeAppReady } from "./media";
 import { chooseDataFolder, superviseDevelopmentRestarts } from "./profiles";
+import { confirmBeforeClosing, confirmBeforeQuitting, quitWithoutAskingOnSignals } from "./quit";
 import { readSettings } from "./settings";
-import { shutDownServices } from "./shutdown";
 import { startRunner } from "./video/runner";
 
 function allowOneRunningCopyPerDataFolder() {
@@ -55,6 +55,7 @@ function createWindow() {
   });
 
   win.once("ready-to-show", () => win.show());
+  confirmBeforeClosing(win);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
@@ -79,6 +80,7 @@ function startApp() {
   registerMediaSchemeBeforeAppReady();
 
   app.whenReady().then(() => {
+    quitWithoutAskingOnSignals();
     nativeTheme.themeSource = readSettings().theme;
     handleMediaProtocol();
     registerIpc();
@@ -91,7 +93,7 @@ function startApp() {
     });
   });
 
-  app.on("before-quit", shutDownServices);
+  confirmBeforeQuitting();
 
   app.on("window-all-closed", () => {
     if (!isMac) app.quit();

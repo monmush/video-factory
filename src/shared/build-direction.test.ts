@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { estimateVoiceUsd } from "./board";
 import { buildDirection } from "./build-direction";
+import { costToFinishUsd, costToPreviewUsd } from "./cost/estimate";
+import { STILL_USD } from "./cost/rates";
 import { plannedShotSec } from "./live-plan";
 import { mediaLevel } from "./media-level";
 import {
+  CLEAN_FOOTAGE,
   NO_CAPTIONS,
   STILL_BEFORE_SPEAKING,
   STILL_IDENTITY,
   STILL_NO_TEXT,
   speakPrompt,
   stillBeforeSpeakingWith,
-  withNoCaptions,
+  withCleanFrame,
 } from "./prompt-text";
 import { builtinRecipe, type Recipe } from "./recipe";
 import { readShotList, type ShotList } from "./shot-list";
@@ -18,8 +21,6 @@ import { answer, CTX, LINES } from "./shot-list.fixture";
 import { applyFix, canRestore, FixError, restorePrevious } from "./video-fix";
 import {
   applyLivePlan,
-  costToFinishUsd,
-  costToPreviewUsd,
   frameDeps,
   frameFor,
   newJob,
@@ -27,7 +28,6 @@ import {
   stopsForPreview,
   type VideoJob,
 } from "./video-job";
-import { startTake } from "./video-takes";
 
 const level = mediaLevel("balanced");
 const CAST = [
@@ -207,7 +207,7 @@ describe("buildDirection", () => {
       (n, i) => n + Math.max(2, plannedShotSec(shots[i] as never)) * speak,
       0,
     );
-    expect(live.costs.knownUsd).toBeCloseTo(estimateVoiceUsd(LINES) + 4 * 0.12 + lips, 6);
+    expect(live.costs.knownUsd).toBeCloseTo(estimateVoiceUsd(LINES) + 4 * STILL_USD + lips, 6);
     expect(live.costs.unknownSteps).toBe(0);
     expect(live.connection).toBe("recipe");
     expect(live.recipe).toEqual({ id: "builtin", source: "builtin" });
@@ -362,10 +362,6 @@ describe("a fix on a planned video", () => {
     expect(restorePrevious(sameShape, LATER).live?.plan.routes).toEqual(job.live?.plan.routes);
   });
 
-  it("is never made again as a take with another speaking model", () => {
-    expect(() => startTake(finished(), "omnihuman-v2", LATER)).toThrow(FixError);
-  });
-
   it("keeps the still of a kept shot that starts from an action picture", () => {
     const job = {
       ...applyLivePlan(
@@ -453,7 +449,7 @@ describe("what the next hold makes", () => {
     const planned = { ...job(), pause: true };
     expect(stopsForPreview(planned)).toBe(true);
     expect(costToPreviewUsd(planned)).toBeGreaterThan(0);
-    expect(costToPreviewUsd(planned)).toBeLessThan(costToFinishUsd(planned));
+    expect(costToPreviewUsd(planned)).toBeLessThan(costToFinishUsd(planned) ?? 0);
   });
 
   it("is the video once the preview is made, never priced at $0", () => {
@@ -462,20 +458,34 @@ describe("what the next hold makes", () => {
       pause: true,
       status: "review" as const,
       dialogue: "dialogue.mp3",
-      frames: job().frames.map((f) => ({ ...f, file: `${f.id}.png`, costUsd: 0.12 })),
+      frames: job().frames.map((f) => ({ ...f, file: `${f.id}.png`, costUsd: STILL_USD })),
     };
     expect(stopsForPreview(made)).toBe(false);
     expect(costToFinishUsd(made)).toBeGreaterThan(0);
   });
 });
 
-describe("the no-text rule", () => {
+describe("the clean-frame rule", () => {
   it("is added once to any request with a prompt, never to one without", () => {
-    const once = withNoCaptions({ prompt: "Leaves sway." });
-    expect(once.prompt).toBe(`Leaves sway. ${NO_CAPTIONS}`);
-    expect(withNoCaptions(once)).toEqual(once);
-    expect(withNoCaptions({ image_url: "{{keyframe}}" })).toEqual({ image_url: "{{keyframe}}" });
-    expect(speakPrompt(false, "steam drifts")).toContain(NO_CAPTIONS);
-    expect(speakPrompt(true, undefined)).toContain(NO_CAPTIONS);
+    const once = withCleanFrame({ prompt: "Leaves sway." });
+    expect(once.prompt).toBe(`Leaves sway. ${CLEAN_FOOTAGE}`);
+    expect(withCleanFrame(once)).toEqual(once);
+    expect(withCleanFrame({ image_url: "{{keyframe}}" })).toEqual({ image_url: "{{keyframe}}" });
+    expect(speakPrompt(false, "steam drifts")).toContain(CLEAN_FOOTAGE);
+    expect(speakPrompt(true, undefined)).toContain(CLEAN_FOOTAGE);
+  });
+
+  it("never names captions or text to a model that only has a prompt", () => {
+    const planned = withCleanFrame({ prompt: `${speakPrompt(false, undefined)} ${NO_CAPTIONS}` });
+    expect(planned.prompt).not.toMatch(/caption|subtitle|text|watermark/i);
+    expect(speakPrompt(true, "steam drifts", "She nods")).not.toMatch(
+      /caption|subtitle|text|watermark/i,
+    );
+  });
+
+  it("keeps the no-captions sentence for a model with a negative prompt", () => {
+    const sent = withCleanFrame({ prompt: "Leaves sway.", negative_prompt: "blur" });
+    expect(sent).toEqual({ prompt: `Leaves sway. ${NO_CAPTIONS}`, negative_prompt: "blur" });
+    expect(withCleanFrame({ negative_prompt: "blur" })).toEqual({ negative_prompt: "blur" });
   });
 });

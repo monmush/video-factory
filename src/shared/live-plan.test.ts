@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeconds, levelEstimateUsd } from "./board";
 import {
-  costWarnings,
   emptyRecord,
   type LiveAnswer,
   type LiveContext,
@@ -11,6 +9,7 @@ import {
   recordResult,
   type ToolRecord,
   unitsFor,
+  unknownPriceWarnings,
 } from "./live-plan";
 import { mediaLevel } from "./media-level";
 
@@ -283,7 +282,7 @@ describe("pricing a live plan", () => {
     const record = session();
     const { plan } = readLivePlan(goodAnswer(), ctx, record);
     delete record.prices[IMAGE];
-    const table = priceLivePlan(plan, record, ctx.lines, level);
+    const table = priceLivePlan(plan, record, ctx.lines);
     expect(table.rows.map((r) => r.step)).toEqual([
       "Giọng đọc",
       "Khung hình master",
@@ -299,7 +298,7 @@ describe("pricing a live plan", () => {
       expect(billed).toBeGreaterThanOrEqual(2);
       expect(Number.parseFloat(row.quantity)).toBeCloseTo(billed, 1);
     }
-    expect(costWarnings(table)).toContain("3 step(s) have no recorded price.");
+    expect(unknownPriceWarnings(table)).toContain("3 step(s) have no recorded price.");
   });
 
   it("falls back to a recorded estimate when the unit cannot be counted", () => {
@@ -307,18 +306,9 @@ describe("pricing a live plan", () => {
     record.prices[IMAGE] = { usd: 1, unit: "units" };
     record.estimates.push({ endpoint: IMAGE, usd: 0.15, unit: "units" });
     const { plan } = readLivePlan(goodAnswer(), ctx, record);
-    const table = priceLivePlan(plan, record, ctx.lines, level);
+    const table = priceLivePlan(plan, record, ctx.lines);
     expect(table.rows[1]?.usd).toBe(0.15);
     expect(table.unknownSteps).toBe(0);
-  });
-
-  it("warns above the level's guide budget", () => {
-    const record = session();
-    record.prices[LIPS] = { usd: 5, unit: "seconds" };
-    const { plan } = readLivePlan(goodAnswer(), ctx, record);
-    const table = priceLivePlan(plan, record, ctx.lines, level);
-    expect(table.budgetUsd).toBeCloseTo(levelEstimateUsd(level, estimateSeconds(ctx.lines)));
-    expect(costWarnings(table)[0]).toMatch(/Over the guide budget/);
   });
 
   it("counts units by the price's unit", () => {
@@ -356,7 +346,7 @@ describe("billing rules from the tools", () => {
       record,
     );
     expect(errors).toEqual([]);
-    const table = priceLivePlan(plan, record, ctx.lines, level);
+    const table = priceLivePlan(plan, record, ctx.lines);
     expect(table.rows[4]).toMatchObject({ quantity: "5 giây" });
     expect(table.rows[4]?.usd).toBeCloseTo(0.8);
   });
@@ -371,7 +361,7 @@ describe("billing rules from the tools", () => {
     expect(refused.errors.join("\n")).toMatch(/0.3 per seconds is not in any guide/);
     expect(refused.errors.join("\n")).toMatch(/4-second minimum/);
     const { plan } = readLivePlan(billed({ unit_price: 0.02, unit: "seconds" }), ctx, record);
-    const table = priceLivePlan(plan, record, ctx.lines, level);
+    const table = priceLivePlan(plan, record, ctx.lines);
     expect((table.rows[4]?.usd as number) / 0.1).toBeGreaterThanOrEqual(2);
   });
 });

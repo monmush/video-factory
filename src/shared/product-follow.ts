@@ -120,7 +120,6 @@ function followLive(
       steps,
       live.rates,
       live.schemas,
-      live.costs.budgetUsd,
       steps.reduce((n, s) => n + s.seconds, 0),
     ),
   };

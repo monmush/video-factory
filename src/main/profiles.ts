@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app } from "electron";
 import type { DevProfiles } from "../shared/ipc";
+import { devFeatures } from "./dev";
 import { writeJsonAtomic } from "./paths";
 import {
   activeProfile,
@@ -16,13 +17,13 @@ import {
   parseRegistry,
 } from "./profile-rules";
 import { childPath } from "./safe-path";
-import { shutDownServices } from "./shutdown";
+import { finishWorkAndShutDown } from "./shutdown";
 import { isMakingVideo } from "./video/runner";
 
 const SUPERVISED_CHILD = "HYAN_PROFILE_CHILD";
 const RESTART_EXIT_CODE = 75;
 
-export const profilesEnabled = () => !app.isPackaged || process.env.HYAN_DEV === "1";
+export const profilesEnabled = devFeatures;
 
 const fixedByEnvironment = () => Boolean(process.env.HYAN_DATA_DIR);
 
@@ -159,12 +160,14 @@ export async function switchProfile(id: unknown): Promise<null> {
   if (id === active) return null;
   if (isMakingVideo()) throw new Error("Đang tạo video. Dừng video trước khi đổi hồ sơ.");
   await writeJsonAtomic(registryFile(where), { ...readRegistry(where), active: id });
-  setImmediate(restartIntoActiveProfile);
+  setImmediate(() => void restartIntoActiveProfile());
   return null;
 }
 
-function restartIntoActiveProfile() {
-  shutDownServices();
+const FINISH_BEFORE_SWITCHING_MS = 10_000;
+
+async function restartIntoActiveProfile() {
+  await finishWorkAndShutDown(FINISH_BEFORE_SWITCHING_MS);
   if (process.env[SUPERVISED_CHILD]) {
     app.exit(RESTART_EXIT_CODE);
     return;

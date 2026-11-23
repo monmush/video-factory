@@ -40,7 +40,12 @@ const field = (obj: string, key: string): string | null => {
   return m ? (m[1] as string) : null;
 };
 
-function shotLine(n: number, obj: string): string {
+const numberField = (obj: string, key: string): number | null => {
+  const m = new RegExp(`"${key}"\\s*:\\s*(\\d+)`).exec(obj);
+  return m ? Number(m[1]) : null;
+};
+
+function shotLine(n: number | string, obj: string): string {
   const who = field(obj, "character");
   switch (field(obj, "type")) {
     case "speaker":
@@ -54,18 +59,32 @@ function shotLine(n: number, obj: string): string {
   }
 }
 
+function pictureSteps(answer: string): DirectorSteps {
+  const pictures = after(answer, "pictures");
+  if (!pictures) return [];
+  return closedObjects(pictures).flatMap((p) => {
+    const kind = field(p, "kind") ?? "";
+    const label = kind === "character" ? (field(p, "character") ?? "nhân vật") : PICTURE[kind];
+    return label ? [`Khung hình: ${label}`] : [];
+  });
+}
+
+export function correctionSteps(correction: string): DirectorSteps {
+  const steps = pictureSteps(correction);
+  const replaced = after(correction, "shots");
+  if (replaced) {
+    for (const s of closedObjects(replaced)) steps.push(shotLine(numberField(s, "n") ?? "?", s));
+  }
+  const added = after(correction, "add_shots");
+  if (added) for (const s of closedObjects(added)) steps.push(shotLine("mới", s));
+  return steps;
+}
+
 export function directorSteps(answer: string): DirectorSteps {
   const steps: DirectorSteps = ["Đọc kịch bản, bối cảnh và nhân vật"];
   if (after(answer, "seats")) steps.push("Xếp chỗ ngồi và hướng nhìn");
   if (after(answer, "props")) steps.push("Bày đồ vật trong cảnh");
-  const pictures = after(answer, "pictures");
-  if (pictures) {
-    for (const p of closedObjects(pictures)) {
-      const kind = field(p, "kind") ?? "";
-      const label = kind === "character" ? (field(p, "character") ?? "nhân vật") : PICTURE[kind];
-      if (label) steps.push(`Khung hình: ${label}`);
-    }
-  }
+  steps.push(...pictureSteps(answer));
   const shots = after(answer, "shots");
   if (shots) {
     closedObjects(shots).forEach((s, i) => {

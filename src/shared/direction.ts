@@ -56,11 +56,14 @@ const sameLines = (a: readonly ScriptLine[], b: readonly ScriptLine[]) =>
   a.length === b.length &&
   a.every((l, i) => l.characterId === b[i]?.characterId && norm(l.text) === norm(b[i]?.text));
 
+export const sameSpokenLines = (staged: readonly ScriptLine[], script: ScriptLine[]) =>
+  sameLines(staged, spokenLines(script));
+
 export function jobStale(
   job: Pick<VideoJob, "lines" | "productIds">,
   script: { lines: ScriptLine[]; productIds: string[] },
 ): boolean {
-  if (!sameLines(job.lines, spokenLines(script.lines))) return true;
+  if (!sameSpokenLines(job.lines, script.lines)) return true;
   if (!job.productIds) return false;
   const a = [...job.productIds].sort().join("|");
   const b = [...script.productIds].sort().join("|");

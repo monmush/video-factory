@@ -1,5 +1,5 @@
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
-import { Check } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const Menu = MenuPrimitive.Root;
@@ -8,11 +8,20 @@ const MenuTrigger = MenuPrimitive.Trigger;
 function MenuPopup({
   className,
   align = "end",
+  side,
   ...props
-}: MenuPrimitive.Popup.Props & { align?: "start" | "center" | "end" }) {
+}: MenuPrimitive.Popup.Props & {
+  align?: "start" | "center" | "end";
+  side?: MenuPrimitive.Positioner.Props["side"];
+}) {
   return (
     <MenuPrimitive.Portal>
-      <MenuPrimitive.Positioner align={align} sideOffset={4} className="z-50 app-no-drag">
+      <MenuPrimitive.Positioner
+        align={align}
+        side={side}
+        sideOffset={4}
+        className="z-50 app-no-drag"
+      >
         <MenuPrimitive.Popup
           className={cn(
             "min-w-40 origin-(--transform-origin) rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg outline-none transition-[scale,opacity] duration-150 data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0",
@@ -39,6 +48,23 @@ function MenuItem({
       )}
       {...props}
     />
+  );
+}
+
+const MenuSub = MenuPrimitive.SubmenuRoot;
+
+function MenuSubTrigger({ className, children, ...props }: MenuPrimitive.SubmenuTrigger.Props) {
+  return (
+    <MenuPrimitive.SubmenuTrigger
+      className={cn(
+        "flex h-8 cursor-pointer items-center gap-2 rounded-md px-2.5 text-sm outline-none data-highlighted:bg-accent data-popup-open:bg-accent [&_svg]:size-4 [&_svg]:text-muted-foreground",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+      <ChevronRight className="ml-auto" aria-hidden />
+    </MenuPrimitive.SubmenuTrigger>
   );
 }
 
@@ -86,5 +112,7 @@ export {
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
+  MenuSub,
+  MenuSubTrigger,
   MenuTrigger,
 };

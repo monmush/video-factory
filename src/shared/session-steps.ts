@@ -2,6 +2,10 @@ import { boardOrder } from "./board";
 import type { Script, Session } from "./ipc";
 import { committedIds, finishedScripts } from "./ready-check";
 import type { VideoJob } from "./video-job";
+import { chosenView } from "./video-takes";
+
+export const hasVideo = (job: VideoJob | null | undefined) =>
+  Boolean(job && (job.status === "done" || chosenView(job).final));
 
 export function jobNeedsYou(job: VideoJob | null | undefined): boolean {
   if (!job) return true;
@@ -42,8 +46,8 @@ export function sessionSteps(
   const finished = finishedScripts(scripts);
   const sent = finished.filter((s) => committed.includes(s.id));
   const sentJobs = jobs ? sent.map((s) => jobs.get(s.id)) : [];
-  const done = sentJobs.filter((j) => j?.status === "done").length;
-  const waiting = sentJobs.filter(jobNeedsYou).length;
+  const done = sentJobs.filter(hasVideo).length;
+  const waiting = sentJobs.filter((j) => !hasVideo(j) && jobNeedsYou(j)).length;
   return {
     scripts: boardOrder(scripts).filter((s) => s.status !== "failed").length,
     scriptsDone: finished.length > 0 && sent.length === finished.length,

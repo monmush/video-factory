@@ -1,3 +1,4 @@
+import { NANO_BANANA_STILL_USD, STILL_USD } from "./cost/rates";
 import type { AngleModel } from "./ipc";
 
 export type ImageShape = "2:3" | "9:16";
@@ -14,7 +15,7 @@ export const MODELS: Record<
   "gpt-image": {
     endpoint: "openai/gpt-image-2.6/sunburst/edit",
     name: "GPT Image 2.6",
-    fallbackUsd: 0.12,
+    fallbackUsd: STILL_USD,
     input: (prompt, image_urls, shape = "2:3") => ({
       prompt,
       image_urls,
@@ -29,7 +30,7 @@ export const MODELS: Record<
   "nano-banana-pro": {
     endpoint: "fal-ai/nano-banana-pro/edit",
     name: "Nano Banana Pro",
-    fallbackUsd: 0.15,
+    fallbackUsd: NANO_BANANA_STILL_USD,
     input: (prompt, image_urls, shape = "2:3") => ({
       prompt,
       image_urls,

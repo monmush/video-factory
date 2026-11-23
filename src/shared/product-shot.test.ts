@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { estimateUsd } from "./board";
 import type { AssetImage } from "./ipc";
 import {
   alphaBox,
-  CUTOUT_USD,
   cutoutsToMake,
-  cutoutUsd,
   PLACE,
   placement,
   TONE_CAP,
@@ -40,7 +37,7 @@ describe("cut-outs", () => {
     expect(usableCutout({ x: 50, y: 50, w: 3, h: 3 }, 100, 200)).toBe(false);
   });
 
-  it("are made once per photo, tried in order, and priced only while missing", () => {
+  it("are made once per photo and tried in order", () => {
     const photo = (id: string, cutout?: AssetImage["cutout"]): AssetImage => ({
       id,
       file: `${id}.jpg`,
@@ -54,13 +51,6 @@ describe("cut-outs", () => {
     expect(
       cutoutsToMake({ images: [photo("a"), photo("b", { file: "b.c.png", usable: true })] }),
     ).toBe(0);
-    const assets = [{ id: "p", images: [photo("a")] }];
-    expect(cutoutUsd(["p", "gone"], assets)).toBeCloseTo(CUTOUT_USD);
-    const lines = [{ text: "Một hai ba bốn", characterId: "c" }];
-    expect(estimateUsd(lines, { frames: true, cutoutUsd: CUTOUT_USD })).toBeCloseTo(
-      estimateUsd(lines, { frames: true }) + CUTOUT_USD,
-    );
-    expect(estimateUsd(lines, { cutoutUsd: CUTOUT_USD })).toBeCloseTo(estimateUsd(lines));
   });
 });
 

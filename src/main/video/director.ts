@@ -12,8 +12,8 @@ import {
 } from "../../shared/live-plan";
 import { type MediaLevel, mediaLevel } from "../../shared/media-level";
 import { DIRECTOR_AREAS, notesBlock } from "../../shared/notes";
-import { directorSteps } from "../../shared/plan-progress";
 import { builtinRecipe, type Recipe, readRecipe } from "../../shared/recipe";
+import { restagePlan } from "../../shared/restage";
 import {
   readShotList,
   rulesShotList,
@@ -36,6 +36,7 @@ import { askText, parseJsonObject, textAiMode } from "../text-ai";
 import PROMPT from "./director-prompt.md?raw";
 import { checkAnswer } from "./live-prompt";
 import { shotListPrompt } from "./shot-list-prompt";
+import { stageShotList } from "./staging";
 
 const SYSTEM =
   "You are a film director for short vertical videos. Answer with one JSON object and nothing else.";
@@ -109,7 +110,7 @@ async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
     }
     return {
       plan: plan.shots,
-      live: liveDirection(plan, record, ctx.lines, ctx.level, {
+      live: liveDirection(plan, record, ctx.lines, {
         connection: "signed-in",
         model: null,
         ms: 0,
@@ -121,10 +122,24 @@ async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
   }
 }
 
+function restageOf(job: VideoJob, ctx: PlanContext, caps: ShotListCaps, level: MediaLevel) {
+  const basis = job.restageFrom;
+  if (!basis) return null;
+  const was = mediaLevel(basis.level);
+  if (was.motion !== level.motion || was.sound !== level.sound) return null;
+  const restage = restagePlan(basis, job.lines, ctx, caps);
+  if (restage.kind === "full") {
+    console.log(`[video] staging again in full (${restage.why})`);
+    return null;
+  }
+  return restage;
+}
+
 export async function directJob(
   job: VideoJob,
   dir: string,
   onSteps?: (steps: string[]) => void,
+  signal?: AbortSignal,
 ): Promise<Direction> {
   const ws = await getWorkspace();
   const series = ws.series.find((s) => s.id === job.seriesId);
@@ -154,7 +169,7 @@ export async function directJob(
   }
 
   const recipe = await loadRecipe(level);
-  const caps: ShotListCaps = { motion: Boolean(recipe.motion) };
+  const caps: ShotListCaps = { motion: Boolean(recipe.motion), sound: level.sound };
   const save = (name: string, text: string) =>
     writeFile(join(dir, name), text, "utf8").catch(() => undefined);
   const build = async (list: ShotList, run?: { model: string | null; ms: number }) => {
@@ -199,43 +214,31 @@ export async function directJob(
   const prompt = shotListPrompt(base, {
     level,
     motion: caps.motion,
+    sound: level.sound,
     direction: directionSlot(job.direction),
   });
   await save("shot-list-prompt.md", prompt);
-  const log: string[] = [];
-  let request = prompt;
-  let problems: string[] = [];
-  const startedAt = Date.now();
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const opening =
-      attempt === 1 ? [] : [`Sửa ${problems.length} chỗ chưa đúng quy tắc, viết lại kế hoạch`];
-    const report = (text: string, tail: string[] = []) =>
-      onSteps?.([...opening, ...directorSteps(text), ...tail]);
-    report("");
-    try {
-      const answer = await askText({
+  const partial = restageOf(job, ctx, caps, level);
+  const staged = await stageShotList({
+    prompt,
+    ask: (request, onText) =>
+      askText({
         system: SYSTEM,
         prompt: request,
         purpose: "video-plan",
         sessionId: job.sessionId,
         temperature: 0.4,
-        onText: (soFar) => report(soFar),
-      });
-      report(answer, ["Kiểm tra quy tắc"]);
-      await save(`shot-list-answer-${attempt}.json`, answer);
-      const { list, errors } = readShotList(parseJsonObject<ShotListAnswer>(answer), ctx, caps);
-      if (!errors.length) {
-        report(answer, ["Kiểm tra quy tắc", "Tính giá"]);
-        return build(list, { model: null, ms: Date.now() - startedAt });
-      }
-      problems = errors;
-      log.push(`attempt ${attempt}: ${errors.join(" | ")}`);
-      request = `${prompt}\n\n## Your previous plan\n\n${answer}\n\n## It broke these rules\n\n${errors.map((e) => `- ${e}`).join("\n")}\n\nAnswer again with a corrected plan, as one JSON object.`;
-    } catch (error) {
-      problems = [(error as Error).message];
-      log.push(`attempt ${attempt}: ${(error as Error).message}`);
-    }
-  }
-  console.warn("[video] director fell back to rules:", log.join("\n"));
-  return build(rulesShotList(ctx, rulesPlan(ctx, problems)));
+        onText,
+        ...(signal ? { signal } : {}),
+      }),
+    parse: (text) => parseJsonObject<unknown>(text),
+    read: (answer) => readShotList(answer, ctx, caps),
+    save,
+    ...(onSteps ? { onSteps } : {}),
+    ...(partial ? { partial } : {}),
+    ...(signal ? { signal } : {}),
+  });
+  if ("list" in staged) return build(staged.list, { model: null, ms: staged.ms });
+  console.warn(`[video] director fell back to rules; see shot-list-problems-*.json in ${dir}`);
+  return build(rulesShotList(ctx, rulesPlan(ctx, staged.problems)));
 }

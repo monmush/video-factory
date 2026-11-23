@@ -61,8 +61,10 @@ On the Video tab (16 Nov 2026): the batch button at the top is the only primary 
 
 The owner could not tell which price on a video card was already paid and which was a guess (status line, hold button, plan table, all different numbers). One rule everywhere:
 
-- **Spent has no "~"; an estimate always has one.** The status line reads "Đã chi $1.05", never a bare figure (a bare number beside "Lời thoại" read as the dialogue's price).
-- **A button's price is what that press will spend**, and nothing else.
-- **The plan table** marks charged rows with a check and their real cost; once anything is paid its total reads "Đã chi · Còn · Tổng", and "Còn" equals the hold button's price.
+- **"~" means the app calculated the number; no "~" means the provider reported it.** Revised 21 November 2026: until then every "spent" figure was the app's own calculation shown without "~", and it was up to 5.6 times too low. A paid figure now carries "~" unless the provider reported the billed units for it.
+- **No price without a Dàn dựng.** Quality menus show no dollar figure; a video has a price only once its staging exists. The "typical video" guess is gone: it assumed 7 pictures where real videos have 16.
+- **A button's price is what that press will spend** on a first pass, and nothing else. A hold never covers a video whose price is unknown; videos still being staged are named beside the batch button and join the next press.
+- **The cost panel has two columns, "Dự tính" and "Đã chi".** The estimate is frozen when the user first holds; paid amounts fill in beside it. Money paid for a result no longer in use (automatic redo, fix) is its own row, "Làm lại ×n", never folded into a planned row. Before a video starts the panel says "Chưa gồm cảnh phải làm lại".
 - **Every paid action is a hold with its price.** Nothing in the interface spends on a plain click; the hold shows what it will spend. The cost breakdown ("Chi phí") is visible before, during and after a video.
+- **Say what stopping or leaving costs, truthfully.** "Dừng" keeps everything made and names only what may still be billed ("vẫn trả tối đa ~$X"); quitting or deleting with paid work in flight asks first and says what keeps billing.
 - **Names describe what a thing does.** No provider or model names in the interface; operators pick a Quality level, not a model.

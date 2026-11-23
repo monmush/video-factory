@@ -33,16 +33,16 @@ export function HoldButton({
   const latest = useRef({ onHold, disabled });
   latest.current = { onHold, disabled };
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
       if (state.current) {
         cancelAnimationFrame(state.current.fillFrame);
         clearTimeout(state.current.completionTimer);
       }
-    },
-    [],
-  );
+    };
+  }, []);
 
   const fire = async () => {
     setBusy(true);

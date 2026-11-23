@@ -24,3 +24,11 @@ export function voiceText(text: string): string {
 
 export const withoutCues = (text: string) =>
   text.replace(BRACKETED, " ").replace(/\s+/g, " ").trim();
+
+export function splitTrailingCue(text: string): { words: string; cue: string | null } {
+  const trimmed = text.normalize("NFC").trim();
+  const last = /\[([^\]]*)\]\s*$/.exec(trimmed);
+  const cue = last ? key(last[1] ?? "") : "";
+  if (!last || !CUES[cue]) return { words: withoutCues(trimmed), cue: null };
+  return { words: withoutCues(trimmed.slice(0, last.index)), cue };
+}

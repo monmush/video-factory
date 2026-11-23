@@ -11,9 +11,12 @@ import * as chat from "./chat/runtime";
 import { claudeCodeStatus, findClaude, installClaude } from "./claude-code";
 import { advanceFakeClaude, fakeClaudeActive } from "./claude-fake";
 import { describeAsset } from "./describe";
+import { devFeatures } from "./dev";
+import { editLine, removeLine } from "./line-edit";
 import { IMAGE_EXTENSIONS, imageRefPath, stageImages } from "./media";
 import { dataDir } from "./paths";
 import {
+  acceptPlaceFinding,
   checkPlace,
   checkPlaceImages,
   cleanPlacePhoto,
@@ -26,7 +29,7 @@ import { groupProducts } from "./product-grouping";
 import { createProfile, deleteProfile, listProfiles, switchProfile } from "./profiles";
 import { clearKey, providersInfo, setKey } from "./providers";
 import { childPath } from "./safe-path";
-import { readSettings, writeSettings } from "./settings";
+import { nativeVoiceOn, readSettings, writeSettings } from "./settings";
 import {
   approveSession,
   createSeries,
@@ -35,6 +38,7 @@ import {
   deleteSession,
   getWorkspace,
   removeNote,
+  setVideoLevel,
   updateNote,
   updateSeries,
   updateSession,
@@ -64,6 +68,13 @@ export function registerIpc() {
   handle("dev:create-profile", createProfile);
   handle("dev:switch-profile", switchProfile);
   handle("dev:delete-profile", deleteProfile);
+  handle("dev:native-voice", () => (devFeatures() ? nativeVoiceOn() : null));
+  handle("dev:set-native-voice", async (on) => {
+    if (!devFeatures()) return null;
+    await writeSettings({ nativeVoice: on === true });
+    await video.followVoiceMode();
+    return nativeVoiceOn();
+  });
   handle("theme:set", async (preference) => {
     if (!["system", "light", "dark"].includes(preference)) throw new Error("Unknown theme");
     nativeTheme.themeSource = preference;
@@ -96,7 +107,7 @@ export function registerIpc() {
         })),
     );
     await chat.forget(sessions);
-    for (const s of sessions) video.forgetSession(s.sessionId);
+    await video.abandonSessions(sessions.map((s) => s.sessionId));
     return deleteSeries(id);
   });
   handle("session:create", async (input) => {
@@ -114,7 +125,7 @@ export function registerIpc() {
   handle("session:delete", async (id) => {
     const agentId = (await board.getBoard(id).catch(() => null))?.agent?.sessionId;
     await chat.forget([{ sessionId: id, agentId }]);
-    video.forgetSession(id);
+    await video.abandonSessions([id]);
     return deleteSession(id);
   });
   handle("session:approve", async (sessionId, scriptIds) => {
@@ -177,8 +188,14 @@ export function registerIpc() {
     const change = await products.setProduct(sessionId, scriptId, productId);
     return change ? { scriptId: change.script.id } : null;
   });
-  handle("board:undo-product", ({ sessionId, scriptId }) =>
-    products.undoProduct(sessionId, scriptId),
+  handle("board:undo-change", ({ sessionId, scriptId }) =>
+    products.undoChange(sessionId, scriptId),
+  );
+  handle("board:edit-line", ({ sessionId, scriptId, index, was, text }) =>
+    editLine(sessionId, scriptId, { index, was, text }),
+  );
+  handle("board:remove-line", ({ sessionId, scriptId, index, was }) =>
+    removeLine(sessionId, scriptId, { index, was }),
   );
   handle("board:link-speaker", async ({ sessionId, speaker, characterId }) => {
     await board.linkSpeaker(sessionId, speaker, characterId);
@@ -231,6 +248,7 @@ export function registerIpc() {
 
   handle("assets:check-place", ({ images }) => checkPlaceImages(images));
   handle("assets:estimate-clean", estimateClean);
+  handle("assets:accept-place-finding", acceptPlaceFinding);
   handle("assets:cut-out-product-photo", ({ image }) => cutOutProductPhoto(image));
   handle("assets:clean-place-photo", async ({ image, finding }) =>
     cleanPlacePhoto(await placePhotoPath(image), finding),
@@ -249,6 +267,12 @@ export function registerIpc() {
     jobs: await video.jobsFor(sessionId),
     averages: video.currentAverages(),
   }));
+  handle("video:paid-work", (sessionIds) =>
+    video.paidWorkOf(
+      Array.isArray(sessionIds) ? sessionIds.filter((id) => typeof id === "string") : [],
+    ),
+  );
+  handle("video:making", video.videosBeingMadeNow);
   handle("video:start", ({ sessionId, scriptId }) => video.start(sessionId, scriptId));
   handle("video:plan", ({ sessionId, scriptId }) => video.planOnly(sessionId, scriptId));
   handle("video:replan", ({ sessionId, scriptId }) => video.replan(sessionId, scriptId));
@@ -270,16 +294,32 @@ export function registerIpc() {
   handle("video:retry-shot", ({ sessionId, scriptId, shot }) =>
     video.retryShot(sessionId, scriptId, shot),
   );
-  handle("video:fix", ({ sessionId, scriptId, changes, take }) =>
-    video.fix(sessionId, scriptId, changes, undefined, take),
+  handle("video:fix", ({ sessionId, scriptId, changes, version }) =>
+    video.fix(sessionId, scriptId, changes, undefined, version),
   );
-  handle("video:restore", ({ sessionId, scriptId, take }) =>
-    video.restore(sessionId, scriptId, take),
+  handle("video:restore", ({ sessionId, scriptId, version }) =>
+    video.restore(sessionId, scriptId, version),
   );
-  handle("video:take", ({ sessionId, scriptId, action, model }) =>
-    video.take(sessionId, scriptId, action, model),
+  handle("video:version", ({ sessionId, scriptId, action, version }) =>
+    video.version(sessionId, scriptId, action, version),
+  );
+  handle("video:level", async ({ sessionId, scriptId, level }) => {
+    await setVideoLevel(sessionId, scriptId, level);
+    await video.followScript(sessionId, scriptId);
+    return null;
+  });
+  handle("video:tempo", ({ sessionId, scriptId, tempo }) =>
+    video.setTempo(sessionId, scriptId, tempo),
   );
   handle("video:save", ({ sessionId, scriptId }) => video.saveFinal(sessionId, scriptId));
+  handle("video:save-many", async ({ sessionId, picks }) => {
+    const saved = await video.saveFinals(sessionId, picks);
+    if (saved && saved.failed.length === 0) {
+      const error = await shell.openPath(saved.folder);
+      if (error) console.warn("[video] could not open the folder:", error);
+    }
+    return saved;
+  });
 
   handle("usage:balances", balances);
 
@@ -303,8 +343,12 @@ export function registerIpc() {
       action === "install"
         ? "curl -fsSL https://claude.ai/install.sh | bash"
         : `'${claude.replace(/'/g, "'\\''")}' auth login`;
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    const exportConfig = configDir
+      ? `export CLAUDE_CONFIG_DIR='${configDir.replace(/'/g, "'\\''")}'\n`
+      : "";
     const script = childPath(dataDir(), `claude-${action}.command`);
-    await writeFile(script, `#!/bin/zsh -l\n${command}\n`, "utf8");
+    await writeFile(script, `#!/bin/zsh -l\n${exportConfig}${command}\n`, "utf8");
     await chmod(script, 0o755);
     const error = await shell.openPath(script);
     if (error) throw new Error(error);

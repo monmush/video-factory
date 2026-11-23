@@ -1,140 +1,170 @@
-import { formatCost } from "@shared/credits";
-import type { CostRow } from "@shared/live-plan";
-import { costToPreviewUsd, liveCostTable, stopsForPreview, type VideoJob } from "@shared/video-job";
-import { Check } from "lucide-react";
+import {
+  type CostPanel,
+  costPanel,
+  estimateText,
+  type Money,
+  moneyText,
+  type PanelLine,
+} from "@shared/cost/table";
+import type { VideoJob } from "@shared/video-job";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-function kindOf(row: CostRow): string {
-  if (row.step.includes(" · ")) return row.step.split(" · ")[1] as string;
-  return row.step.startsWith("Khung hình") ? "Khung hình" : row.step;
+const unknownMark = (costs: CostPanel) => (costs.unknownSteps > 0 ? " +?" : "");
+
+function headline(job: VideoJob, costs: CostPanel): string {
+  if (job.status === "idle")
+    return `Chi phí ${estimateText(costs.estimateUsd)}${unknownMark(costs)}`;
+  const paid = moneyText(costs.paid ?? { usd: 0, billed: true });
+  if (job.status === "done") return `Chi phí ${paid}`;
+  return `Chi phí ${paid} · còn ${estimateText(costs.leftUsd ?? 0)}`;
 }
 
-interface Group {
-  kind: string;
-  count: number;
-  usd: number | null;
-  paid: boolean;
-}
-
-function groupsByKind(rows: CostRow[]): Group[] {
-  const out: Group[] = [];
-  for (const row of rows) {
-    const kind = kindOf(row);
-    const found = out.find((g) => g.kind === kind);
-    if (found) {
-      found.count++;
-      found.usd = found.usd === null || row.usd === null ? null : found.usd + row.usd;
-      found.paid &&= Boolean(row.paid);
-    } else {
-      out.push({ kind, count: 1, usd: row.usd, paid: Boolean(row.paid) });
-    }
-  }
-  return out;
-}
-
-const charged = (usd: number) => formatCost(usd);
-const estimated = (usd: number) => `~${formatCost(usd)}`;
-
-function ChargedOrEstimatedPrice({ usd, paid }: { usd: number | null; paid?: boolean }) {
+function EstimateCell({ usd }: { usd?: number | null }) {
+  if (usd === undefined) return <>—</>;
   if (usd === null) return <>?</>;
-  if (usd === 0) return <>—</>;
-  if (!paid) return <span className="text-muted-foreground">{estimated(usd)}</span>;
+  return <span className="text-muted-foreground">{estimateText(usd)}</span>;
+}
+
+const PaidCell = ({ paid }: { paid: Money | null }) => <>{paid ? moneyText(paid) : "—"}</>;
+
+function PaidHeader() {
   return (
-    <span className="inline-flex items-center gap-1">
-      <Check className="size-3 text-muted-foreground" aria-label="Đã chi" />
-      {charged(usd)}
-    </span>
+    <Tooltip>
+      <TooltipTrigger render={<span className="cursor-default" />}>Đã chi</TooltipTrigger>
+      <TooltipPopup side="top" align="center" className="text-xs">
+        Số có dấu ~ là ứng dụng tự tính
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
-function chargedSoFar(rows: CostRow[]) {
-  const paidUsd = rows.reduce((n, r) => n + (r.paid ? (r.usd ?? 0) : 0), 0);
-  const allPaid = paidUsd > 0 && rows.every((r) => r.paid || r.usd === 0);
-  return { paidUsd, allPaid };
+function Line({
+  line,
+  detail,
+  paidColumn,
+  className,
+}: {
+  line: PanelLine;
+  detail: string;
+  paidColumn: boolean;
+  className: string;
+}) {
+  return (
+    <tr className="border-b last:border-b-0">
+      <td className={`${className} pr-3`}>{line.label}</td>
+      <td className={`${className} pr-3 text-right text-muted-foreground`}>{detail}</td>
+      <td className={`${className} text-right`}>
+        <EstimateCell usd={line.estimateUsd} />
+      </td>
+      {paidColumn && (
+        <td className={`${className} pl-3 text-right`}>
+          <PaidCell paid={line.paid} />
+        </td>
+      )}
+    </tr>
+  );
 }
 
+const countText = (count: number) => (count > 1 ? `×${count}` : "");
+
 export function LivePlanFold({ job }: { job: VideoJob }) {
-  const costs = liveCostTable(job);
+  const costs = costPanel(job);
   if (!costs) return null;
-  const { paidUsd, allPaid } = chargedSoFar(costs.rows);
   return (
     <details className="mt-3 ml-7.5 max-w-xl text-xs">
       <summary className="w-fit cursor-pointer text-muted-foreground tabular-nums hover:text-foreground">
-        Chi phí {allPaid ? charged(paidUsd) : estimated(costs.knownUsd)}
-        {costs.unknownSteps > 0 ? " +?" : ""}
+        {headline(job, costs)}
       </summary>
-      <LivePlanTable job={job} className="mt-1.5" />
+      <LivePlanTable job={job} costs={costs} />
     </details>
   );
 }
 
-export function LivePlanTable({ job, className }: { job: VideoJob; className?: string }) {
-  const costs = liveCostTable(job);
-  if (!costs) return null;
-  const { paidUsd, allPaid } = chargedSoFar(costs.rows);
-  const showsPreviewPriceAsOnHold = paidUsd === 0 && stopsForPreview(job);
+function LivePlanTable({ job, costs }: { job: VideoJob; costs: CostPanel }) {
+  const paidColumn = costs.paid !== null;
+  const notStarted = job.status === "idle";
+  const note = [
+    notStarted ? "Chưa gồm cảnh phải làm lại" : "",
+    costs.unknownSteps > 0 ? `${costs.unknownSteps} bước chưa rõ giá` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const heads = (
+    <thead>
+      <tr className="text-muted-foreground">
+        <th />
+        <th />
+        <th className="py-1 text-right font-normal">Dự tính</th>
+        {paidColumn && (
+          <th className="py-1 pl-3 text-right font-normal">
+            <PaidHeader />
+          </th>
+        )}
+      </tr>
+    </thead>
+  );
   return (
-    <div className={className ?? "mt-3 ml-7.5 max-w-xl text-xs"}>
+    <div className="mt-1.5">
       <table className="w-full tabular-nums">
+        {heads}
         <tbody>
-          {groupsByKind(costs.rows).map((g) => (
-            <tr key={g.kind} className="border-b last:border-b-0">
-              <td className="py-1 pr-3">{g.kind}</td>
-              <td className="py-1 pr-3 text-right text-muted-foreground">
-                {g.count > 1 ? `×${g.count}` : ""}
-              </td>
-              <td className="py-1 text-right">
-                <ChargedOrEstimatedPrice usd={g.usd} paid={g.paid} />
-              </td>
-            </tr>
+          {costs.groups.map((g) => (
+            <Line
+              key={g.key}
+              line={g}
+              detail={countText(g.count)}
+              paidColumn={paidColumn}
+              className="py-1"
+            />
           ))}
+          {costs.redone && (
+            <Line
+              line={costs.redone}
+              detail={countText(costs.redone.count)}
+              paidColumn={paidColumn}
+              className="py-1"
+            />
+          )}
+          <tr className="font-medium">
+            <td className="py-1 pr-3">Tổng</td>
+            <td />
+            <td className="py-1 text-right">
+              {estimateText(costs.estimateUsd)}
+              {unknownMark(costs)}
+            </td>
+            {paidColumn && (
+              <td className="py-1 pl-3 text-right">
+                <PaidCell paid={costs.paid} />
+              </td>
+            )}
+          </tr>
         </tbody>
       </table>
-      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 tabular-nums">
-        {showsPreviewPriceAsOnHold && (
-          <>
-            <span className="font-medium">Các cảnh chính {estimated(costToPreviewUsd(job))}</span>
-            <span className="text-muted-foreground">·</span>
-          </>
-        )}
-        {allPaid ? (
-          <span className="font-medium">Đã chi {charged(paidUsd)}</span>
-        ) : (
-          paidUsd > 0 && (
-            <>
-              <span className="font-medium">Đã chi {charged(paidUsd)}</span>
-              <span className="text-muted-foreground">·</span>
-              <span>Còn {estimated(costs.knownUsd - paidUsd)}</span>
-              <span className="text-muted-foreground">·</span>
-            </>
-          )
-        )}
-        {!allPaid && (
-          <span
-            className={
-              paidUsd > 0 || stopsForPreview(job) ? "text-muted-foreground" : "font-medium"
-            }
-          >
-            Tổng {estimated(costs.knownUsd)}
-          </span>
-        )}
-        {costs.unknownSteps > 0 && (
-          <span className="text-muted-foreground">{costs.unknownSteps} bước chưa rõ giá</span>
-        )}
-      </div>
+      {note && <p className="mt-1.5 text-muted-foreground">{note}</p>}
       <details className="mt-1.5">
         <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
           Từng bước
         </summary>
         <table className="mt-1 w-full tabular-nums">
+          {heads}
           <tbody>
-            {costs.rows.map((row) => (
-              <tr key={row.step} className="border-b last:border-b-0">
-                <td className="py-0.5 pr-3">{row.step}</td>
-                <td className="py-0.5 pr-3 text-right text-muted-foreground">{row.quantity}</td>
-                <td className="py-0.5 text-right">
-                  <ChargedOrEstimatedPrice usd={row.usd} paid={row.paid} />
-                </td>
-              </tr>
+            {costs.steps.map((step) => (
+              <Line
+                key={step.key}
+                line={step}
+                detail={step.quantity}
+                paidColumn={paidColumn}
+                className="py-0.5"
+              />
+            ))}
+            {costs.redoneSteps.map((step) => (
+              <Line
+                key={step.key}
+                line={{ ...step, label: `${step.label} · Làm lại` }}
+                detail=""
+                paidColumn={paidColumn}
+                className="py-0.5"
+              />
             ))}
           </tbody>
         </table>

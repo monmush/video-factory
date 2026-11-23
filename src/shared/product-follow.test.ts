@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { buildDirection } from "./build-direction";
+import { costPanel } from "./cost/table";
 import type { ScriptLine } from "./ipc";
 import { mediaLevel } from "./media-level";
 import { followProduct, type NamedProduct, swapName } from "./product-follow";
 import { builtinRecipe } from "./recipe";
 import { readShotList } from "./shot-list";
 import { answer, CTX, LINES } from "./shot-list.fixture";
-import { applyLivePlan, applyPlan, liveCostTable, newJob, type VideoJob } from "./video-job";
+import { applyLivePlan, applyPlan, newJob, type VideoJob } from "./video-job";
 
 const level = mediaLevel("balanced");
 const OLD: NamedProduct = { id: "p", name: "Bạch Trà Shan Tuyết" };
@@ -79,7 +80,7 @@ describe("followProduct", () => {
     const plate = next.frames.find((f) => f.kind === "product");
     expect(plate).toMatchObject({ productId: "q", cutouts: 1, keyframe: "plate" });
     expect(next.frames.map((f) => f.id)).toEqual(job.frames.map((f) => f.id));
-    expect(liveCostTable(next)?.knownUsd).toBeLessThan(liveCostTable(job)?.knownUsd ?? 0);
+    expect(costPanel(next)?.estimateUsd).toBeLessThan(costPanel(job)?.estimateUsd ?? 0);
     expect(next.status).toBe("idle");
   });
 

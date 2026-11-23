@@ -1,4 +1,4 @@
-import { estimateSeconds, estimateVoiceUsd, levelEstimateUsd } from "./board";
+import { estimateVoiceUsd } from "./board";
 import type { ScriptLine } from "./ipc";
 import type { MediaLevel, MediaLevelId } from "./media-level";
 import {
@@ -12,7 +12,7 @@ import {
 
 export type Route = "lip-sync" | "motion" | "still-move" | "product";
 const ROUTES: Route[] = ["lip-sync", "motion", "still-move", "product"];
-const PAID_ROUTES: Route[] = ["lip-sync", "motion"];
+export const PAID_ROUTES: readonly Route[] = ["lip-sync", "motion"];
 
 export type KeyframeKind = "master" | "character" | "action" | "plate";
 const KEYFRAME_KINDS: KeyframeKind[] = ["master", "character", "action", "plate"];
@@ -787,7 +787,6 @@ export interface CostTable {
   rows: CostRow[];
   knownUsd: number;
   unknownSteps: number;
-  budgetUsd: number;
   seconds: number;
 }
 
@@ -830,7 +829,6 @@ export function costTable(
   steps: PricedStep[],
   rates: Record<string, Rate>,
   schemas: Record<string, ModelSchema>,
-  budgetUsd: number,
   seconds: number,
 ): CostTable {
   const rows: CostRow[] = steps.map((s) => {
@@ -855,7 +853,6 @@ export function costTable(
     rows,
     knownUsd: rows.reduce((n, r) => n + (r.usd ?? 0), 0),
     unknownSteps: rows.filter((r) => r.usd === null).length,
-    budgetUsd,
     seconds,
   };
 }
@@ -899,7 +896,6 @@ export function priceLivePlan(
   plan: LivePlan,
   record: ToolRecord,
   lines: Pick<ScriptLine, "text">[],
-  level: MediaLevel,
 ): CostTable {
   const { rates, schemas } = planRates(plan, record);
   const steps = planSteps(plan, lines);
@@ -907,7 +903,6 @@ export function priceLivePlan(
     steps,
     rates,
     schemas,
-    levelEstimateUsd(level, estimateSeconds(lines)),
     steps.reduce((n, s) => n + s.seconds, 0),
   );
 }
@@ -965,22 +960,8 @@ export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[
   return warnings;
 }
 
-const GUIDE_BUDGET_SHARE_CALLED_OUT = 1.25;
-
-const overBudget = (table: Pick<CostTable, "knownUsd" | "budgetUsd">) =>
-  table.knownUsd > table.budgetUsd * GUIDE_BUDGET_SHARE_CALLED_OUT;
-
 export const unknownPriceWarnings = (table: Pick<CostTable, "unknownSteps">): string[] =>
   table.unknownSteps ? [`${table.unknownSteps} step(s) have no recorded price.`] : [];
-
-export function costWarnings(table: CostTable): string[] {
-  return [
-    ...(overBudget(table)
-      ? [`Over the guide budget: ~$${table.knownUsd.toFixed(2)} of $${table.budgetUsd.toFixed(2)}.`]
-      : []),
-    ...unknownPriceWarnings(table),
-  ];
-}
 
 export interface LiveDirection {
   plan: LivePlan;
@@ -1000,14 +981,13 @@ export function liveDirection(
   plan: LivePlan,
   record: ToolRecord,
   lines: Pick<ScriptLine, "text">[],
-  level: MediaLevel,
   run: { connection: LiveDirection["connection"]; model: string | null; ms: number },
 ): LiveDirection {
-  const costs = priceLivePlan(plan, record, lines, level);
+  const costs = priceLivePlan(plan, record, lines);
   return {
     plan,
     costs,
-    warnings: [...costWarnings(costs), ...cheaperAlternatives(plan, record)],
+    warnings: [...unknownPriceWarnings(costs), ...cheaperAlternatives(plan, record)],
     ...planRates(plan, record),
     connection: run.connection,
     tools: record.calls.map((c) => c.tool),
@@ -1021,19 +1001,6 @@ export const keyframeDeps = (live: LiveDirection, id: string): string[] =>
   placeholdersIn(live.plan.keyframes.find((k) => k.id === id)?.input ?? {})
     .map((p) => /^keyframe:(.+)$/.exec(p)?.[1])
     .filter((d): d is string => Boolean(d));
-
-export function liveFrameUsd(live: LiveDirection, id: string): number | null {
-  const k = live.plan.keyframes.find((x) => x.id === id);
-  if (!k) return null;
-  return requestCost(live.rates[k.endpoint], live.schemas[k.endpoint], k.input, "keyframe", 0).usd;
-}
-
-export function liveShotUsd(live: LiveDirection, index: number, seconds: number): number | null {
-  const r = live.plan.routes[index];
-  if (!r?.endpoint || !r.input || !PAID_ROUTES.includes(r.route)) return 0;
-  return requestCost(live.rates[r.endpoint], live.schemas[r.endpoint], r.input, r.route, seconds)
-    .usd;
-}
 
 export function readMediaUrl(data: unknown, kind: "image" | "video"): string | undefined {
   const d = (data ?? {}) as Record<string, unknown>;

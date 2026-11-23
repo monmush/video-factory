@@ -26,8 +26,8 @@ export async function setProduct(
   if (series && productId && !series.productIds.includes(productId)) {
     await updateSeries({ id: series.id, productIds: [...series.productIds, productId] });
   }
-  const committed = (await board.sentScriptIds(sessionId)).has(scriptId);
-  const started = committed && (await video.videoMade(sessionId, scriptId));
+  const sent = (await board.sentScriptIds(sessionId)).has(scriptId);
+  const started = !(await video.changesInPlace(sessionId, scriptId, sent));
   const begun = await board.beginProductChange(sessionId, scriptId, productId, {
     copy: started,
     log,
@@ -63,12 +63,12 @@ export async function setProduct(
   };
 }
 
-export async function undoProduct(sessionId: string, scriptId: string): Promise<null> {
-  const committed = (await board.sentScriptIds(sessionId)).has(scriptId);
-  if (committed && (await video.videoMade(sessionId, scriptId))) {
+export async function undoChange(sessionId: string, scriptId: string): Promise<null> {
+  const sent = (await board.sentScriptIds(sessionId)).has(scriptId);
+  if (!(await video.changesInPlace(sessionId, scriptId, sent))) {
     throw new Error("Video đã bắt đầu tạo nên không hoàn tác được");
   }
-  const { inPlace } = await board.undoProductChange(sessionId, scriptId);
+  const { inPlace } = await board.undoChange(sessionId, scriptId);
   if (inPlace) await video.followScript(sessionId, scriptId);
   return null;
 }

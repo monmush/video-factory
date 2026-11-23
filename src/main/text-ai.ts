@@ -16,11 +16,28 @@ export function textAiMode(): TextAiMode {
 
 export const textAiIsOwn = () => textAiMode() !== "fal";
 
+const stopped = () => new Error("Đã dừng");
+
 function limiter(limit: number) {
   let active = 0;
   const waiting: (() => void)[] = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+  const turn = (signal?: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      const go = () => {
+        signal?.removeEventListener("abort", leave);
+        resolve();
+      };
+      const leave = () => {
+        const at = waiting.indexOf(go);
+        if (at >= 0) waiting.splice(at, 1);
+        reject(stopped());
+      };
+      waiting.push(go);
+      signal?.addEventListener("abort", leave, { once: true });
+    });
+  return async <T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (signal?.aborted) throw stopped();
+    if (active >= limit) await turn(signal);
     active++;
     try {
       return await task();
@@ -31,7 +48,7 @@ function limiter(limit: number) {
   };
 }
 
-const CLAUDE_CODE_PROCESSES_AT_ONCE = 3;
+const CLAUDE_CODE_PROCESSES_AT_ONCE = 5;
 const queues = { "claude-code": limiter(CLAUDE_CODE_PROCESSES_AT_ONCE), fal: limiter(6) };
 
 export async function askText(input: {
@@ -43,6 +60,7 @@ export async function askText(input: {
   model?: string;
   effort?: string;
   onText?: (soFar: string) => void;
+  signal?: AbortSignal;
 }): Promise<string> {
   const mode = textAiMode();
   if (mode === "fixture") throw new Error("Text AI is not available in fixture mode");
@@ -55,6 +73,7 @@ export async function askText(input: {
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.onText ? { onText: input.onText } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
         timeoutMs: 240_000,
       });
       await logUsage({
@@ -65,7 +84,7 @@ export async function askText(input: {
         durationMs: answer.durationMs,
       });
       return answer.text;
-    });
+    }, input.signal);
   }
 
   return queues.fal(async () => {
@@ -86,8 +105,9 @@ export async function askText(input: {
         cost: (d) => d.usage?.cost ?? null,
       },
     );
+    if (input.signal?.aborted) throw stopped();
     return data.output;
-  });
+  }, input.signal);
 }
 
 export function parseJsonObject<T>(text: string): T {

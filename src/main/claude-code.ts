@@ -212,7 +212,9 @@ export async function askClaudeCode(input: {
   effort?: string;
   timeoutMs?: number;
   onText?: (soFar: string) => void;
+  signal?: AbortSignal;
 }): Promise<ClaudeCodeAnswer> {
+  const { signal } = input;
   const bin = await findClaude();
   if (!bin) throw new Error("Chưa cài Claude Code trên máy này");
 
@@ -245,6 +247,7 @@ export async function askClaudeCode(input: {
     input.system,
   ];
 
+  if (signal?.aborted) throw new Error("Đã dừng");
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
       cwd: folderWithoutProjectInstructions,
@@ -257,6 +260,7 @@ export async function askClaudeCode(input: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
       if (child.exitCode === null && child.signalCode === null) child.kill();
       if (error) reject(error);
       else resolve(answer as ClaudeCodeAnswer);
@@ -265,6 +269,8 @@ export async function askClaudeCode(input: {
       () => finish(new Error("Claude Code không phản hồi kịp")),
       input.timeoutMs ?? 120_000,
     );
+    const stop = () => finish(new Error("Đã dừng"));
+    signal?.addEventListener("abort", stop, { once: true });
     const reader = streamReader(input.onText);
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {

@@ -1,13 +1,15 @@
 import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "@shared/board";
+import { editsInPlace } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
 import { committedIds, finishedScripts, isFirstBatch } from "@shared/ready-check";
-import { type StagingState, stagingState } from "@shared/session-steps";
+import { hasVideo, type StagingState, stagingState } from "@shared/session-steps";
 import type { VideoJob } from "@shared/video-job";
 import { Link } from "@tanstack/react-router";
 import {
   Clapperboard,
   CopyPlus,
   GripVertical,
+  LoaderCircle,
   Maximize2,
   MessageSquare,
   MessageSquarePlus,
@@ -64,6 +66,7 @@ import {
 } from "./ui/context-menu";
 import { Input } from "./ui/input";
 import { MenuItem } from "./ui/menu";
+import { Textarea } from "./ui/textarea";
 
 const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 const DIMMED = "opacity-50 hover:opacity-80 focus-within:opacity-80";
@@ -81,14 +84,33 @@ interface CardActions {
   customise: (id: string) => void;
   edit: (id: string) => void;
   setProduct: (id: string, productId: string | null) => void;
-  undoProduct: (id: string) => void;
+  editLine: (id: string, edit: LineEdit) => Promise<LineSaved | null | "failed">;
+  removeLine: (id: string, removal: Omit<LineEdit, "text">) => Promise<boolean>;
+  undoChange: (id: string) => void;
   stage: (id: string) => void;
+}
+
+interface LineEdit {
+  index: number;
+  was: string;
+  text: string;
+}
+
+interface LineSaved {
+  scriptId: string;
+  copied: boolean;
+}
+
+interface SavingLine extends LineEdit {
+  at: string;
+  inPlace: boolean;
+  sent: boolean;
 }
 
 interface Notice {
   text: string;
   restore?: string[];
-  productOf?: string;
+  undoOf?: string;
 }
 
 function isCardClick(e: MouseEvent) {
@@ -110,15 +132,27 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const [selection, setSelection] = useState<string[]>([]);
   const [customiseId, setCustomiseId] = useState<string | null>(null);
   const [box, setBox] = useState<Box | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
   const root = useRef<HTMLElement>(null);
   const videoJobs = useVideoJobs(sessionId);
   const action = useAction();
 
   useEffect(() => {
-    if (!notice || notice.productOf) return;
+    if (!notice || notice.undoOf) return;
     const timer = setTimeout(() => setNotice(null), 8000);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (!focusId) return;
+    const card = root.current?.querySelector<HTMLElement>(
+      `[data-card][data-script-id="${CSS.escape(focusId)}"]`,
+    );
+    if (!card) return;
+    setFocusId(null);
+    card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    card.focus({ preventScroll: true });
+  });
 
   if (!board || !session) return null;
   const scripts = boardOrder(board.scripts);
@@ -142,6 +176,16 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     : null;
 
   const run = action.run;
+  const showLineSaved = (saved: LineSaved, inPlaceText: string) => {
+    if (saved.copied) {
+      if (layout === "list") setView({ activeId: saved.scriptId });
+      else setFocusId(saved.scriptId);
+    }
+    setNotice({
+      text: saved.copied ? "Đã lưu thành bản mới" : inPlaceText,
+      undoOf: saved.scriptId,
+    });
+  };
 
   const actions: CardActions = {
     variant: (id, direction) =>
@@ -183,12 +227,31 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
           scriptId: id,
           productId,
         });
-        if (changed) setNotice({ text: "Đã đổi sản phẩm", productOf: changed.scriptId });
+        if (changed) setNotice({ text: "Đã đổi sản phẩm", undoOf: changed.scriptId });
       }),
+    editLine: async (id, edit) => {
+      let saved: LineSaved | null = null;
+      const ok = await run(async () => {
+        saved = await api.invoke("board:edit-line", { sessionId, scriptId: id, ...edit });
+      });
+      if (!ok) return "failed";
+      const result = saved as LineSaved | null;
+      if (!result) return null;
+      showLineSaved(result, "Đã sửa lời thoại");
+      return result;
+    },
+    removeLine: async (id, removal) => {
+      let removed: LineSaved | null = null;
+      const ok = await run(async () => {
+        removed = await api.invoke("board:remove-line", { sessionId, scriptId: id, ...removal });
+      });
+      if (ok && removed) showLineSaved(removed, "Đã xóa lời thoại");
+      return ok;
+    },
     stage: (id) => run(() => api.invoke("video:plan", { sessionId, scriptId: id })),
-    undoProduct: (id) =>
+    undoChange: (id) =>
       run(async () => {
-        await api.invoke("board:undo-product", { sessionId, scriptId: id });
+        await api.invoke("board:undo-change", { sessionId, scriptId: id });
         setNotice(null);
       }),
     toggleRef: (id) => {
@@ -197,12 +260,12 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     open: (id) => setView({ layout: "list", activeId: id }),
   };
 
-  const productNotice = notice?.productOf
-    ? scripts.findIndex((s) => s.id === notice.productOf && s.productUndo)
+  const undoNotice = notice?.undoOf
+    ? scripts.findIndex((s) => s.id === notice.undoOf && s.changeUndo)
     : -1;
   const shownNotice: Notice | null = action.error
     ? { text: action.error }
-    : notice?.productOf && productNotice < 0
+    : notice?.undoOf && undoNotice < 0
       ? null
       : notice;
   const closeNotice = () => {
@@ -356,24 +419,24 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
               className="pointer-events-auto flex items-center gap-2 rounded-full border bg-popover py-1 pr-1 pl-4 text-popover-foreground shadow-lg"
             >
               {shownNotice.text}
-              {shownNotice.productOf && (
-                <span className="text-muted-foreground tabular-nums">#{productNotice + 1}</span>
+              {shownNotice.undoOf && (
+                <span className="text-muted-foreground tabular-nums">#{undoNotice + 1}</span>
               )}
-              {shownNotice.restore || shownNotice.productOf ? (
+              {shownNotice.restore || shownNotice.undoOf ? (
                 <>
                   <Button
                     variant="ghost"
                     size="sm"
                     className="rounded-full"
                     onClick={() =>
-                      shownNotice.productOf
-                        ? actions.undoProduct(shownNotice.productOf)
+                      shownNotice.undoOf
+                        ? actions.undoChange(shownNotice.undoOf)
                         : restore(shownNotice.restore ?? [])
                     }
                   >
                     Hoàn tác
                   </Button>
-                  {shownNotice.productOf && (
+                  {shownNotice.undoOf && (
                     <Button
                       variant="ghost-muted"
                       size="icon-sm"
@@ -600,15 +663,80 @@ function ScriptCard({
     setPrompting(true);
     clearCustomise();
   }, [customiseId, script.id, clearCustomise]);
-  const firstVersion = useRef(script.updatedAt);
-  const reveal = script.updatedAt !== firstVersion.current;
+  const [editing, setEditing] = useState<LineEdit | null>(null);
+  const [saving, setSaving] = useState<SavingLine | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [seenAt, setSeenAt] = useState(script.updatedAt);
+  const [revealAt, setRevealAt] = useState<string | null>(null);
+  if (script.updatedAt !== seenAt) {
+    setSeenAt(script.updatedAt);
+    setRevealAt(saving || removing ? null : script.updatedAt);
+  }
+  const savedOnBoard =
+    saving && (script.updatedAt !== saving.at || script.lines[saving.index]?.text !== saving.was);
+  if (saving?.sent && savedOnBoard) setSaving(null);
+  const reveal = revealAt !== null;
+  const latestLines = useRef(script.lines);
+  useEffect(() => {
+    latestLines.current = script.lines;
+  });
+  const refocusLine = useRef<number | null>(null);
 
   const liveWriting = useLiveWriting(script.id);
   const writing = script.status === "writing" || liveWriting;
   const isRef = refs.includes(script.id);
   const dimmed = shared.isDimmed(script.id);
-  const seconds = script.lines.length ? estimateSeconds(script.lines) : 0;
-  const undo = script.productUndo;
+  const inPlace = editsInPlace(isSent, job);
+  const lineEditable =
+    script.status === "ready" && !liveWriting && !script.changing && !(inGallery && dimmed);
+  const shownLines = script.lines.map((line, i) =>
+    editing?.index === i && lineEditable
+      ? { ...line, text: editing.text }
+      : saving?.inPlace && !savedOnBoard && saving.index === i
+        ? { ...line, text: saving.text }
+        : line,
+  );
+  const seconds = shownLines.length ? estimateSeconds(shownLines) : 0;
+  const openLine = (index: number) => {
+    const was = script.lines[index]?.text;
+    if (was === undefined) return;
+    setRevealAt(null);
+    setEditing({ index, was, text: was });
+  };
+  const closeLine = (keyboard: boolean) => {
+    if (keyboard && editing) refocusLine.current = editing.index;
+    setEditing(null);
+  };
+  const saveLine = async (keyboard: boolean) => {
+    const edit = editing;
+    closeLine(keyboard);
+    if (!edit) return;
+    const text = edit.text.replace(/\s+/g, " ").trim();
+    if (!text || text === edit.was) return;
+    const at = script.updatedAt;
+    setSaving({ ...edit, text, at, inPlace, sent: false });
+    const saved = await actions.editLine(script.id, { index: edit.index, was: edit.was, text });
+    if (saved && saved !== "failed" && !saved.copied) {
+      setSaving((current) => current && { ...current, inPlace: true, sent: true });
+      return;
+    }
+    setSaving(null);
+    if (saved !== "failed") return;
+    const now = latestLines.current[edit.index]?.text;
+    if (now !== undefined) setEditing({ index: edit.index, was: now, text: edit.text });
+  };
+  const removeLine = async () => {
+    const edit = editing;
+    closeLine(false);
+    if (!edit) return;
+    setRemoving(true);
+    const removed = await actions.removeLine(script.id, { index: edit.index, was: edit.was });
+    setRemoving(false);
+    if (removed) return;
+    const now = latestLines.current[edit.index]?.text;
+    if (now !== undefined) setEditing({ index: edit.index, was: now, text: edit.text });
+  };
+  const undo = script.changeUndo;
   const earlier =
     undo && !undo.copy
       ? undo.lines
@@ -649,6 +777,7 @@ function ScriptCard({
         <DragHandle className="top-[19px] left-0.5" />
         <header>
           <CardMeta script={script} number={number} isRef={isRef}>
+            {!isSent && <StagingMark scriptId={script.id} state={staging} actions={actions} />}
             {script.status === "ready" && script.lines.length > 0 && (
               <CardTabs value={tab} onChange={setTab} staging={staging} />
             )}
@@ -680,39 +809,53 @@ function ScriptCard({
         ) : script.lines.length > 0 ? (
           <div className="relative mt-3">
             <dl
-              key={script.updatedAt}
+              key={revealAt ?? "quiet"}
               className={cn(
                 "grid cursor-text grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 leading-relaxed transition-opacity",
                 writing && "opacity-45",
               )}
               data-selectable
             >
-              {withOccurrenceKeys(script.lines, (line) => line.text).map(
-                ({ item: line, key }, i) => {
-                  const style: CSSProperties | undefined = reveal
-                    ? { animationDelay: `${i * 70}ms` }
-                    : undefined;
-                  return (
-                    <Fragment key={key}>
-                      <dt
-                        className={cn("text-muted-foreground", reveal && "line-in")}
-                        style={style}
-                      >
-                        {speaker(line)}
-                      </dt>
-                      <dd
-                        className={cn(
-                          reveal && "line-in",
-                          rewrote(i) && "-mx-1 rounded-sm bg-accent px-1",
-                        )}
-                        style={style}
-                      >
-                        {line.text}
-                      </dd>
-                    </Fragment>
-                  );
-                },
-              )}
+              {withOccurrenceKeys(shownLines, (line) => line.text).map(({ item: line, key }, i) => {
+                const style: CSSProperties | undefined = reveal
+                  ? { animationDelay: `${i * 70}ms` }
+                  : undefined;
+                return (
+                  <Fragment key={editing?.index === i ? `editing-${i}` : key}>
+                    <dt className={cn("text-muted-foreground", reveal && "line-in")} style={style}>
+                      {speaker(line)}
+                    </dt>
+                    <dd className={cn(reveal && "line-in")} style={style}>
+                      {editing?.index === i && lineEditable ? (
+                        <LineEditor
+                          label={`Lời thoại ${i + 1}`}
+                          initial={editing.text}
+                          note={
+                            inPlace
+                              ? undefined
+                              : "Đã có video nên thay đổi lưu thành bản mới. Video cũ giữ nguyên."
+                          }
+                          onChange={(text) =>
+                            setEditing((current) => current && { ...current, text })
+                          }
+                          onSave={(keyboard) => void saveLine(keyboard)}
+                          onCancel={() => closeLine(true)}
+                          onRemove={script.lines.length > 1 ? () => void removeLine() : undefined}
+                        />
+                      ) : (
+                        <LineText
+                          text={line.text}
+                          highlighted={rewrote(i)}
+                          editable={lineEditable && !saving && !removing && !editing}
+                          focusOnMount={refocusLine}
+                          index={i}
+                          onOpen={() => openLine(i)}
+                        />
+                      )}
+                    </dd>
+                  </Fragment>
+                );
+              })}
             </dl>
             {writing && <div className="shimmer pointer-events-none absolute inset-0 rounded-md" />}
           </div>
@@ -1091,7 +1234,12 @@ function StagingMark({
   actions: CardActions;
 }) {
   if (state === "staging") {
-    return <span className="shimmer-text text-2xs whitespace-nowrap">Đang lên dàn dựng</span>;
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-2xs whitespace-nowrap">
+        <LoaderCircle className="size-3 animate-spin" />
+        <span className="shimmer-text">Đang lên dàn dựng</span>
+      </span>
+    );
   }
   if (state !== "failed") return null;
   return (
@@ -1123,7 +1271,7 @@ function SentBadge({
       ? "Lên dàn dựng"
       : !job || job.status === "idle"
         ? "Chờ tạo"
-        : job.status === "done"
+        : hasVideo(job)
           ? "Có video"
           : job.status === "review"
             ? "Chờ xem cảnh chính"
@@ -1275,6 +1423,137 @@ function PinAction({ script, actions }: { script: Script; actions: CardActions }
     >
       {script.pinned ? <PinOff /> : <Pin />}
     </IconAction>
+  );
+}
+
+function LineText({
+  text,
+  highlighted,
+  editable,
+  index,
+  focusOnMount,
+  onOpen,
+}: {
+  text: string;
+  highlighted: boolean;
+  editable: boolean;
+  index: number;
+  focusOnMount: RefObject<number | null>;
+  onOpen: () => void;
+}) {
+  if (!editable) {
+    return (
+      <span className={cn(highlighted && "-mx-1 block rounded-sm bg-accent px-1")}>{text}</span>
+    );
+  }
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a button would stop the line from being selected for copying
+    <span
+      role="button"
+      tabIndex={0}
+      ref={(el) => {
+        if (el && focusOnMount.current === index) {
+          focusOnMount.current = null;
+          el.focus();
+        }
+      }}
+      className={cn(
+        "group/line -mx-1 block cursor-text rounded-sm px-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+        highlighted ? "bg-accent" : "hover:bg-accent/40",
+      )}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+        if (window.getSelection()?.toString()) return;
+        onOpen();
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        onOpen();
+      }}
+    >
+      {text}
+      <Pencil
+        className="ml-1.5 inline size-3 align-baseline text-muted-foreground/70 opacity-0 transition-opacity group-hover/line:opacity-100 group-focus-visible/line:opacity-100"
+        aria-hidden
+      />
+    </span>
+  );
+}
+
+function LineEditor({
+  label,
+  initial,
+  note,
+  onChange,
+  onSave,
+  onCancel,
+  onRemove,
+}: {
+  label: string;
+  initial: string;
+  note?: string;
+  onChange: (text: string) => void;
+  onSave: (keyboard: boolean) => void;
+  onCancel: () => void;
+  onRemove?: () => void;
+}) {
+  const done = useRef(false);
+  const finishWith = (handler: () => void) => {
+    if (done.current) return;
+    done.current = true;
+    handler();
+  };
+  const finish = (save: boolean, keyboard: boolean) =>
+    finishWith(() => (save ? onSave(keyboard) : onCancel()));
+  return (
+    <>
+      <fieldset
+        aria-label={label}
+        className="-mx-1 flex min-w-0 items-start gap-1"
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget)) finish(true, false);
+        }}
+      >
+        <Textarea
+          autoFocus
+          rows={1}
+          defaultValue={initial}
+          aria-label={label}
+          className="field-sizing-content min-h-0 flex-1 rounded-sm px-1 py-0 leading-relaxed"
+          onFocus={(e) => {
+            const end = e.currentTarget.value.length;
+            e.currentTarget.setSelectionRange(end, end);
+          }}
+          onChange={(e) => onChange(e.currentTarget.value)}
+          onContextMenu={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              finish(true, true);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              finish(false, true);
+            }
+          }}
+        />
+        {onRemove && (
+          <Button
+            variant="ghost-muted"
+            size="icon-xs"
+            className="-my-0.5"
+            aria-label="Xóa lời thoại"
+            title="Xóa lời thoại"
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => finishWith(onRemove)}
+          >
+            <Trash2 />
+          </Button>
+        )}
+      </fieldset>
+      {note && <p className="mt-1 text-xs text-muted-foreground">{note}</p>}
+    </>
   );
 }
 

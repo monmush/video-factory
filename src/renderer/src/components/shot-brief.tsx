@@ -1,8 +1,10 @@
 import { directionAt } from "@shared/direction";
+import { unstarted } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
+import type { Reworded } from "@shared/reworded";
 import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "@shared/scene";
 import { stagingState } from "@shared/session-steps";
-import { type JobShot, spentUsd, type VideoJob } from "@shared/video-job";
+import type { JobShot, VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -32,9 +34,6 @@ export function PlanningSteps({ steps, className }: { steps: string[]; className
     </ol>
   );
 }
-
-const canReplanForFree = (job: VideoJob) =>
-  job.status === "idle" && !job.planning && !job.dialogue && spentUsd(job) === 0;
 
 export function ShotBrief({
   sessionId,
@@ -82,7 +81,9 @@ export function ShotBrief({
     );
   }
 
-  const open = canReplanForFree(job);
+  const open = unstarted(job);
+  const changed = open ? job.reworded : undefined;
+  const changedScene = (i: number) => Array.isArray(changed?.scenes) && changed.scenes.includes(i);
   const keyframes = job.live?.plan.keyframes ?? [];
   const nameOf = (shot: JobShot) => {
     const line = job.lines[shot.lineIndex];
@@ -102,6 +103,7 @@ export function ShotBrief({
 
   return (
     <div data-shot-brief className={cn("flex flex-col gap-3", className)}>
+      {changed && <RewordedNote changed={changed} />}
       {staging && <StagingNote text={staging} />}
       {whole.length > 0 && (
         <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
@@ -138,10 +140,11 @@ export function ShotBrief({
         </Button>
       )}
       <ol className="flex flex-col divide-y divide-border">
-        {job.shots.map((shot) => (
+        {job.shots.map((shot, i) => (
           <Scene
             key={shot.index}
             shot={shot}
+            reworded={changedScene(i)}
             name={nameOf(shot)}
             framing={sceneFraming(shot, keyframes)}
             directed={Boolean(directionAt(job.direction, shot.text))}
@@ -158,8 +161,22 @@ export function ShotBrief({
   );
 }
 
+function RewordedNote({ changed }: { changed: Reworded }) {
+  const scenes =
+    changed.scenes === "all"
+      ? "Đã lên lại toàn bộ theo lời thoại mới"
+      : changed.scenes.length
+        ? `Đã cập nhật ${changed.scenes.length} cảnh theo lời thoại mới`
+        : "";
+  const dropped = changed.droppedWishes ? `Đã bỏ ${changed.droppedWishes} ý của bạn` : "";
+  const text = [scenes, dropped].filter(Boolean).join(" · ");
+  if (!text) return null;
+  return <p className="text-xs text-muted-foreground">{text}</p>;
+}
+
 function Scene({
   shot,
+  reworded,
   name,
   framing,
   directed,
@@ -170,6 +187,7 @@ function Scene({
   onSave,
 }: {
   shot: JobShot;
+  reworded: boolean;
   name: string;
   framing: string;
   directed: boolean;
@@ -189,7 +207,9 @@ function Scene({
         </span>
         <Badge>{framing}</Badge>
         {sceneMoves(shot) && <Badge>Chuyển động</Badge>}
+        {shot.sound && <Badge>Tiếng động</Badge>}
         {directed && <Badge variant="secondary">Theo ý bạn</Badge>}
+        {reworded && <Badge variant="secondary">Vừa sửa</Badge>}
         <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
           {sceneSeconds(shot)} giây
         </span>

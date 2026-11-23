@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { access, constants, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { app } from "electron";
+import { MIX, type MixInput, mixGraph, type SoundRole } from "../../shared/sound";
 
 const EXTRA_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
 
@@ -33,11 +34,17 @@ async function find(name: "ffmpeg" | "ffprobe"): Promise<string> {
   throw new Error(FFMPEG_MISSING);
 }
 
-function run(bin: string, args: string[], onStdout?: (chunk: string) => void): Promise<string> {
+function run(
+  bin: string,
+  args: string[],
+  onStdout?: (chunk: string) => void,
+  onStderr?: (all: string) => void,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
+    let all = "";
     child.stdout.on("data", (d: Buffer) => {
       const text = d.toString();
       out += text;
@@ -45,9 +52,11 @@ function run(bin: string, args: string[], onStdout?: (chunk: string) => void): P
     });
     child.stderr.on("data", (d: Buffer) => {
       err = (err + d.toString()).slice(-4000);
+      if (onStderr) all += d.toString();
     });
     child.on("error", reject);
     child.on("close", (code) => {
+      onStderr?.(all);
       if (code === 0) resolve(out);
       else reject(new Error(`FFmpeg lỗi (${code}): ${err.trim().split("\n").at(-1) ?? ""}`));
     });
@@ -249,6 +258,10 @@ export async function cropCloser(image: string, out: string): Promise<void> {
     "1",
     out,
   ]);
+}
+
+export async function frameAt(video: string, seconds: number, out: string): Promise<void> {
+  await ffmpeg(["-ss", seconds.toFixed(3), "-i", video, "-frames:v", "1", "-q:v", "2", out]);
 }
 
 export async function productStill(photo: string, out: string, size: Size): Promise<void> {
@@ -506,4 +519,290 @@ export async function assembleOverDialogue(
       if (match && totalSec > 0) onProgress(Math.min(1, Number(match[1]) / 1e6 / totalSec));
     },
   );
+}
+
+export async function atTempo(source: string, tempo: number, out: string): Promise<void> {
+  await ffmpeg([
+    "-i",
+    source,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0",
+    "-vf",
+    `setpts=PTS/${tempo},fps=${OUTPUT.fps}`,
+    "-af",
+    `atempo=${tempo},aresample=${OUTPUT.sampleRate}`,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "19",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "160k",
+    "-movflags",
+    "+faststart",
+    "-f",
+    "mp4",
+    out,
+  ]);
+}
+
+const FIXTURE_SOUND: Record<SoundRole, (seconds: string) => string> = {
+  ambience: (t) => `anoisesrc=color=brown:amplitude=0.5:duration=${t},lowpass=f=900,highpass=f=60`,
+  spot: (t) => `sine=frequency=3000:duration=${t},afade=t=out:st=0:d=${t}`,
+};
+
+export async function fixtureSound(role: SoundRole, seconds: number, out: string): Promise<void> {
+  await ffmpeg([
+    "-f",
+    "lavfi",
+    "-i",
+    FIXTURE_SOUND[role](seconds.toFixed(3)),
+    "-ac",
+    "2",
+    "-ar",
+    String(OUTPUT.sampleRate),
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "128k",
+    out,
+  ]);
+}
+
+export interface Loudness {
+  input_i: string;
+  input_tp: string;
+  input_lra: string;
+  input_thresh: string;
+  target_offset: string;
+}
+
+const lastJson = (text: string): Loudness | null => {
+  const start = text.lastIndexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1)) as Loudness;
+  } catch {
+    return null;
+  }
+};
+
+async function loudnessOf(input: string[], filter: string): Promise<Loudness | null> {
+  let log = "";
+  await run(
+    await find("ffmpeg"),
+    ["-hide_banner", "-nostats", ...input, "-af", filter, "-f", "null", "-"],
+    undefined,
+    (all) => {
+      log = all;
+    },
+  );
+  return lastJson(log);
+}
+
+const SILENT_LUFS = -70;
+
+export async function integratedLufs(path: string): Promise<number> {
+  const found = await loudnessOf(["-i", path], "loudnorm=print_format=json");
+  const lufs = Number(found?.input_i);
+  return Number.isFinite(lufs) ? lufs : SILENT_LUFS;
+}
+
+export const audible = (lufs: number) => lufs > SILENT_LUFS + 1;
+
+export async function mixSoundtrack(input: {
+  voice: string;
+  layers: { path: string; mix: MixInput }[];
+  totalSec: number;
+  out: string;
+}): Promise<void> {
+  const voiceLufs = await integratedLufs(input.voice);
+  const { filter, loops } = mixGraph(
+    audible(voiceLufs) ? voiceLufs : MIX.voiceLufs,
+    input.layers.map((l) => l.mix),
+    input.totalSec,
+  );
+  const mixed = `${input.out}.mix.wav`;
+  await ffmpeg([
+    "-i",
+    input.voice,
+    ...input.layers.flatMap((l, i) => [...(loops[i] ? ["-stream_loop", "-1"] : []), "-i", l.path]),
+    "-filter_complex",
+    filter,
+    "-map",
+    "[mix]",
+    "-ar",
+    String(OUTPUT.sampleRate),
+    "-c:a",
+    "pcm_s16le",
+    mixed,
+  ]);
+  await normaliseLoudness(mixed, input.out);
+}
+
+async function normaliseLoudness(source: string, out: string): Promise<void> {
+  const target = `I=${MIX.finalLufs}:TP=${MIX.finalTruePeak}:LRA=${MIX.finalLra}`;
+  const measured = await loudnessOf(["-i", source], `loudnorm=${target}:print_format=json`);
+  const second = measured
+    ? `loudnorm=${target}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`
+    : `loudnorm=${target}`;
+  await ffmpeg([
+    "-i",
+    source,
+    "-af",
+    `${second},aresample=${OUTPUT.sampleRate}`,
+    "-ac",
+    "2",
+    "-c:a",
+    "pcm_s16le",
+    out,
+  ]);
+}
+
+export async function silenceLog(path: string, noiseDb: number, minSec: number): Promise<string> {
+  let log = "";
+  await run(
+    await find("ffmpeg"),
+    [
+      "-hide_banner",
+      "-nostats",
+      "-i",
+      path,
+      "-vn",
+      "-af",
+      `silencedetect=n=${noiseDb}dB:d=${minSec}`,
+      "-f",
+      "null",
+      "-",
+    ],
+    undefined,
+    (all) => {
+      log = all;
+    },
+  );
+  return log;
+}
+
+export async function joinSpeech(
+  pieces: { clip: string; from: number; to: number }[],
+  work: string,
+  out: string,
+): Promise<void> {
+  const format = `aresample=${OUTPUT.sampleRate},aformat=sample_fmts=fltp:channel_layouts=stereo`;
+  const trimmed: { path: string; gainDb: number }[] = [];
+  for (const [i, piece] of pieces.entries()) {
+    const path = join(work, `speech-${String(i + 1).padStart(2, "0")}.wav`);
+    await ffmpeg([
+      "-i",
+      piece.clip,
+      "-vn",
+      "-af",
+      `atrim=start=${piece.from.toFixed(3)}:end=${piece.to.toFixed(3)},asetpts=PTS-STARTPTS,${format}`,
+      "-c:a",
+      "pcm_s16le",
+      path,
+    ]);
+    const lufs = await integratedLufs(path);
+    trimmed.push({ path, gainDb: audible(lufs) ? MIX.voiceLufs - lufs : 0 });
+  }
+  const filters = trimmed.map((p, i) => `[${i}:a]${format},volume=${p.gainDb.toFixed(2)}dB[p${i}]`);
+  filters.push(
+    `${trimmed.map((_, i) => `[p${i}]`).join("")}concat=n=${trimmed.length}:v=0:a=1[out]`,
+  );
+  await ffmpeg([
+    ...trimmed.flatMap((p) => ["-i", p.path]),
+    "-filter_complex",
+    filters.join(";"),
+    "-map",
+    "[out]",
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "160k",
+    out,
+  ]);
+}
+
+export async function speechShotClip(
+  clip: string,
+  fromSec: number,
+  frames: number,
+  out: string,
+  { width, height }: Size,
+): Promise<void> {
+  const { fps } = OUTPUT;
+  const lead = Math.max(0, -fromSec);
+  await ffmpeg([
+    "-ss",
+    Math.max(0, fromSec).toFixed(3),
+    "-i",
+    clip,
+    "-vf",
+    `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},setsar=1,format=yuv420p,` +
+      `tpad=start_mode=clone:start_duration=${lead.toFixed(3)}:stop_mode=clone:stop_duration=10`,
+    "-frames:v",
+    String(frames),
+    "-an",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "19",
+    out,
+  ]);
+}
+
+export async function fixtureSpeechClip(input: {
+  still: string;
+  voice: string;
+  seconds: number;
+  speech: { start: number; end: number };
+  out: string;
+  size: Size;
+}): Promise<void> {
+  const { width, height } = input.size;
+  const total = input.seconds.toFixed(3);
+  const delay = Math.round(input.speech.start * 1000);
+  await ffmpeg([
+    "-loop",
+    "1",
+    "-framerate",
+    String(OUTPUT.fps),
+    "-t",
+    total,
+    "-i",
+    input.still,
+    "-stream_loop",
+    "-1",
+    "-i",
+    input.voice,
+    "-filter_complex",
+    `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,format=yuv420p[v];` +
+      `[1:a]atrim=0:${(input.speech.end - input.speech.start).toFixed(3)},asetpts=PTS-STARTPTS,` +
+      `adelay=${delay}|${delay},apad=whole_dur=${total},atrim=0:${total}[a]`,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-t",
+    total,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    input.out,
+  ]);
 }

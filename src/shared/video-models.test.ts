@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { migrateSettings } from "./batch-settings";
-import { estimateSeconds, estimateUsd, estimateVoiceUsd } from "./board";
 import { migrateJob, newJob } from "./video-job";
 import {
   billedClipSec,
   clipUsd,
   DEFAULT_VIDEO_MODEL,
-  LEVEL_LABEL,
   modelForClip,
-  modelGroups,
   modelOutput,
   VIDEO_MODELS,
   videoModel,
@@ -17,30 +14,14 @@ import {
 const model = (id: string) => videoModel(id);
 
 describe("video model registry", () => {
-  it("has unique ids, one suggested model per level, only 720p to 1080p, and never shows the middleman's name", () => {
+  it("has unique ids, only 720p to 1080p, and never shows the middleman's name", () => {
     expect(new Set(VIDEO_MODELS.map((m) => m.id)).size).toBe(VIDEO_MODELS.length);
-    for (const level of Object.keys(LEVEL_LABEL)) {
-      expect(VIDEO_MODELS.filter((m) => m.level === level && "pick" in m && m.pick)).toHaveLength(
-        1,
-      );
-    }
     for (const m of VIDEO_MODELS) {
       for (const out of Object.values(m.outputs)) {
         expect(["720p", "768p", "1080p"]).toContain(out.resolution);
       }
-      expect(`${m.name} ${m.maker} ${m.blurb}`).not.toMatch(/fal/i);
+      expect(`${m.name} ${m.maker}`).not.toMatch(/fal/i);
     }
-  });
-
-  it("groups by level, suggested first, every model once", () => {
-    const groups = modelGroups();
-    for (const g of groups) {
-      const first = g.models[0];
-      expect(first && "pick" in first && first.pick).toBe(true);
-      expect(g.models.every((m) => m.level === g.level)).toBe(true);
-    }
-    const listed = groups.flatMap((g) => g.models.map((m) => m.id));
-    expect(listed.sort()).toEqual(VIDEO_MODELS.map((m) => m.id).sort());
   });
 
   it("reads missing and unknown ids as the default", () => {
@@ -104,34 +85,5 @@ describe("video model registry", () => {
     expect(modelForClip("omnihuman-v2", 301).id).toBe(DEFAULT_VIDEO_MODEL);
     expect(modelForClip("kling-avatar-v2-pro", 1000).id).toBe("kling-avatar-v2-pro");
     expect(modelForClip(undefined, 3).id).toBe(DEFAULT_VIDEO_MODEL);
-  });
-});
-
-describe("board estimates follow the batch's model", () => {
-  const lines = [
-    { characterId: "a", text: "Con chào ông ạ" },
-    { characterId: "b", text: "Ừ, ngồi xuống uống chén trà đã, trà hôm nay ngon lắm đấy con" },
-  ];
-
-  it("the default model's rate when none is chosen", () => {
-    expect(estimateUsd(lines)).toBeCloseTo(
-      estimateSeconds(lines) * 0.0562 + estimateVoiceUsd(lines),
-    );
-  });
-
-  it("another model's rate, with short lines raised to its minimum", () => {
-    const short = 4 / 3.7 + 0.3;
-    expect(estimateUsd(lines, { model: "omnihuman-v2" })).toBeCloseTo(
-      (estimateSeconds(lines) + (4 - short)) * 0.105 + estimateVoiceUsd(lines),
-    );
-    expect(estimateUsd(lines, { model: "kling-avatar-v2-pro" })).toBeCloseTo(
-      estimateSeconds(lines) * 0.115 + estimateVoiceUsd(lines),
-    );
-  });
-
-  it("MiniMax costs twice as much in a 1080p video", () => {
-    const at = (resolution: string) =>
-      estimateUsd(lines, { model: "minimax-h3-lipsync", resolution }) - estimateVoiceUsd(lines);
-    expect(at("1080p")).toBeCloseTo(2 * at("720p"));
   });
 });

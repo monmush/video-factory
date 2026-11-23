@@ -8,8 +8,15 @@ import {
   placeholdersIn,
   type Rate,
 } from "./live-plan";
-import { levelRates, type MediaLevel, type MediaLevelId, mediaLevel } from "./media-level";
-import { DEFAULT_VIDEO_MODEL, videoModel } from "./video-models";
+import {
+  levelRates,
+  levelSpeaker,
+  type MediaLevel,
+  type MediaLevelId,
+  mediaLevel,
+} from "./media-level";
+import { speakInput } from "./speak-request";
+import type { VideoModel } from "./video-models";
 
 export interface RoleModel {
   endpoint: string;
@@ -78,32 +85,31 @@ function builtinStills(rate: Rate): Recipe["stills"] {
   };
 }
 
-function builtinSpeak(rate: Rate): RoleModel {
-  const model = videoModel(DEFAULT_VIDEO_MODEL);
+const REQUIRED_SPEAK_FIELDS = ["image_url", "audio_url"];
+
+export function speakRole(model: VideoModel, rate: Rate): RoleModel {
+  const input = speakInput(model.id, {
+    imageUrl: "{{keyframe}}",
+    audioUrl: "{{audio}}",
+    prompt: PROMPT_SLOT,
+    resolution: "720p",
+  });
   return {
     endpoint: model.endpoint,
     name: model.name,
-    input: {
-      image_url: "{{keyframe}}",
-      audio_url: "{{audio}}",
-      prompt: PROMPT_SLOT,
-      enable_safety_checker: true,
-    },
+    input,
     rate,
     schema: {
       endpoint: model.endpoint,
       name: model.name,
       category: "image-to-video",
-      params: [
-        param("image_url", "string", true),
-        param("audio_url", "string", true),
-        param("prompt", "string", false),
-        param("enable_safety_checker", "boolean", false),
-      ],
+      params: Object.entries(input).map(([name, value]) =>
+        param(name, typeof value, REQUIRED_SPEAK_FIELDS.includes(name)),
+      ),
       outputs: ["video"],
       ...(model.minSec ? { minAudioSec: model.minSec } : {}),
     },
-    why: "The app's default speaking-shot model.",
+    why: "The speaking-shot model of this quality level.",
   };
 }
 
@@ -149,7 +155,7 @@ export function builtinRecipe(level: MediaLevel): Recipe {
     level: level.id,
     madeAt: null,
     stills: builtinStills(rates.stills),
-    speak: builtinSpeak(rates.speak),
+    speak: speakRole(levelSpeaker(level), rates.speak),
     motion: rates.motion ? builtinMotion(rates.motion) : null,
   };
 }

@@ -4,6 +4,7 @@ import {
   Ellipsis,
   Folder,
   FolderOpen,
+  LoaderCircle,
   type LucideIcon,
   Pencil,
   Pin,
@@ -15,6 +16,7 @@ import {
 import { type CSSProperties, Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useCreateActions } from "@/lib/actions";
 import { api } from "@/lib/api";
+import { useVideosBeingMade } from "@/lib/making-videos";
 import { requestSeriesFocus } from "@/lib/series-focus";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
@@ -103,6 +105,9 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
   const params = useParams({ strict: false }) as { seriesId?: string; sessionId?: string };
   const current = params.seriesId === series.id || sessions.some((s) => s.id === params.sessionId);
   const visible = showAll ? sessions : sessions.slice(0, VISIBLE_SESSIONS);
+  const making = useVideosBeingMade();
+  const shown = open ? visible : [];
+  const makingOutOfSight = sessions.some((s) => making[s.id] && !shown.includes(s));
   const FolderIcon = open ? FolderOpen : Folder;
   const pinned = Boolean(series.pinnedAt);
   const menuShown = menuOpen || contextOpen;
@@ -155,11 +160,13 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
             </TooltipTrigger>
             <SeriesCard series={series} sessionCount={sessions.length} />
           </Tooltip>
-          {pinned && (
-            <Pin
-              aria-label="Đã ghim"
-              className="absolute right-2.5 size-3.5 text-sidebar-muted-foreground group-focus-within:opacity-0 group-hover:opacity-0"
-            />
+          {(pinned || makingOutOfSight) && (
+            <span className="absolute right-2.5 flex items-center gap-1.5 group-focus-within:opacity-0 group-hover:opacity-0">
+              {makingOutOfSight && <MakingVideos />}
+              {pinned && (
+                <Pin aria-label="Đã ghim" className="size-3.5 text-sidebar-muted-foreground" />
+              )}
+            </span>
           )}
           <div
             className={cn(
@@ -242,6 +249,7 @@ function SessionRow({ session }: { session: Session }) {
   const [deleting, setDeleting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const pinned = Boolean(session.pinnedAt);
+  const making = Boolean(useVideosBeingMade()[session.id]);
 
   const actions: RowAction[] = [
     {
@@ -295,6 +303,7 @@ function SessionRow({ session }: { session: Session }) {
                 className="size-3.5 shrink-0 text-sidebar-muted-foreground"
               />
             )}
+            {making && <MakingVideos />}
           </ContextMenuTrigger>
           <ContextMenuPopup finalFocus={false}>
             <RowActionItems actions={actions} />
@@ -303,6 +312,15 @@ function SessionRow({ session }: { session: Session }) {
       )}
       <DeleteSessionDialog session={session} open={deleting} onOpenChange={setDeleting} />
     </Fragment>
+  );
+}
+
+function MakingVideos() {
+  return (
+    <LoaderCircle
+      aria-label="Đang tạo video"
+      className="size-3 shrink-0 animate-spin text-muted-foreground"
+    />
   );
 }
 
