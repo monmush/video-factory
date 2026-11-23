@@ -61,7 +61,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
       <section className="px-6 pt-4 pb-8">
         {started.length > 0 ? (
           <div className="flex items-center gap-3">
-            <span className="text-muted-foreground">Tất cả đã gửi tạo video</span>
+            <span className="text-muted-foreground">Tất cả đã tạo video</span>
             <Button
               variant="outline"
               render={<Link to="/sessions/$sessionId/videos" params={{ sessionId }} />}
@@ -104,7 +104,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
       </ul>
       {started.length > 0 && (
         <section className="mt-8">
-          <h3 className="mb-3 text-sm text-muted-foreground">Đã gửi tạo video</h3>
+          <h3 className="mb-3 text-sm text-muted-foreground">Đã tạo video</h3>
           <ul className="flex flex-col gap-2">
             {started.map((script) => (
               <li
