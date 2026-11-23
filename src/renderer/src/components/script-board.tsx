@@ -41,7 +41,6 @@ import {
   addRefs,
   boardLayout,
   editAsNewVersion,
-  FULL_CARDS_MAX,
   requestChatFocus,
   startScriptDrag,
   toggleRef,
@@ -360,7 +359,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       ) : layout === "list" ? (
         <ListView scripts={scripts} activeId={view.activeId} setView={setView} {...shared} />
       ) : (
-        <Gallery scripts={scripts} full={scripts.length <= FULL_CARDS_MAX} {...shared} />
+        <Gallery scripts={scripts} {...shared} />
       )}
 
       <BoardToast sessionId={sessionId} error={action.error} onClearError={action.clear} />
@@ -420,27 +419,18 @@ function moveFocusInGallery(e: KeyboardEvent<HTMLElement>): boolean {
   });
 }
 
-function Gallery({ scripts, full, ...shared }: SharedProps & { scripts: Script[]; full: boolean }) {
+function Gallery({ scripts, ...shared }: SharedProps & { scripts: Script[] }) {
   const ref = useRef<HTMLDivElement>(null);
   useFlip(ref, scripts);
   return (
     <div
       ref={ref}
       data-gallery
-      className={cn(
-        "relative grid gap-4",
-        full
-          ? "grid-cols-[repeat(auto-fill,minmax(min(100%,400px),1fr))]"
-          : "grid-cols-[repeat(auto-fill,minmax(min(100%,260px),1fr))]",
-      )}
+      className="relative grid grid-cols-[repeat(auto-fill,minmax(min(100%,400px),1fr))] gap-4"
     >
-      {scripts.map((script, i) =>
-        full ? (
-          <ScriptCard key={script.id} script={script} number={i + 1} inGallery {...shared} />
-        ) : (
-          <CompactCard key={script.id} script={script} number={i + 1} {...shared} />
-        ),
-      )}
+      {scripts.map((script, i) => (
+        <ScriptCard key={script.id} script={script} number={i + 1} inGallery {...shared} />
+      ))}
     </div>
   );
 }
@@ -794,119 +784,6 @@ function ScriptCard({
           </div>
         </footer>
 
-        {prompting && (
-          <VariantForm
-            onSubmit={(direction) => {
-              actions.variant(script.id, direction);
-              setPrompting(false);
-            }}
-            onCancel={() => setPrompting(false)}
-          />
-        )}
-      </article>
-    </CardMenu>
-  );
-}
-
-function CompactCard({
-  script,
-  number,
-  ...shared
-}: SharedProps & { script: Script; number: number }) {
-  const { refs, actions, onCardKey, selected, customiseId, clearCustomise } = shared;
-  const job = shared.jobOf(script.id);
-  const isSent = job !== undefined;
-  const [prompting, setPrompting] = useState(false);
-  useEffect(() => {
-    if (customiseId !== script.id) return;
-    setPrompting(true);
-    clearCustomise();
-  }, [customiseId, script.id, clearCustomise]);
-  const isRef = refs.includes(script.id);
-  const liveWriting = useLiveWriting(script.id);
-  const writing = script.status === "writing" || liveWriting;
-  const staging = useStaging(shared.sessionId, script);
-  return (
-    <CardMenu script={script} shared={shared} canOpen>
-      <article
-        data-flip={script.id}
-        data-card
-        data-script-id={script.id}
-        aria-label={script.title || "Kịch bản"}
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: cards are focusable for opening (Enter) and deleting
-        tabIndex={0}
-        className={cn(
-          "group relative flex cursor-pointer flex-col rounded-xl border bg-card p-3.5 shadow-xs/5 outline-none transition-opacity hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring",
-          selected.includes(script.id) && "ring-2 ring-ring/60",
-        )}
-        onClick={(e) => {
-          if (shared.onSelectClick(e, script.id) || !isCardClick(e)) return;
-          actions.open(script.id);
-        }}
-        onKeyDown={(e) => onCardKey(e, script.id)}
-        {...shared.dragProps(script, number)}
-      >
-        <DragHandle className="top-[17px] left-0.5" />
-        <header>
-          <CardMeta script={script} number={number} isRef={isRef}>
-            <CardBadge sessionId={shared.sessionId} job={job} staging={staging} />
-          </CardMeta>
-          <h3 className="mt-1 line-clamp-2 font-semibold leading-snug text-balance">
-            {script.title || <Bars count={1} className="pt-1" />}
-          </h3>
-        </header>
-        <p
-          className={cn(
-            "mt-1 line-clamp-2 leading-snug text-pretty text-muted-foreground",
-            writing && "shimmer rounded",
-          )}
-        >
-          {script.status === "failed" ? "Chưa viết được." : script.hook || "Đang viết…"}
-        </p>
-        <footer className="mt-auto flex items-end pt-2">
-          <span className="flex-1 pb-1.5 text-xs text-muted-foreground tabular-nums">
-            {script.status === "ready" && formatSeconds(estimateSeconds(script.lines))}
-          </span>
-          <div
-            className={cn(
-              "flex opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100",
-              prompting && "opacity-100",
-            )}
-          >
-            <IconAction label="Mở" onClick={() => actions.open(script.id)}>
-              <Maximize2 />
-            </IconAction>
-            {isSent && (
-              <IconAction label="Sửa" onClick={() => actions.edit(script.id)}>
-                <Pencil />
-              </IconAction>
-            )}
-            {script.status === "ready" && (
-              <>
-                <IconAction label="Tạo biến thể" onClick={() => actions.variant(script.id)}>
-                  <CopyPlus />
-                </IconAction>
-                <IconAction
-                  label="Tùy chỉnh"
-                  pressed={prompting}
-                  onClick={() => setPrompting(!prompting)}
-                >
-                  <WandSparkles />
-                </IconAction>
-              </>
-            )}
-            {script.status === "failed" && (
-              <IconAction label="Thử lại" onClick={() => actions.retry(script.id)}>
-                <RotateCw />
-              </IconAction>
-            )}
-            <RefAction script={script} isRef={isRef} actions={actions} />
-            <PinAction script={script} actions={actions} />
-            <IconAction label="Xóa" onClick={() => actions.remove(script.id)}>
-              <Trash2 />
-            </IconAction>
-          </div>
-        </footer>
         {prompting && (
           <VariantForm
             onSubmit={(direction) => {

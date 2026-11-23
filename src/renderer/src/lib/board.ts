@@ -72,10 +72,10 @@ export interface BoardView {
   focusId: string | null;
 }
 
-export const FULL_CARDS_MAX = 6;
+export const GALLERY_DEFAULT_MAX = 6;
 
 export const boardLayout = (view: BoardView, count: number): BoardLayout =>
-  view.layout ?? (count > FULL_CARDS_MAX ? "list" : "gallery");
+  view.layout ?? (count > GALLERY_DEFAULT_MAX ? "list" : "gallery");
 
 const DEFAULT_VIEW: BoardView = {
   refs: [],

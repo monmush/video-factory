@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
-import { addRefs, FULL_CARDS_MAX, requestCardFocus, requestChatFocus } from "@/lib/board";
+import { addRefs, GALLERY_DEFAULT_MAX, requestCardFocus, requestChatFocus } from "@/lib/board";
 import type { ScriptStaging } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
@@ -54,7 +54,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
   if (!batch) return null;
   const { unstarted, started } = onStagingStep(batch);
-  const grid = unstarted.length <= FULL_CARDS_MAX;
+  const grid = unstarted.length <= GALLERY_DEFAULT_MAX;
   const number = (s: Script) => batch.order.indexOf(s) + 1;
 
   if (unstarted.length === 0) {
