@@ -97,6 +97,7 @@ export function createSeries(input: SeriesInput): Promise<Series> {
       ...(input.videoModel ? { videoModel: videoModel(input.videoModel).id } : {}),
       ...(input.resolution ? { resolution: outputResolution(input.resolution) } : {}),
       ...(input.mediaLevel ? { mediaLevel: mediaLevel(input.mediaLevel).id } : {}),
+      ...(input.reuseMaterial === false ? { reuseMaterial: false } : {}),
       createdAt: now(),
       updatedAt: now(),
     };
@@ -118,6 +119,7 @@ export function updateSeries(
     if (input.videoModel !== undefined) series.videoModel = videoModel(input.videoModel).id;
     if (input.resolution !== undefined) series.resolution = outputResolution(input.resolution);
     if (input.mediaLevel !== undefined) series.mediaLevel = mediaLevel(input.mediaLevel).id;
+    if (input.reuseMaterial !== undefined) series.reuseMaterial = input.reuseMaterial !== false;
     for (const [kind, field] of Object.entries(SERIES_ASSET_FIELD) as [
       AssetKind,
       keyof SeriesInput & keyof Series,

@@ -81,6 +81,8 @@ export const clearShot = (s: JobShot): JobShot => ({
   costUsd: undefined,
   costBilled: undefined,
   model: undefined,
+  reused: undefined,
+  materialClip: undefined,
   retried: false,
   failures: 0,
   error: undefined,
@@ -101,8 +103,12 @@ const clearFrame = (f: JobFrame, note?: string): JobFrame => ({
   redone: false,
   check: undefined,
   error: undefined,
+  materialFile: undefined,
+  ...(f.material ? { fresh: true } : {}),
   ...(note?.trim() ? { note: note.trim() } : {}),
 });
+
+const freshFrame = (f: JobFrame): JobFrame => (f.material ? { ...f, fresh: true } : f);
 
 export class FixError extends Error {}
 
@@ -190,8 +196,10 @@ function redoShot(job: VideoJob, index: number, visual?: string): VideoJob {
   const withVisual = (s: JobShot) =>
     s.index === index && visual?.trim() ? { ...s, visual: visual.trim() } : s;
   if (madeByProvider(shot)) {
+    const frame = frameFor(job, shot);
     return {
       ...job,
+      frames: job.frames.map((f) => (f.id === frame?.id && shot.reused ? freshFrame(f) : f)),
       shots: job.shots.map((s) => (s.index === index ? clearShot(withVisual(s)) : s)),
     };
   }

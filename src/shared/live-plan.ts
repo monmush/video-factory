@@ -289,6 +289,9 @@ export interface PlannedKeyframe {
   endpoint: string;
   input: Input;
   why: string;
+  description?: string;
+  peopleIds?: string[];
+  material?: string;
 }
 
 export interface PlannedRoute {

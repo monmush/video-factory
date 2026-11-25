@@ -1,4 +1,5 @@
 import type { KeyframeKind, Route } from "./live-plan";
+import type { MaterialOffer, OfferedPicture, OfferedScene } from "./material-offer";
 import {
   type DirectorAnswer,
   namedInRequest,
@@ -28,6 +29,7 @@ export interface Picture {
   people: string[];
   framing: string;
   description: string;
+  material?: string;
 }
 
 export interface ListedRoute {
@@ -166,6 +168,7 @@ export function readShotList(
   answer: ShotListAnswer,
   ctx: PlanContext,
   caps: ShotListCaps,
+  offer?: MaterialOffer | null,
 ): ReadShotList {
   const read = readDirectorAnswer(answer, ctx);
   const errors = read.errors;
@@ -213,13 +216,169 @@ export function readShotList(
       motion: norm(raw.motion),
     };
   });
-  const { kept, dropped } = withoutLeftoverPictures(pictures, routes);
-  const list: ShotList = { shots: plan, pictures: kept, routes };
+  const fitted = offer
+    ? fitToOffer({ shots: plan, pictures, routes }, offer)
+    : { list: { shots: plan, pictures, routes }, repaired: [] };
+  const { kept, dropped } = withoutLeftoverPictures(fitted.list.pictures, fitted.list.routes);
+  const list: ShotList = { ...fitted.list, pictures: kept };
   errors.push(...shotListErrors(list, ctx, caps));
   return {
     list,
     errors: [...new Set(errors)],
-    repaired: dropped.map((id) => `Picture "${id}": no shot starts from it; removed.`),
+    repaired: [
+      ...fitted.repaired,
+      ...dropped.map((id) => `Picture "${id}": no shot starts from it; removed.`),
+    ],
+  };
+}
+
+interface Fitted {
+  list: ShotList;
+  repaired: string[];
+}
+
+function withScene(list: ShotList, scene: OfferedScene | null): ShotList {
+  if (!scene) return list;
+  const masterAt = list.pictures.findIndex((p) => p.kind === "master");
+  const pictures = list.pictures.map((p, i) =>
+    i === masterAt
+      ? {
+          ...p,
+          framing: scene.framing,
+          description: scene.description,
+          people: [...scene.people],
+          material: scene.key,
+        }
+      : p,
+  );
+  const seats = list.shots.seats.map((seat) => {
+    const fixed = scene.seats.find((s) => s.characterId === seat.characterId);
+    if (!fixed) return seat;
+    const { ambient: _, ...rest } = seat;
+    return { ...rest, behind: fixed.behind, ...(fixed.ambient ? { ambient: fixed.ambient } : {}) };
+  });
+  const names = new Set(scene.props.map((p) => key(p.name)));
+  const props = [
+    ...scene.props.map((p) => ({ ...p })),
+    ...list.shots.props.filter((p) => !names.has(key(p.name))),
+  ];
+  return { ...list, pictures, shots: { ...list.shots, seats, props } };
+}
+
+const offeredBy = (offer: MaterialOffer, list: ShotList) => {
+  const listed = new Set(list.pictures.map((p) => p.id));
+  return (id: string | null): OfferedPicture | undefined =>
+    id && !listed.has(id) ? offer.pictures.find((p) => p.alias === id) : undefined;
+};
+
+const pictureOfOffer = (p: OfferedPicture, id: string): Picture => ({
+  id,
+  kind: p.kind,
+  characterId: p.kind === "character" ? p.characterId : null,
+  people: [...p.people],
+  framing: p.framing,
+  description: p.description,
+});
+
+function withClipMotion(
+  list: ShotList,
+  offered: ReturnType<typeof offeredBy>,
+  scene: OfferedScene | null,
+): ShotList {
+  const master = list.pictures.find((p) => p.kind === "master")?.id;
+  const clipOf = (picture: string | null) =>
+    picture && picture === master ? scene?.clip : offered(picture)?.clip;
+  const routes = list.routes.map((r) => {
+    const clip = r.route === "motion" && !r.motion ? clipOf(r.picture) : undefined;
+    return clip ? { ...r, motion: clip.motion } : r;
+  });
+  return { ...list, routes };
+}
+
+const NEW_SUFFIX = "-new";
+
+function asNewPicture(list: ShotList, offered: ReturnType<typeof offeredBy>, id: string): Picture {
+  const offer = offered(id);
+  if (offer) return pictureOfOffer(offer, `${id}${NEW_SUFFIX}`);
+  const own = list.pictures.find((p) => p.id === id) as Picture;
+  const { material: _, ...fresh } = own;
+  return {
+    ...fresh,
+    id: `${id}${NEW_SUFFIX}`,
+    ...(own.kind === "master" ? { kind: "action" as const } : {}),
+  };
+}
+
+function startFromNew(
+  list: ShotList,
+  offered: ReturnType<typeof offeredBy>,
+  index: number,
+): { list: ShotList; id: string } {
+  const from = list.routes[index]?.picture as string;
+  const fresh = asNewPicture(list, offered, from);
+  const pictures = list.pictures.some((p) => p.id === fresh.id)
+    ? list.pictures
+    : [...list.pictures, fresh];
+  const routes = list.routes.map((r, i) => (i === index ? { ...r, picture: fresh.id } : r));
+  return { list: { ...list, pictures, routes }, id: fresh.id };
+}
+
+function fromExisting(list: ShotList, offered: ReturnType<typeof offeredBy>, index: number) {
+  const id = list.routes[index]?.picture ?? null;
+  if (offered(id)) return true;
+  return Boolean(id && list.pictures.find((p) => p.id === id && p.kind === "master")?.material);
+}
+
+function openingShotNew(list: ShotList, offered: ReturnType<typeof offeredBy>): Fitted {
+  if (!list.routes.length || !fromExisting(list, offered, 0)) return { list, repaired: [] };
+  const made = startFromNew(list, offered, 0);
+  return {
+    list: made.list,
+    repaired: [
+      `Shot 1: the first shot starts from a new picture; it now starts from "${made.id}".`,
+    ],
+  };
+}
+
+function atMostHalfExisting(list: ShotList, offered: ReturnType<typeof offeredBy>): Fitted {
+  const limit = Math.floor(list.routes.length / 2);
+  const using = list.routes.flatMap((r, i) => (offered(r.picture) ? [i] : []));
+  if (using.length <= limit) return { list, repaired: [] };
+  const hasClip = (i: number) => Boolean(offered(list.routes[i]?.picture ?? null)?.clip);
+  const keep = new Set(
+    [...using.filter(hasClip), ...using.filter((i) => !hasClip(i))].slice(0, limit),
+  );
+  let next = list;
+  const repaired: string[] = [];
+  for (const i of using.filter((n) => !keep.has(n))) {
+    const made = startFromNew(next, offered, i);
+    next = made.list;
+    repaired.push(
+      `Shot ${i + 1}: at most half of the shots start from an existing picture; it now starts from "${made.id}".`,
+    );
+  }
+  return { list: next, repaired };
+}
+
+function withOfferedPictures(list: ShotList, offered: ReturnType<typeof offeredBy>): ShotList {
+  const added: Picture[] = [];
+  for (const r of list.routes) {
+    const offer = offered(r.picture);
+    if (offer && !added.some((p) => p.id === offer.alias)) {
+      added.push({ ...pictureOfOffer(offer, offer.alias), material: offer.key });
+    }
+  }
+  return added.length ? { ...list, pictures: [...list.pictures, ...added] } : list;
+}
+
+function fitToOffer(list: ShotList, offer: MaterialOffer): Fitted {
+  const scened = withScene(list, offer.scene);
+  const offered = offeredBy(offer, scened);
+  const opening = openingShotNew(withClipMotion(scened, offered, offer.scene), offered);
+  const capped = atMostHalfExisting(opening.list, offered);
+  return {
+    list: withOfferedPictures(capped.list, offered),
+    repaired: [...opening.repaired, ...capped.repaired],
   };
 }
 
@@ -312,7 +471,17 @@ const sentence = (s: string) => {
   return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}.` : "";
 };
 
-export function rulesShotList(ctx: PlanContext, plan: ShotPlan = rulesPlan(ctx)): ShotList {
+export function rulesShotList(
+  ctx: PlanContext,
+  plan: ShotPlan = rulesPlan(ctx),
+  scene: OfferedScene | null = null,
+): ShotList {
+  if (!scene) return rulesShotListOf(ctx, plan);
+  const inScene = withScene({ shots: plan, pictures: [], routes: [] }, scene).shots;
+  return fitToOffer(rulesShotListOf(ctx, inScene), { scene, pictures: [] }).list;
+}
+
+function rulesShotListOf(ctx: PlanContext, plan: ShotPlan): ShotList {
   const productNames = ctx.products.map((p) => p.name);
   const name = (id: string) => ctx.cast.find((c) => c.id === id)?.name ?? "";
   const seats = plan.seats.filter((s) => name(s.characterId));

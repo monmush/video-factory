@@ -31,6 +31,8 @@ For each picture write a `description`: three to six English sentences, concrete
 
 `people` lists every cast member visible in the picture, the main person first; a shoulder, back or hand in the foreground counts. The app attaches those people's reference photos.
 
+{{material}}
+
 ### Routes (one per shot)
 
 | route        | for                          | what happens                                                                                  |
@@ -95,4 +97,4 @@ Answer with one JSON object and nothing else.
 }
 ```
 
-Before answering, check every rule of the shot plan above, and that: the master is the first picture; every shot has its Vietnamese `brief`; every direction from the operator is followed at its words; every shot names a picture that is in `pictures`; every `speaker` shot uses `speak` and starts from a `character` picture of that speaker; a product shot uses `product` and a `plate`; every `motion` shot has its `motion` text; every description names people only by their cast names; no product or packaging appears in any picture, description or motion text; no `speaker` shot has a `sound`, and no `ambience` or `sound` contains music or voices.
+Before answering, check every rule of the shot plan above, and that: the master is the first picture; every shot has its Vietnamese `brief`; every direction from the operator is followed at its words; every shot names a picture that is in `pictures`; every `speaker` shot uses `speak` and starts from a `character` picture of that speaker; a product shot uses `product` and a `plate`; every `motion` shot has its `motion` text; every description names people only by their cast names; no product or packaging appears in any picture, description or motion text; no `speaker` shot has a `sound`, and no `ambience` or `sound` contains music or voices{{material_check}}.

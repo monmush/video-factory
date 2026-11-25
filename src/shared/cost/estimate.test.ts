@@ -7,6 +7,7 @@ import { builtinRecipe } from "../recipe";
 import { readShotList, type ShotListAnswer } from "../shot-list";
 import { answer, CTX, LINES } from "../shot-list.fixture";
 import { applyLivePlan, newJob, type VideoJob, withShotAudio } from "../video-job";
+import { STEP } from "./charges";
 import { withInUsePaid } from "./charges.fixture";
 import {
   batchToMake,
@@ -129,5 +130,56 @@ describe("the frozen estimate", () => {
     expect(redone.firstPass).toBe(started.firstPass);
     expect(costPanel(redone)?.groups.map((g) => [g.label, g.estimateUsd])).toEqual(frozen);
     expect(costPanel(redone)?.redone).toMatchObject({ count: 1, paid: { usd: 2.27 } });
+  });
+});
+
+describe("material the series already has", () => {
+  const MASTER = "kf:master";
+  const AN = "kf:an";
+
+  function reusing(fresh: string[] = []): VideoJob {
+    const job = staged();
+    return {
+      ...job,
+      frames: job.frames.map((f) =>
+        f.id === MASTER || f.id === AN
+          ? {
+              ...f,
+              material: f.id,
+              materialFile: `${f.id}.png`,
+              ...(fresh.includes(f.id) ? { fresh: true } : {}),
+            }
+          : f,
+      ),
+      shots: job.shots.map((s) =>
+        s.index === WIDE ? { ...s, materialClip: { id: "c", file: "c.mp4", seconds: 9 } } : s,
+      ),
+    };
+  }
+
+  const usdOf = (job: VideoJob, key: string) =>
+    stepEstimates(job).find((s) => s.key === key)?.usd ?? Number.NaN;
+
+  it("prices a picture and a clip the store holds at nothing, in every total alike", () => {
+    const made = staged();
+    const reused = reusing();
+    const stills = usdOf(made, STEP.frame(MASTER)) + usdOf(made, STEP.frame(AN));
+    const clip = usdOf(made, STEP.shot(WIDE));
+    expect(stills).toBeGreaterThan(0);
+    expect(clip).toBeGreaterThan(0);
+    expect(usdOf(reused, STEP.frame(AN))).toBe(0);
+    expect(usdOf(reused, STEP.shot(WIDE))).toBe(0);
+    expect(costToPreviewUsd(reused)).toBeCloseTo((costToPreviewUsd(made) ?? 0) - stills);
+    expect(costToFinishUsd(reused)).toBeCloseTo((costToFinishUsd(made) ?? 0) - stills - clip);
+    expect(withFirstPass(reused, NOW).firstPass?.usd).toBeCloseTo(
+      (withFirstPass(made, NOW).firstPass?.usd ?? 0) - stills - clip,
+    );
+  });
+
+  it("a fresh picture costs as before, and so does the clip that starts from it", () => {
+    const made = staged();
+    const fresh = reusing([MASTER, AN]);
+    expect(costToFinishUsd(fresh)).toBeCloseTo(costToFinishUsd(made) ?? 0);
+    expect(usdOf(fresh, STEP.shot(WIDE))).toBeCloseTo(usdOf(made, STEP.shot(WIDE)));
   });
 });

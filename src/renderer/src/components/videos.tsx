@@ -1140,7 +1140,8 @@ function ShotTile({
       {shot.text}
     </span>
   );
-  const retryMark = shot.retried && shot.state !== "failed" && (
+  const retryShown = shot.retried && shot.state !== "failed";
+  const retryMark = retryShown && (
     <RotateCw
       aria-label="Đã thử lại"
       className={cn(
@@ -1148,6 +1149,18 @@ function ShotTile({
         onPick && "group-hover/tile:hidden group-focus-visible/tile:hidden",
       )}
     />
+  );
+  const reusedMark = (frame?.source === "material" || shot.reused) && (
+    <span
+      title="Lấy từ tư liệu của series"
+      className={cn(
+        "absolute top-1 rounded-full bg-black/60 px-1.5 py-0.5 text-2xs leading-none text-white",
+        retryShown ? "right-5" : "right-1",
+        onPick && !selected && "group-hover/tile:hidden group-focus-visible/tile:hidden",
+      )}
+    >
+      Dùng lại
+    </span>
   );
   const redoMark = onPick && !selected && (
     <span
@@ -1191,6 +1204,7 @@ function ShotTile({
         />
         {number}
         {retryMark}
+        {reusedMark}
         {redoMark}
         {caption}
       </button>
@@ -1229,6 +1243,7 @@ function ShotTile({
         >
           <img ref={thumbRef} src={image} alt="" className="size-full object-cover" />
           {number}
+          {reusedMark}
           {redoMark}
           {caption}
         </button>
@@ -1250,6 +1265,7 @@ function ShotTile({
         )}
         {number}
         {retryMark}
+        {reusedMark}
         {caption}
         {(shot.state === "failed" || speechFailed) && (
           <span className="absolute inset-0 grid place-items-center bg-black/30">

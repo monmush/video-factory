@@ -202,6 +202,39 @@ describe("redoing a still", () => {
   });
 });
 
+describe("a fix of something taken from the series' material", () => {
+  const fromStore = (): VideoJob => {
+    const job = done();
+    return {
+      ...job,
+      frames: job.frames.map((f) =>
+        f.id === "wide" ? { ...f, source: "material", material: "m1", costUsd: undefined } : f,
+      ),
+      shots: job.shots.map((s) =>
+        s.index === 1 ? { ...s, route: "motion", reused: "c1", costUsd: undefined } : s,
+      ),
+    };
+  };
+
+  it("a still made again is generated, never taken from the store again", () => {
+    const fixed = applyFix(fromStore(), [{ op: "redo_still", frame: "wide" }], LATER);
+    expect(fixed.frames.find((f) => f.id === "wide")).toMatchObject({
+      fresh: true,
+      material: "m1",
+    });
+    expect(fixed.shots[1]?.reused).toBeUndefined();
+  });
+
+  it("a clip made again is made by the provider, never replayed from the store again", () => {
+    const fixed = applyFix(fromStore(), [{ op: "redo_shot", shot: 1 }], LATER);
+    expect(fixed.shots[1]).toMatchObject({ state: "queued", reused: undefined });
+    expect(fixed.frames.find((f) => f.id === "wide")).toMatchObject({
+      fresh: true,
+      file: "wide.png",
+    });
+  });
+});
+
 describe("showing something else during a line", () => {
   const parts = [
     shot("detail", 2, "Ơ… ông ơi, trà tràn ra bàn rồi kìa!", { visual: "tea spills" }),

@@ -42,3 +42,5 @@ export async function removeStaleTmp(dir: string): Promise<void> {
     if (pid && Number(pid) !== process.pid) await rm(join(dir, name), { force: true });
   }
 }
+
+export const materialDir = (seriesId: string) => join(mediaDir(seriesId), "_material");

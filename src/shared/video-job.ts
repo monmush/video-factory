@@ -101,6 +101,8 @@ export interface JobShot {
   autoRedos?: number;
   rejectedClips?: number;
   rejectedSpeakers?: string[];
+  materialClip?: { id: string; file: string; seconds: number };
+  reused?: string;
   error?: string;
 }
 
@@ -118,7 +120,10 @@ export interface JobFrame {
   shot?: number;
   productId?: string;
   file?: string;
-  source?: "generated" | "cover" | "photo" | "look";
+  source?: "generated" | "cover" | "photo" | "look" | "material";
+  material?: string;
+  materialFile?: string;
+  fresh?: boolean;
   note?: string;
   plate?: string;
   cutout?: string;
@@ -355,6 +360,7 @@ export function applyLivePlan(job: VideoJob, live: LiveDirection): VideoJob {
       ...(k.people ? { people: k.people } : {}),
       retried: false,
       ...(k.characterId ? { characterId: k.characterId } : {}),
+      ...(k.material ? { material: k.material } : {}),
       ...(first ? { shot: first.index } : {}),
       ...(kind === "product" && product?.productId ? { productId: product.productId } : {}),
     };

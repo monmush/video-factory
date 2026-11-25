@@ -17,6 +17,7 @@ These documents are the lasting product reference and are tracked in git. Privat
 | [Video generation](VIDEO_GENERATION_DECISIONS.md) | Recipe, shot list and build, pipeline, speaking-shot models, subtitles, stop and resume, never pay twice | Built; two videos finished live, the rest fixture mode |
 | [Directing rules](DIRECTING_RULES.md) | Rules that turn a script into a shot plan, prompt building, still checks, product shots, failure table, flexible direction | Built; the 19 November changes not yet seen live |
 | [Reviewing and fixing videos](VIDEO_REVIEW_DECISIONS.md) | Fixes in place, the pause, series look, learned preferences ("Ghi nhớ"), another quality level for a finished video | Built, fixture mode only |
+| [Series material](SERIES_MATERIAL_DECISIONS.md) | What a series keeps from its videos ("Tư liệu"), the shared scene, when a later video reuses a picture or a moving clip, the operator's controls | Built 25 November; fixture mode and one real staging |
 | [Voices](VOICE_DECISIONS.md) | Character voice catalogue, suggestion rules, shared acoustics, open items | Built; shared room sound not built |
 | [Design lessons](DESIGN_LESSONS.md) | What repeated feedback teaches: no dead ends, primary colour, prices, holds | Current rules |
 

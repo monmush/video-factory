@@ -1,6 +1,6 @@
 import { directionAt } from "@shared/direction";
 import { unstarted } from "@shared/edit-in-place";
-import type { Script } from "@shared/ipc";
+import { mediaUrl, type Script } from "@shared/ipc";
 import type { Reworded } from "@shared/reworded";
 import { sceneBrief, sceneFraming, sceneMoves, sceneSeconds, spokenParts } from "@shared/scene";
 import {
@@ -11,9 +11,9 @@ import {
   type SceneAction,
   sceneAction,
 } from "@shared/scene-actions";
-import type { JobShot, VideoJob } from "@shared/video-job";
+import { frameFor, type JobFrame, type JobShot, type VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, Trash2, X } from "lucide-react";
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { removeScriptLine } from "@/lib/board-notice";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
@@ -22,6 +22,7 @@ import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
+import { ImageViewer } from "./image-viewer";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
@@ -61,6 +62,8 @@ export function ShotBrief({
   const level = useVideoLevel(sessionId)(script.id);
   const { error, run } = useAction();
   const [editing, setEditing] = useState<number | null>(null);
+  const [viewing, setViewing] = useState<number | null>(null);
+  const viewedFrom = useRef<HTMLElement | null>(null);
   const ids = { sessionId, scriptId: script.id };
 
   if (script.status !== "ready") return null;
@@ -119,6 +122,36 @@ export function ShotBrief({
     );
   const unmerge = (shot: JobShot) =>
     run(() => api.invoke("video:direct", { ...ids, words: shot.text, want: "" }));
+  const reusedFrame = (shot: JobShot) => {
+    const frame = frameFor(job, shot);
+    return hasMaterial(frame) ? frame : undefined;
+  };
+  const pictures = [
+    ...new Set(
+      job.shots.flatMap((shot) => {
+        const frame = reusedFrame(shot);
+        return frame && !frame.fresh ? [frame.materialFile] : [];
+      }),
+    ),
+  ];
+  const pictureUrl = (file: string) => mediaUrl.material(job.seriesId, file);
+  const setFresh = (frame: JobFrame, fresh: boolean) =>
+    run(() => api.invoke("video:fresh-picture", { ...ids, frameId: frame.id, fresh }));
+  const reuseOf = (shot: JobShot) => {
+    const frame = reusedFrame(shot);
+    if (!frame || !open) return null;
+    return (
+      <SceneReuse
+        picture={frame.fresh ? null : pictureUrl(frame.materialFile)}
+        moving={Boolean(shot.materialClip)}
+        onView={(from) => {
+          viewedFrom.current = from;
+          setViewing(pictures.indexOf(frame.materialFile));
+        }}
+        onFresh={scenesEditable ? (fresh) => setFresh(frame, fresh) : undefined}
+      />
+    );
+  };
   const save = (shot: JobShot, value: string) => {
     setEditing(null);
     const want = value.replace(/\s+/g, " ").trim();
@@ -176,10 +209,20 @@ export function ShotBrief({
             onEdit={() => setEditing(shot.index)}
             onCancel={() => setEditing(null)}
             onSave={(value) => save(shot, value)}
+            reuse={reuseOf(shot)}
           />
         ))}
       </ol>
       {errorLine}
+      <ImageViewer
+        images={pictures.map((file) => ({
+          url: pictureUrl(file),
+          origin: () => viewedFrom.current,
+        }))}
+        index={viewing}
+        onIndexChange={setViewing}
+        onClose={() => setViewing(null)}
+      />
     </div>
   );
 }
@@ -213,6 +256,7 @@ function Scene({
   onEdit,
   onCancel,
   onSave,
+  reuse,
 }: {
   shot: JobShot;
   reworded: boolean;
@@ -229,6 +273,7 @@ function Scene({
   onEdit: () => void;
   onCancel: () => void;
   onSave: (value: string) => void;
+  reuse: ReactNode;
 }) {
   const brief = wish ?? sceneBrief(shot);
   const seen = brief ?? <span className="text-muted-foreground/60">Chưa có mô tả</span>;
@@ -299,7 +344,59 @@ function Scene({
           {seen}
         </p>
       )}
+      {reuse}
     </li>
+  );
+}
+
+type ReusedFrame = JobFrame & { materialFile: string };
+
+const hasMaterial = (frame: JobFrame | undefined): frame is ReusedFrame =>
+  frame?.materialFile !== undefined;
+
+function SceneReuse({
+  picture,
+  moving,
+  onView,
+  onFresh,
+}: {
+  picture: string | null;
+  moving: boolean;
+  onView: (from: HTMLElement) => void;
+  onFresh: ((fresh: boolean) => void) | undefined;
+}) {
+  const reused = picture !== null;
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      {picture && (
+        <button
+          type="button"
+          aria-label="Xem ảnh"
+          title="Xem ảnh"
+          className="w-9 shrink-0 cursor-zoom-in overflow-hidden rounded-md border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={(e) => onView(e.currentTarget)}
+        >
+          <img
+            src={picture}
+            alt=""
+            loading="lazy"
+            draggable={false}
+            className="aspect-[9/16] w-full object-cover"
+          />
+        </button>
+      )}
+      <span>{reused ? (moving ? "Dùng lại cảnh động" : "Dùng lại") : "Tạo mới"}</span>
+      {onFresh && (
+        <Button
+          variant="ghost-muted"
+          size="xs"
+          className="opacity-0 transition-opacity group-focus-within/scene:opacity-100 group-hover/scene:opacity-100 focus-visible:opacity-100"
+          onClick={() => onFresh(reused)}
+        >
+          {reused ? "Tạo mới" : "Dùng lại"}
+        </Button>
+      )}
+    </div>
   );
 }
 

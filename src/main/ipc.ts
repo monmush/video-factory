@@ -13,6 +13,12 @@ import { advanceFakeClaude, fakeClaudeActive } from "./claude-fake";
 import { describeAsset } from "./describe";
 import { devFeatures } from "./dev";
 import { editLine, removeLine } from "./line-edit";
+import {
+  addMaterialToCharacter,
+  listMaterial,
+  removeMaterial,
+  setMaterialReusable,
+} from "./material";
 import { IMAGE_EXTENSIONS, imageRefPath, stageImages } from "./media";
 import { dataDir } from "./paths";
 import {
@@ -276,6 +282,15 @@ export function registerIpc() {
     }),
   );
 
+  handle("material:list", listMaterial);
+  handle("material:set-reusable", ({ seriesId, itemId, reusable }) =>
+    setMaterialReusable(seriesId, itemId, reusable),
+  );
+  handle("material:remove", ({ seriesId, itemId }) => removeMaterial(seriesId, itemId));
+  handle("material:add-to-character", ({ seriesId, itemId }) =>
+    addMaterialToCharacter(seriesId, itemId),
+  );
+
   handle("video:jobs", async (sessionId) => ({
     jobs: await video.jobsFor(sessionId),
     averages: video.currentAverages(),
@@ -320,6 +335,9 @@ export function registerIpc() {
   );
   handle("video:version", ({ sessionId, scriptId, action, version }) =>
     video.version(sessionId, scriptId, action, version),
+  );
+  handle("video:fresh-picture", ({ sessionId, scriptId, frameId, fresh }) =>
+    video.setFreshPicture(sessionId, scriptId, frameId, fresh === true),
   );
   handle("video:level", async ({ sessionId, scriptId, level }) => {
     await setVideoLevel(sessionId, scriptId, level);

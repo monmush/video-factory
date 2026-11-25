@@ -10,6 +10,7 @@ import {
   liveDirection,
   type ToolRecord,
 } from "../../shared/live-plan";
+import { type MaterialOffer, withMaterialKeys } from "../../shared/material-offer";
 import { type MediaLevel, mediaLevel } from "../../shared/media-level";
 import { DIRECTOR_AREAS, notesBlock } from "../../shared/notes";
 import { builtinRecipe, type Recipe, readRecipe } from "../../shared/recipe";
@@ -51,17 +52,22 @@ function fill(slots: Record<string, string>): string {
   return text;
 }
 
-async function fixtureShotList(ctx: PlanContext, caps: ShotListCaps): Promise<ShotList> {
+async function fixtureShotList(
+  ctx: PlanContext,
+  caps: ShotListCaps,
+  offer: MaterialOffer | null,
+): Promise<ShotList> {
+  const scene = offer?.scene ?? null;
   const listFile = process.env.HYAN_FIXTURE_SHOT_LIST;
-  if (!listFile) return rulesShotList(ctx);
+  if (!listFile) return rulesShotList(ctx, rulesPlan(ctx), scene);
   try {
     const answer = parseJsonObject<ShotListAnswer>(await readFile(listFile, "utf8"));
-    const { list, errors } = readShotList(answer, ctx, caps);
+    const { list, errors } = readShotList(answer, ctx, caps, offer);
     if (!errors.length) return list;
     console.warn("[video] fixture shot list broke rules:", errors.join(" | "));
-    return rulesShotList(ctx, rulesPlan(ctx, errors));
+    return rulesShotList(ctx, rulesPlan(ctx, errors), scene);
   } catch (error) {
-    return rulesShotList(ctx, rulesPlan(ctx, [(error as Error).message]));
+    return rulesShotList(ctx, rulesPlan(ctx, [(error as Error).message]), scene);
   }
 }
 
@@ -135,11 +141,17 @@ function restageOf(job: VideoJob, ctx: PlanContext, caps: ShotListCaps, level: M
   return restage;
 }
 
+export interface DirectMaterial {
+  offer: MaterialOffer | null;
+  newKey: () => string;
+}
+
 export async function directJob(
   job: VideoJob,
   dir: string,
   onSteps?: (steps: string[]) => void,
   signal?: AbortSignal,
+  material?: DirectMaterial,
 ): Promise<Direction> {
   const ws = await getWorkspace();
   const series = ws.series.find((s) => s.id === job.seriesId);
@@ -172,7 +184,11 @@ export async function directJob(
   const caps: ShotListCaps = { motion: Boolean(recipe.motion), sound: level.sound };
   const save = (name: string, text: string) =>
     writeFile(join(dir, name), text, "utf8").catch(() => undefined);
-  const build = async (list: ShotList, run?: { model: string | null; ms: number }) => {
+  const offer = material?.offer ?? null;
+  const keyed = (list: ShotList) =>
+    material ? withMaterialKeys(list, material.newKey, job.restageFrom?.list) : list;
+  const build = async (read: ShotList, run?: { model: string | null; ms: number }) => {
+    const list = keyed(read);
     await save("shot-list.json", JSON.stringify(list, null, 2));
     return {
       plan: list.shots,
@@ -187,7 +203,7 @@ export async function directJob(
       }),
     };
   };
-  if (textAiMode() === "fixture") return build(await fixtureShotList(ctx, caps));
+  if (textAiMode() === "fixture") return build(await fixtureShotList(ctx, caps, offer));
 
   const names = new Map(cast.map((c) => [c.id, c.name]));
   const seats = seatsFor(castIds)
@@ -216,6 +232,8 @@ export async function directJob(
     motion: caps.motion,
     sound: level.sound,
     direction: directionSlot(job.direction),
+    reuse: Boolean(material),
+    material: { offer, names },
   });
   await save("shot-list-prompt.md", prompt);
   const partial = restageOf(job, ctx, caps, level);
@@ -232,7 +250,7 @@ export async function directJob(
         ...(signal ? { signal } : {}),
       }),
     parse: (text) => parseJsonObject<unknown>(text),
-    read: (answer) => readShotList(answer, ctx, caps),
+    read: (answer) => readShotList(answer, ctx, caps, offer),
     save,
     ...(onSteps ? { onSteps } : {}),
     ...(partial ? { partial } : {}),
@@ -240,5 +258,5 @@ export async function directJob(
   });
   if ("list" in staged) return build(staged.list, { model: null, ms: staged.ms });
   console.warn(`[video] director fell back to rules; see shot-list-problems-*.json in ${dir}`);
-  return build(rulesShotList(ctx, rulesPlan(ctx, staged.problems)));
+  return build(rulesShotList(ctx, rulesPlan(ctx, staged.problems), offer?.scene ?? null));
 }

@@ -42,6 +42,7 @@ import {
 } from "../../shared/direction";
 import { editsInPlace, failedUnpaid, unstarted, videoUntouched } from "../../shared/edit-in-place";
 import type { Asset, Script } from "../../shared/ipc";
+import { plannedMotion } from "../../shared/material";
 import { mediaLevel } from "../../shared/media-level";
 import { isNetworkError, providerBusy } from "../../shared/net-error";
 import {
@@ -182,6 +183,14 @@ import {
 import { getBoard, onBoardChanged } from "../board";
 import { type Canceller, falCancel, falCancelUnlessStarted } from "../fal";
 import { type CancelOutcome, mayStillBeBilled } from "../fal-queue";
+import {
+  fileFinishedVideos,
+  fileWhenFinished,
+  markVideoKept,
+  onMaterialChanged,
+  placeMaterialFile,
+  recordUse,
+} from "../material";
 import { assetDir } from "../media";
 import { dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
@@ -212,6 +221,7 @@ import {
   stillClip,
 } from "./ffmpeg";
 import { lookPath, lookStill, readLook, saveLook } from "./look";
+import { availabilityIn, stagingMaterial, storedClip, storedPicture } from "./material-staging";
 import {
   type CutoutResult,
   CutoutStopped,
@@ -336,6 +346,7 @@ async function update(key: string, change: (job: VideoJob) => VideoJob): Promise
   await save(key, next);
   emit(next);
   schedule();
+  fileWhenFinished(current, next, jobDir(next));
   return next;
 }
 
@@ -387,6 +398,7 @@ async function loadAll(): Promise<void> {
       }
     }
   }
+  void fileFinishedVideos([...jobs.values()].map((job) => ({ job, folder: jobDir(job) })));
 }
 
 function ensureLoaded() {
@@ -402,17 +414,66 @@ export async function startRunner(): Promise<void> {
   unwatchBoard ??= onBoardChanged((sessionId, board) => {
     void syncScripts(sessionId, board.scripts);
   });
+  unwatchMaterial ??= onMaterialChanged((seriesId) => {
+    void followMaterial(seriesId).catch((error) =>
+      console.error("[material] could not follow the store", error),
+    );
+  });
   schedule();
   noticeMaking();
 }
 
 let unwatchBoard: (() => void) | null = null;
+let unwatchMaterial: (() => void) | null = null;
 
 export function stopRunner() {
   if (timer) clearInterval(timer);
   timer = null;
   unwatchBoard?.();
   unwatchBoard = null;
+  unwatchMaterial?.();
+  unwatchMaterial = null;
+}
+
+const stagedNotStarted = (job: VideoJob) => Boolean(job.plan) && unstarted(job);
+
+async function followMaterial(seriesId: string): Promise<void> {
+  const available = await availabilityIn(seriesId);
+  for (const job of [...jobs.values()]) {
+    if (job.seriesId !== seriesId || !stagedNotStarted(job) || available(job) === job) continue;
+    await update(jobKey(job), (j) => (stagedNotStarted(j) ? available(j) : j));
+  }
+}
+
+export async function setFreshPicture(
+  sessionId: string,
+  scriptId: string,
+  frameId: string,
+  fresh: boolean,
+): Promise<null> {
+  await ensureLoaded();
+  const key = keyOf(sessionId, scriptId);
+  const job = jobs.get(key);
+  if (!job || !stagedNotStarted(job)) throw new Error("Video đã bắt đầu tạo");
+  if (!job.frames.some((f) => f.id === frameId && f.material)) {
+    throw new Error("Không tìm thấy khung hình này");
+  }
+  const available = await availabilityIn(job.seriesId);
+  await update(key, (j) =>
+    stagedNotStarted(j)
+      ? available({
+          ...j,
+          frames: j.frames.map((f) => (f.id === frameId ? freshOrNot(f, fresh) : f)),
+        })
+      : j,
+  );
+  return null;
+}
+
+function freshOrNot(frame: JobFrame, fresh: boolean): JobFrame {
+  if (fresh) return { ...frame, fresh: true };
+  const { fresh: _, ...rest } = frame;
+  return rest;
 }
 
 const settledWithin = (ms: number, work: readonly (Promise<unknown> | undefined)[]) =>
@@ -597,10 +658,11 @@ export async function start(sessionId: string, scriptId: string): Promise<null> 
   const script = find(scriptId);
   const level = levelOf(scriptId);
   assertStagedToMake(current, script, level);
+  const available = current ? await availabilityIn(current.seriesId) : (j: VideoJob) => j;
   await update(key, (job) =>
     videoUntouched(job) && !(script && readyToMake(job, script, level))
       ? job
-      : resumeJob(spendingStarts(job, nowIso()), nowIso()),
+      : resumeJob(spendingStarts(available(job), nowIso()), nowIso()),
   );
   return null;
 }
@@ -914,6 +976,7 @@ export async function runAll(sessionId: string): Promise<null> {
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
   const { board, levelOf, find } = await boardNow(sessionId);
+  const available = await availabilityIn(session.seriesId);
   for (const scriptId of committedIds(session, board.scripts)) {
     const key = keyOf(sessionId, scriptId);
     const script = find(scriptId);
@@ -921,7 +984,7 @@ export async function runAll(sessionId: string): Promise<null> {
       Boolean(script && readyToMake(job, script, levelOf(scriptId)));
     if (!toMake(jobs.get(key))) continue;
     await update(key, (job) =>
-      toMake(job) ? runThrough(spendingStarts(job, nowIso()), nowIso()) : job,
+      toMake(job) ? runThrough(spendingStarts(available(job), nowIso()), nowIso()) : job,
     );
   }
   return null;
@@ -1158,6 +1221,7 @@ export async function saveFinal(sessionId: string, scriptId: string): Promise<st
   } catch (error) {
     console.error("[video] could not save the series look", error);
   }
+  await keepMaterial(job);
   return result.filePath;
 }
 
@@ -1213,6 +1277,9 @@ async function placeWithoutOverwriting(
   throw new Error(`No free file name for ${base}`);
 }
 
+const keepMaterial = (job: VideoJob) =>
+  markVideoKept(job).catch((error) => console.error("[material] could not mark kept", error));
+
 async function keepLook(working: VideoJob): Promise<void> {
   const job = chosenView(working);
   try {
@@ -1266,6 +1333,7 @@ export async function saveFinals(
     }
   }
   for (const scriptId of lookFrom) await keepLook(own.get(scriptId) as VideoJob);
+  for (const scriptId of lookFrom) await keepMaterial(own.get(scriptId) as VideoJob);
   return { folder, failed };
 }
 
@@ -1381,11 +1449,19 @@ async function assets(): Promise<Asset[]> {
   return (await getWorkspace()).assets;
 }
 
+const seriesStaged = (job: VideoJob) => () =>
+  [...jobs.values()].filter(
+    (j) => j.seriesId === job.seriesId && j.plan && jobKey(j) !== jobKey(job),
+  );
+
 async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
   const startedAt = Date.now();
+  let releaseScene: () => void = () => undefined;
   try {
     await mkdir(jobDir(job), { recursive: true });
     const { level } = await batchNow(job);
+    const { material, release } = await stagingMaterial(job, level, seriesStaged(job), signal);
+    releaseScene = release;
     let shown = "";
     const onSteps = (steps: string[]) => {
       const now = steps.join("\n");
@@ -1393,7 +1469,13 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
       shown = now;
       void update(key, (j) => (j.plan ? j : { ...j, planningSteps: steps }));
     };
-    const { plan, live } = await directJob({ ...job, level }, jobDir(job), onSteps, signal);
+    const { plan, live } = await directJob(
+      { ...job, level },
+      jobDir(job),
+      onSteps,
+      signal,
+      material,
+    );
     const script = (await getBoard(job.sessionId)).scripts.find((s) => s.id === job.scriptId);
     if (signal.aborted || (job.planning && stagingOutdated(job, script))) {
       console.log(`[video] ${job.scriptId}: staging dropped, the script changed`);
@@ -1403,6 +1485,7 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
     if (live) await writeJsonAtomic(join(jobDir(job), "live-plan.json"), live);
     measured("plan", (Date.now() - startedAt) / 1000);
     const all = await assets();
+    const available = await availabilityIn(job.seriesId);
     const withCutouts = (j: VideoJob): VideoJob => ({
       ...j,
       frames: j.frames.map((f) => {
@@ -1416,22 +1499,26 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
       const applied = live ? applyLivePlan(rest, live) : applyPlan(rest, plan);
       const planned = from ? { ...applied, reworded: reworded(from, applied.shots) } : applied;
       const model = modelLocked(j) ? j.model : mediaLevel(level).speaker;
-      const staging = withSpeech({
-        ...withCutouts(planned),
-        stagedDirection: job.direction ?? [],
-        level,
-        model,
-        resolution: live
-          ? mediaLevel(level).output
-          : fitResolution(model, mediaLevel(level).output),
-        ...(live && !j.reviewed ? { pause: true } : {}),
-        phaseStartedAt: nowIso(),
-      });
+      const staging = available(
+        withSpeech({
+          ...withCutouts(planned),
+          stagedDirection: job.direction ?? [],
+          level,
+          model,
+          resolution: live
+            ? mediaLevel(level).output
+            : fitResolution(model, mediaLevel(level).output),
+          ...(live && !j.reviewed ? { pause: true } : {}),
+          phaseStartedAt: nowIso(),
+        }),
+      );
       return staging.status === "idle" ? staging : withFirstPass(staging, nowIso());
     });
   } catch (error) {
     if (signal.aborted || error instanceof StagingStopped) return;
     await fail(key, error);
+  } finally {
+    releaseScene();
   }
 }
 
@@ -1684,6 +1771,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
       await patchFrame({ file, source: "cover" });
       return;
     }
+    if (await takenFromMaterial(key, job, frame)) return;
     const kept = frame.kind === "character" && inputs.lookPaths?.get(frame.characterId ?? "");
     if (kept && !frame.note && !planned(job, frame)) {
       const file = frameFile(job, frame);
@@ -1709,6 +1797,85 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
 }
 
 const planned = plannedFrame;
+
+const mayTakeFromMaterial = (job: VideoJob, frame: JobFrame) =>
+  planned(job, frame) && Boolean(frame.material) && !frame.fresh && !frame.note;
+
+async function takenFromMaterial(key: string, job: VideoJob, frame: JobFrame): Promise<boolean> {
+  const item = mayTakeFromMaterial(job, frame)
+    ? await storedPicture(job.seriesId, frame.material as string)
+    : undefined;
+  const patchFrame = patchFrameOf(key, frame.id);
+  if (!item) {
+    if (frame.materialFile) await patchFrame({ materialFile: undefined });
+    return false;
+  }
+  const file = frameFile(job, frame);
+  await placeMaterialFile(job.seriesId, item, join(jobDir(job), file));
+  await patchFrame({ file, source: "material", materialFile: undefined });
+  await recordUse(job.seriesId, item.id, job, nowIso());
+  return true;
+}
+
+const mayReplayClip = (job: VideoJob, shot: JobShot, frame: JobFrame) =>
+  Boolean(job.live) &&
+  shot.route === "motion" &&
+  !shot.fallback &&
+  frame.source === "material" &&
+  Boolean(frame.material) &&
+  !frame.fresh;
+
+const shotClipFile = (job: VideoJob, index: number) =>
+  revFile(job, `shot-${String(index + 1).padStart(2, "0")}`, "mp4");
+
+const doneShot = (job: VideoJob, index: number, made: Partial<JobShot>): VideoJob => {
+  const done = {
+    ...job,
+    shots: job.shots.map((s) =>
+      s.index === index ? { ...s, ...made, state: "done" as const } : s,
+    ),
+  };
+  return jobPhase(done) === "assemble"
+    ? { ...done, phaseStartedAt: nowIso(), assembleProgress: 0 }
+    : done;
+};
+
+async function replayedFromMaterial(
+  key: string,
+  job: VideoJob,
+  shot: JobShot,
+  frame: JobFrame,
+): Promise<boolean> {
+  const item =
+    mayReplayClip(job, shot, frame) && shot.end !== undefined && shot.start !== undefined
+      ? await storedClip(job, frame.material as string, {
+          seconds: shot.end - shot.start,
+          motion: plannedMotion(job, shot),
+        })
+      : undefined;
+  if (!item) {
+    if (shot.materialClip) {
+      await update(key, (j) => ({
+        ...j,
+        shots: j.shots.map((s) => (s.index === shot.index ? withoutMaterialClip(s) : s)),
+      }));
+    }
+    return false;
+  }
+  const clip = shotClipFile(job, shot.index);
+  await placeMaterialFile(job.seriesId, item, join(jobDir(job), clip));
+  const clipSec = await probeSeconds(join(jobDir(job), clip));
+  await update(key, (j) =>
+    doneShot(j, shot.index, { clip, clipSec, reused: item.id, materialClip: undefined }),
+  );
+  await recordUse(job.seriesId, item.id, job, nowIso());
+  return true;
+}
+
+function withoutMaterialClip(shot: JobShot): JobShot {
+  const { materialClip: _, ...rest } = shot;
+  return rest;
+}
 
 function cutoutRecorded(job: VideoJob, frameId: string, made: CutoutResult): VideoJob {
   const step = STEP.cutout(frameId);
@@ -1902,6 +2069,7 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
   try {
     if (!frame?.file) throw new Error("Thiếu khung hình");
     if (!stillQueuedToSend(key, index)) return;
+    if (await replayedFromMaterial(key, job, shot, frame)) return;
     if (!madeByProvider(shot)) {
       const clip = revFile(job, `shot-${String(index + 1).padStart(2, "0")}`, "mp4");
       const spoken = shot.speech && job.segments?.find((g) => g.id === shot.speech)?.clip;

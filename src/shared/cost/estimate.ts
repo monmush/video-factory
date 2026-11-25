@@ -6,6 +6,7 @@ import { builtinRecipe } from "../recipe";
 import { asksUsd, type JobSound, type SoundAsk, soundInFlight, soundToSend } from "../sound";
 import {
   billedSeconds,
+  frameFor,
   isGenerated,
   type JobFrame,
   type JobShot,
@@ -52,7 +53,17 @@ export const frameUsd = (job: Pick<VideoJob, "live">, frame: JobFrame): number |
 
 const orZero = (usd: number | null | undefined) => usd ?? 0;
 
-const framesToMake = (job: VideoJob) => job.frames.filter((f) => !f.file && isGenerated(job, f));
+export const takenFromMaterial = (frame: JobFrame) =>
+  Boolean(frame.materialFile) && !frame.fresh && !frame.file;
+
+export const replaysMaterialClip = (job: VideoJob, shot: JobShot) =>
+  Boolean(shot.materialClip) && shot.state !== "done" && !frameFor(job, shot)?.fresh;
+
+const shotToMakeUsd = (job: VideoJob, shot: JobShot) =>
+  replaysMaterialClip(job, shot) ? 0 : shotEstimateUsd(job, shot);
+
+const framesToMake = (job: VideoJob) =>
+  job.frames.filter((f) => !f.file && !takenFromMaterial(f) && isGenerated(job, f));
 
 const frameCutoutsUsd = (f: JobFrame) => (f.cutouts ?? 0) * CUTOUT_USD;
 
@@ -105,7 +116,7 @@ export function costToFinishUsd(job: VideoJob): number | null {
   if (!job.plan) return null;
   const shots = job.shots
     .filter((s) => s.state !== "done" && s.state !== "rendering")
-    .reduce((n, s) => n + orZero(shotEstimateUsd(job, s)), 0);
+    .reduce((n, s) => n + orZero(shotToMakeUsd(job, s)), 0);
   return (
     voiceToMakeUsd(job) +
     stillsToMakeUsd(job) +
@@ -170,7 +181,8 @@ function frameSteps(job: VideoJob): StepEstimate[] {
   return job.frames.flatMap((f): StepEstimate[] => {
     const planned = Boolean(job.live && f.keyframe && !f.fallback);
     const generated = isGenerated(job, f);
-    const free = !generated || madeWithoutCharge(Boolean(f.file), f.costUsd);
+    const free =
+      !generated || takenFromMaterial(f) || madeWithoutCharge(Boolean(f.file), f.costUsd);
     const label =
       f.kind === "product" && !planned ? "Ảnh sản phẩm" : `Khung hình ${f.keyframe ?? f.id}`;
     const still: StepEstimate = {
@@ -220,7 +232,7 @@ function shotSteps(job: VideoJob): StepEstimate[] {
       group,
       label: `Cảnh ${shot.index + 1} · ${group}`,
       quantity: shotQuantity(job, shot),
-      usd: madeWithoutCharge(shot.state === "done", shot.costUsd) ? 0 : shotEstimateUsd(job, shot),
+      usd: madeWithoutCharge(shot.state === "done", shot.costUsd) ? 0 : shotToMakeUsd(job, shot),
     };
   });
 }

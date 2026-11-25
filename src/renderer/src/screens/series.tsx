@@ -16,6 +16,7 @@ import { useProductMention } from "@/components/mention-picker";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { QualityChip } from "@/components/quality-chip";
+import { SeriesMaterial } from "@/components/series-material";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,6 +35,7 @@ import { api } from "@/lib/api";
 import { useBoard } from "@/lib/board";
 import { useDraft } from "@/lib/drafts";
 import { errorMessage } from "@/lib/errors";
+import { useMaterial } from "@/lib/material";
 import { onSeriesFocusRequest, takeSeriesFocus } from "@/lib/series-focus";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useWorkspace } from "@/lib/workspace";
@@ -65,9 +67,12 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [showAll, setShowAll] = useState(false);
   const [caret, setCaret] = useState(0);
   const series = workspace.series.find((s) => s.id === seriesId);
+  const material = useMaterial(seriesId);
+  const hasMaterial = material.length > 0;
+  const [chosenTab, setTab] = useDraft<SeriesTab>(`series-tab:${seriesId}`, "recent");
+  const tab = hasMaterial ? chosenTab : "recent";
   const mention = useProductMention({
     text: request,
     caret,
@@ -83,7 +88,6 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const sessions = workspace.sessions
     .filter((s) => s.seriesId === series.id)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const visible = showAll ? sessions : sessions.slice(0, VISIBLE_SESSIONS);
   const seriesLevel = mediaLevel(series.mediaLevel).id;
 
   const start = async () => {
@@ -161,29 +165,27 @@ function SeriesView({ seriesId }: { seriesId: string }) {
       </div>
       {error && <p className="mt-2 px-1 text-destructive-foreground">{error}</p>}
 
-      {sessions.length > 0 && (
+      {hasMaterial && (
         <section className="mt-8">
-          <h2 className="mb-1 px-3 font-semibold">Gần đây</h2>
-          {visible.map((session, i) => (
-            <SessionRow
-              key={session.id}
-              session={session}
-              showDate={dayLabel(visible[i - 1]?.createdAt) !== dayLabel(session.createdAt)}
-            />
-          ))}
-          {sessions.length > VISIBLE_SESSIONS && (
-            <button
-              type="button"
-              className="cursor-pointer px-3 py-2.5 text-muted-foreground hover:text-foreground"
-              onClick={() => setShowAll(!showAll)}
-            >
-              {showAll ? "Thu gọn" : "Xem thêm"}
-            </button>
-          )}
+          <SeriesTabs seriesId={series.id} tab={tab} onTab={setTab} />
+          <div role="tabpanel" id={`${seriesId}-${tab}`} aria-labelledby={`${seriesId}-${tab}-tab`}>
+            {tab === "recent" ? (
+              <RecentSessions sessions={sessions} />
+            ) : (
+              <SeriesMaterial series={series} items={material} />
+            )}
+          </div>
         </section>
       )}
 
-      {series.notes?.length ? (
+      {!hasMaterial && sessions.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-1 px-3 font-semibold">Gần đây</h2>
+          <RecentSessions sessions={sessions} />
+        </section>
+      )}
+
+      {tab === "recent" && series.notes?.length ? (
         <section className="mt-8">
           <h2 className="mb-1 px-3 font-semibold">Ghi nhớ</h2>
           <NotesList notes={series.notes} />
@@ -193,6 +195,88 @@ function SeriesView({ seriesId }: { seriesId: string }) {
       <EditSeriesDialog series={series} open={editing} onOpenChange={setEditing} />
       <DeleteSeriesDialog series={series} open={deleting} onOpenChange={setDeleting} />
     </Page>
+  );
+}
+
+type SeriesTab = "recent" | "material";
+
+const SERIES_TABS: { id: SeriesTab; label: string }[] = [
+  { id: "recent", label: "Gần đây" },
+  { id: "material", label: "Tư liệu" },
+];
+
+function SeriesTabs({
+  seriesId,
+  tab,
+  onTab,
+}: {
+  seriesId: string;
+  tab: SeriesTab;
+  onTab: (tab: SeriesTab) => void;
+}) {
+  const list = useRef<HTMLDivElement>(null);
+  const switchTab = () => {
+    const other: SeriesTab = tab === "recent" ? "material" : "recent";
+    onTab(other);
+    list.current
+      ?.querySelector<HTMLButtonElement>(`#${CSS.escape(`${seriesId}-${other}-tab`)}`)
+      ?.focus();
+  };
+  return (
+    <div
+      ref={list}
+      role="tablist"
+      className="mb-1 flex gap-4 px-3"
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+        switchTab();
+        e.preventDefault();
+      }}
+    >
+      {SERIES_TABS.map(({ id, label }) => (
+        <button
+          key={id}
+          type="button"
+          role="tab"
+          id={`${seriesId}-${id}-tab`}
+          aria-selected={tab === id}
+          aria-controls={`${seriesId}-${id}`}
+          tabIndex={tab === id ? 0 : -1}
+          className={cn(
+            "cursor-pointer rounded-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            tab === id ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => onTab(id)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RecentSessions({ sessions }: { sessions: Session[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? sessions : sessions.slice(0, VISIBLE_SESSIONS);
+  return (
+    <>
+      {visible.map((session, i) => (
+        <SessionRow
+          key={session.id}
+          session={session}
+          showDate={dayLabel(visible[i - 1]?.createdAt) !== dayLabel(session.createdAt)}
+        />
+      ))}
+      {sessions.length > VISIBLE_SESSIONS && (
+        <button
+          type="button"
+          className="cursor-pointer px-3 py-2.5 text-muted-foreground hover:text-foreground"
+          onClick={() => setShowAll(!showAll)}
+        >
+          {showAll ? "Thu gọn" : "Xem thêm"}
+        </button>
+      )}
+    </>
   );
 }
 

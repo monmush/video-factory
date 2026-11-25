@@ -1,3 +1,4 @@
+import type { MaterialItem } from "./material";
 import type { Note } from "./notes";
 import type { PaidWork } from "./paid-work";
 import type { ProductMix } from "./product-mix";
@@ -17,6 +18,7 @@ export interface Series {
   videoModel?: string;
   resolution?: string;
   mediaLevel?: string;
+  reuseMaterial?: boolean;
   pinnedAt?: string;
   notes?: Note[];
   createdAt: string;
@@ -265,6 +267,7 @@ export interface SeriesInput {
   videoModel?: string;
   resolution?: string;
   mediaLevel?: string;
+  reuseMaterial?: boolean;
 }
 
 export interface Workspace {
@@ -386,6 +389,7 @@ export const mediaUrl = {
   asset: (assetId: string, file: string) => `hyan-media://asset/${assetId}/${file}`,
   chat: (sessionId: string, file: string) => `hyan-media://chat/${sessionId}/${file}`,
   staged: (file: string) => `hyan-media://staging/${file}`,
+  material: (seriesId: string, file: string) => `hyan-media://material/${seriesId}/${file}`,
   video: (sessionId: string, scriptId: string, file: string) =>
     `hyan-media://video/${sessionId}/${scriptId}/${file}`,
 };
@@ -586,6 +590,16 @@ export interface IpcContract {
       cost: number | null;
     };
   };
+  "material:list": { args: [seriesId: string]; result: MaterialItem[] };
+  "material:set-reusable": {
+    args: [input: { seriesId: string; itemId: string; reusable: boolean }];
+    result: null;
+  };
+  "material:remove": { args: [input: { seriesId: string; itemId: string }]; result: null };
+  "material:add-to-character": {
+    args: [input: { seriesId: string; itemId: string }];
+    result: Asset;
+  };
   "usage:balances": { args: []; result: Balances };
   "providers:status": { args: []; result: ProvidersInfo };
   "providers:set-key": { args: [id: ProviderId, key: string]; result: ProvidersInfo };
@@ -633,6 +647,10 @@ export interface IpcContract {
         version: string;
       },
     ];
+    result: null;
+  };
+  "video:fresh-picture": {
+    args: [input: { sessionId: string; scriptId: string; frameId: string; fresh: boolean }];
     result: null;
   };
   "video:level": {
@@ -712,6 +730,10 @@ export const IPC_CHANNELS = [
   "assets:accept-place-finding",
   "assets:clean-place-photo",
   "assets:cut-out-product-photo",
+  "material:list",
+  "material:set-reusable",
+  "material:remove",
+  "material:add-to-character",
   "usage:balances",
   "providers:status",
   "providers:set-key",
@@ -734,6 +756,7 @@ export const IPC_CHANNELS = [
   "video:fix",
   "video:restore",
   "video:version",
+  "video:fresh-picture",
   "video:level",
   "video:tempo",
   "video:save",
@@ -747,6 +770,7 @@ export interface IpcEvents {
   "video:job": { job: VideoJob; averages: StepAverages };
   "video:job-removed": { sessionId: string; scriptId: string };
   "video:making": VideosBeingMade;
+  "material:changed": { seriesId: string };
 }
 
 export type IpcEvent = keyof IpcEvents;
@@ -758,6 +782,7 @@ export const IPC_EVENTS = [
   "video:job",
   "video:job-removed",
   "video:making",
+  "material:changed",
 ] as const satisfies readonly IpcEvent[];
 
 type UnlistedAtCompileTime<All, Listed> =

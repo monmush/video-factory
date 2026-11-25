@@ -36,7 +36,7 @@ import type { ShotKind } from "./shot-plan";
 
 const MAIN_PERSON_PHOTOS = 3;
 const OTHER_PERSON_PHOTOS = 2;
-const MASTER_PLACE_PHOTOS = 2;
+export const MASTER_PLACE_PHOTOS = 2;
 const MASTER_PERSON_PHOTOS = 3;
 export const PHOTOS_OFFERED_PER_PERSON = 3;
 
@@ -285,6 +285,9 @@ export function buildDirection(input: BuildInput): LiveDirection {
       endpoint: recipe.stills.endpoint,
       input: body,
       why: p.people.length ? p.people.map((id) => names.get(id) ?? id).join(", ") : "",
+      ...(p.material
+        ? { material: p.material, description: p.description, peopleIds: [...p.people] }
+        : {}),
     };
   });
 
