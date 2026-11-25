@@ -215,7 +215,7 @@ describe("minimum lengths from what the tools said", () => {
     const { plan } = readLivePlan(answer(), ctx, record);
     const [warning] = cheaperAlternatives(plan, record);
     expect(warning).toMatch(
-      /^Khẩu hình: lips\/free would cost ~\$0\.\d\d for these shots instead of ~\$0\.80/,
+      /^Nói: lips\/free would cost ~\$0\.\d\d for these shots instead of ~\$0\.80/,
     );
   });
 });

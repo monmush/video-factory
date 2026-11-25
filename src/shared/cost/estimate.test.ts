@@ -131,6 +131,20 @@ describe("the frozen estimate", () => {
     expect(costPanel(redone)?.groups.map((g) => [g.label, g.estimateUsd])).toEqual(frozen);
     expect(costPanel(redone)?.redone).toMatchObject({ count: 1, paid: { usd: 2.27 } });
   });
+
+  it("still shows for a video whose estimate was saved before the groups were renamed", () => {
+    const started = withFirstPass({ ...staged(), status: "waiting" }, NOW);
+    const firstPass = started.firstPass as NonNullable<VideoJob["firstPass"]>;
+    const { "Cảnh nói": speaking, ...others } = firstPass.groups;
+    const old: VideoJob = {
+      ...started,
+      firstPass: { ...firstPass, groups: { ...others, "Khẩu hình": speaking as number } },
+    };
+    const shown = (job: VideoJob) =>
+      new Map(costPanel(job)?.groups.map((g) => [g.label, g.estimateUsd]));
+    expect(speaking).toBeGreaterThan(0);
+    expect(shown(old)).toEqual(shown(started));
+  });
 });
 
 describe("material the series already has", () => {

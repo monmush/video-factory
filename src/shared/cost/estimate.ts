@@ -1,6 +1,12 @@
 import { estimateVoiceUsd } from "../board";
 import { recipeModels } from "../build-direction";
-import { type LiveDirection, PAID_ROUTES, ROUTE_LABEL, requestCost } from "../live-plan";
+import {
+  type LiveDirection,
+  PAID_ROUTES,
+  ROUTE_LABEL,
+  type Route,
+  requestCost,
+} from "../live-plan";
 import { mediaLevel } from "../media-level";
 import { builtinRecipe } from "../recipe";
 import { stagedWithoutPlace } from "../series-place";
@@ -20,6 +26,7 @@ import {
 } from "../video-job";
 import { clipUsd } from "../video-models";
 import { STEP, spentUsd } from "./charges";
+import { SPEAKING_SCENES } from "./group-names";
 import { COST_PARTS } from "./parts";
 import { CUTOUT_USD, STILL_USD } from "./rates";
 
@@ -224,14 +231,16 @@ function shotQuantity(job: VideoJob, shot: JobShot): string {
   return `${round1(billedSeconds(shot))} giây`;
 }
 
+const ROUTE_GROUP: Record<Route, string> = { ...ROUTE_LABEL, "lip-sync": SPEAKING_SCENES };
+
 function shotSteps(job: VideoJob): StepEstimate[] {
   return job.shots.map((shot) => {
     const route = shot.route ?? (madeByProvider(shot) ? "lip-sync" : "still-move");
-    const group = ROUTE_LABEL[shot.fallback && route === "motion" ? "still-move" : route];
+    const shown = shot.fallback && route === "motion" ? "still-move" : route;
     return {
       key: STEP.shot(shot.index),
-      group,
-      label: `Cảnh ${shot.index + 1} · ${group}`,
+      group: ROUTE_GROUP[shown],
+      label: `Cảnh ${shot.index + 1} · ${ROUTE_LABEL[shown]}`,
       quantity: shotQuantity(job, shot),
       usd: madeWithoutCharge(shot.state === "done", shot.costUsd) ? 0 : shotToMakeUsd(job, shot),
     };

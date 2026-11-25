@@ -9,6 +9,7 @@ import {
   spentUsd,
 } from "./charges";
 import { stepEstimates, stillToPayUsd } from "./estimate";
+import { withCurrentNames } from "./group-names";
 import { COST_PARTS } from "./parts";
 
 export interface Money {
@@ -100,7 +101,10 @@ const chargeMoney = (charges: readonly Charge[]): Money => ({
 
 export function costPanel(job: VideoJob): CostPanel | null {
   if (!job.live) return null;
-  const frozen = job.firstPass;
+  const frozen = job.firstPass && {
+    ...job.firstPass,
+    groups: withCurrentNames(job.firstPass.groups),
+  };
   const paidByStep = new Map(inUseItems(job).map((i) => [i.step, i]));
   const steps: (PanelLine & { group: string })[] = stepEstimates(job)
     .map((s) => {

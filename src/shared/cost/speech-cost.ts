@@ -2,13 +2,14 @@ import { type JobSegment, segmentAskedSec, segmentEstimateUsd } from "../speech"
 import { isNative, type JobCut, levelSpeech, type VideoJob } from "../video-job";
 import type { PaidItem } from "./charges";
 import type { StepEstimate } from "./estimate";
+import { SPEAKING_SCENES, SPEAKING_SCENES_WITH_VOICE } from "./group-names";
 import type { CostPart } from "./parts";
 
 const SEGMENT_STEP = "segment:";
 
 export const segmentStep = (id: string) => `${SEGMENT_STEP}${id}`;
 
-const SPEECH = "Lời nói";
+const SPEECH = "Nói";
 
 const segmentUsd = (job: VideoJob, s: JobSegment) => segmentEstimateUsd(levelSpeech(job), s) ?? 0;
 
@@ -35,7 +36,7 @@ function steps(job: VideoJob): StepEstimate[] {
     const asked = segmentAskedSec(levelSpeech(job), s);
     return {
       key: segmentStep(s.id),
-      group: SPEECH,
+      group: SPEAKING_SCENES_WITH_VOICE,
       label: `Đoạn ${k + 1} · ${SPEECH}`,
       quantity: asked ? `${asked} giây` : "",
       usd: reusedOrFree(s) ? 0 : segmentEstimateUsd(levelSpeech(job), s),
@@ -56,7 +57,7 @@ const inFlightUsd = (job: VideoJob) =>
 function stepLabel(step: string): string | null {
   if (!step.startsWith(SEGMENT_STEP)) return null;
   const line = /^line-(\d+)-/.exec(step.slice(SEGMENT_STEP.length))?.[1];
-  return line ? `${SPEECH} câu ${line}` : SPEECH;
+  return line ? `${SPEAKING_SCENES} câu ${line}` : SPEAKING_SCENES;
 }
 
 export const speechCost: CostPart = {

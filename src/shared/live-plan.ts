@@ -794,7 +794,7 @@ export interface CostTable {
 }
 
 export const ROUTE_LABEL: Record<Route, string> = {
-  "lip-sync": "Khẩu hình",
+  "lip-sync": "Nói",
   motion: "Chuyển động",
   "still-move": "Ảnh trượt",
   product: "Sản phẩm",

@@ -143,12 +143,14 @@ describe("the high level", () => {
       0,
     );
     const priced = live.costs.rows
-      .filter((r) => r.step.endsWith("Khẩu hình"))
+      .filter((r) => r.step.endsWith("· Nói"))
       .reduce((n, r) => n + (r.usd ?? 0), 0);
     expect(priced).toBeCloseTo(expected);
-    expect(
-      live.costs.rows.filter((r) => r.step.endsWith("Khẩu hình")).map((r) => r.quantity),
-    ).toEqual(["4 giây", "4 giây", "4 giây"]);
+    expect(live.costs.rows.filter((r) => r.step.endsWith("· Nói")).map((r) => r.quantity)).toEqual([
+      "4 giây",
+      "4 giây",
+      "4 giây",
+    ]);
   });
 });
 

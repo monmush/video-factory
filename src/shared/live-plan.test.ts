@@ -288,8 +288,8 @@ describe("pricing a live plan", () => {
       "Khung hình master",
       "Khung hình an",
       "Khung hình ba",
-      "Cảnh 1 · Khẩu hình",
-      "Cảnh 2 · Khẩu hình",
+      "Cảnh 1 · Nói",
+      "Cảnh 2 · Nói",
     ]);
     expect(table.unknownSteps).toBe(3);
     const lips = table.rows.slice(4);

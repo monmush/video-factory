@@ -154,7 +154,7 @@ describe("costs of a native video", () => {
     const table = costPanel(job);
     const steps = table?.steps.map((r) => r.label) ?? [];
     expect(steps).not.toContain("Giọng đọc");
-    expect(steps.filter((s) => s.endsWith("· Lời nói"))).toHaveLength(3);
+    expect(steps.filter((s) => s.endsWith("· Nói"))).toHaveLength(3);
     expect(steps.some((s) => s.startsWith("Cảnh 1 ·"))).toBe(false);
     expect(costToFinishUsd(job)).toBeCloseTo(table?.estimateUsd ?? 0);
     expect(costToFinishUsd(job)).not.toBeCloseTo(costToFinishUsd(dubbed) ?? Number.NaN);
