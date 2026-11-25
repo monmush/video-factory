@@ -29,6 +29,7 @@ import {
 import {
   frameUsd,
   shotEstimateUsd,
+  stagedToMake,
   withCurrentRates,
   withFirstPass,
 } from "../../shared/cost/estimate";
@@ -68,6 +69,7 @@ import {
 import { reconcileJob, withSending } from "../../shared/request-reconcile";
 import { classifyScriptEdit, listFitsPlan, type RestageBasis } from "../../shared/restage";
 import { reworded, rewordedFrom } from "../../shared/reworded";
+import { hasPlace, NO_PLACE, stagedWithoutPlace } from "../../shared/series-place";
 import type { ShotList } from "../../shared/shot-list";
 import {
   castOf,
@@ -545,11 +547,19 @@ export function holdStaging(sessionId: string): () => void {
   };
 }
 
+export async function assertHasPlace(sessionId: string): Promise<void> {
+  const ws = await getWorkspace();
+  const session = ws.sessions.find((s) => s.id === sessionId);
+  const series = ws.series.find((s) => s.id === session?.seriesId);
+  if (!hasPlace(series, ws.assets)) throw new Error(NO_PLACE);
+}
+
 export async function askToStage(
   sessionId: string,
   scriptIds: string[],
   again = false,
 ): Promise<void> {
+  if (scriptIds.length) await assertHasPlace(sessionId);
   const hold = stagingHolds.get(sessionId);
   if (!hold) {
     await stage(sessionId, scriptIds, again);
@@ -583,9 +593,6 @@ async function createJob(
   }
   if (!script) throw new Error("Không tìm thấy kịch bản");
   const series = ws.series.find((s) => s.id === session.seriesId);
-  const useEnvironment = Boolean(
-    series?.environmentIds.some((id) => ws.assets.find((a) => a.id === id)?.images.length),
-  );
   const level = mediaLevel(videoLevel(session, series, scriptId));
   const job = newJob({
     sessionId,
@@ -593,7 +600,7 @@ async function createJob(
     scriptId,
     title: script.title,
     lines: script.lines,
-    useEnvironment,
+    useEnvironment: hasPlace(series, ws.assets),
     model: level.speaker,
     resolution: fitResolution(level.speaker, level.output),
     now: nowIso(),
@@ -640,7 +647,7 @@ const NOT_STAGED = "Chưa dàn dựng";
 
 function assertStagedToMake(job: VideoJob | undefined, script: Script | undefined, level: string) {
   if (job && !videoUntouched(job)) return;
-  if (!job?.plan || !script) throw new Error(NOT_STAGED);
+  if (!stagedToMake(job) || !script) throw new Error(NOT_STAGED);
   if (!readyToMake(job, script, level)) throw new Error(STAGING_BEHIND);
 }
 
@@ -738,7 +745,9 @@ async function finishStaging(key: string, planning: VideoJob | null, staging: Ab
 }
 
 export async function stage(sessionId: string, scriptIds: string[], again = false): Promise<null> {
+  if (!scriptIds.length) return null;
   await ensureLoaded();
+  await assertHasPlace(sessionId);
   const { levelOf, find } = await boardNow(sessionId);
   for (const scriptId of new Set(scriptIds)) {
     const key = keyOf(sessionId, scriptId);
@@ -769,7 +778,7 @@ async function jobForStaging(
   level: string,
 ) {
   const direction = anchoredDirection(job?.direction, script.lines);
-  if (!job || fromScratch) {
+  if (!job || fromScratch || stagedWithoutPlace(job)) {
     await createJob(sessionId, script.id, true, "idle", direction, freeToReplace);
     return;
   }

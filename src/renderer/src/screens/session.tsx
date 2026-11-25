@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { VideosList, VideosToolbar } from "@/components/videos";
 import { api } from "@/lib/api";
 import { boardLayout, requestChatFocus, useBoard, useBoardView } from "@/lib/board";
-import { stagingOf, useVideoLevel } from "@/lib/staging";
+import { stagingOf, useHasPlace, useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -143,6 +143,7 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
   const levelOf = useVideoLevel(sessionId);
   const navigate = useNavigate();
   const [view, setView] = useBoardView(sessionId);
+  const placeReady = useHasPlace(sessionId);
   const { error, run } = useAction();
   if (!board) return null;
   const scripts = boardOrder(board.scripts);
@@ -157,7 +158,7 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
   const staged = staging.some((s) => s.status === "ready" || s.status === "staging");
   const stageAll = () =>
     run(async () => {
-      await api.invoke("video:stage", { sessionId, scriptIds: toStage });
+      if (placeReady) await api.invoke("video:stage", { sessionId, scriptIds: toStage });
       await navigate({ to: "/sessions/$sessionId/staging", params: { sessionId } });
     });
 

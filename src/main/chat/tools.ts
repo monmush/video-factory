@@ -9,6 +9,7 @@ import type { Asset, ChatPart, Script } from "../../shared/ipc";
 import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
 import { mixProblem } from "../../shared/product-mix";
 import { MERGE_WISH } from "../../shared/scene-actions";
+import { stagedWithoutPlace } from "../../shared/series-place";
 import type { PlannedShot } from "../../shared/shot-plan";
 import {
   OUTDATED_TEXT,
@@ -187,7 +188,7 @@ function describeVideo(number: number, job: VideoJob, assets: Asset[], staging: 
 
 function describePlan(job: VideoJob | null, staging: Staging): string {
   const line = stagingLine(staging);
-  if (!job?.plan || staging.status === "staging") return line;
+  if (!job?.plan || staging.status === "staging" || stagedWithoutPlace(job)) return line;
   const rows = job.shots.map((s) => {
     const want = directionAt(job.direction, s.text)?.want;
     return `${s.index + 1}. ${s.brief ?? s.kind} — "${s.text}"${want ? ` [ý người dùng: ${want}]` : ""}`;
@@ -699,7 +700,7 @@ export const TOOLS = [
       const { scripts } = await pick(host.sessionId, [number]);
       host.label(`Xem video #${number}`);
       const job = await video.jobFor(host.sessionId, (scripts[0] as Script).id);
-      if (!job) return `#${number} chưa có video.`;
+      if (!job || stagedWithoutPlace(job)) return `#${number} chưa có video.`;
       return describeVideo(
         number,
         job,
@@ -723,9 +724,12 @@ export const TOOLS = [
       const script = scripts[0] as Script;
       host.label(shot ? `Dàn dựng #${number}, cảnh ${shot}` : `Dàn dựng #${number}`);
       const job = await video.jobFor(host.sessionId, script.id);
+      const { status } = await video.stagingOf(host.sessionId, script.id);
+      if (status !== "started") await video.assertHasPlace(host.sessionId);
       let words: string | undefined;
       if (shot) {
-        if (!job?.plan) return `#${number} chưa có dàn dựng; bỏ shot để lưu ý cho cả video.`;
+        if (!job?.plan || stagedWithoutPlace(job))
+          return `#${number} chưa có dàn dựng; bỏ shot để lưu ý cho cả video.`;
         words = job.shots[shot - 1]?.text;
         if (!words) return `Dàn dựng của #${number} có ${job.shots.length} cảnh.`;
       }

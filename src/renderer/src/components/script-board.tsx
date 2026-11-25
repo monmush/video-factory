@@ -4,7 +4,7 @@ import type { Script } from "@shared/ipc";
 import { committedIds } from "@shared/ready-check";
 import { hasVideo } from "@shared/session-steps";
 import type { VideoJob } from "@shared/video-job";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Clapperboard,
   CopyPlus,
@@ -55,7 +55,13 @@ import {
 } from "@/lib/board-notice";
 import { useLiveWriting } from "@/lib/chat";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
-import { type ScriptStaging, stagingOf, useStaging, useVideoLevel } from "@/lib/staging";
+import {
+  type ScriptStaging,
+  stagingOf,
+  useHasPlace,
+  useStaging,
+  useVideoLevel,
+} from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -129,6 +135,8 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const root = useRef<HTMLElement>(null);
   const videoJobs = useVideoJobs(sessionId);
   const action = useAction();
+  const navigate = useNavigate();
+  const placeReady = useHasPlace(sessionId);
 
   useEffect(() => {
     if (!askedFocus) return;
@@ -225,7 +233,12 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
       if (ok && removed) followCopy(removed);
       return ok;
     },
-    stageMany: (ids) => run(() => api.invoke("video:stage", { sessionId, scriptIds: ids })),
+    stageMany: (ids) =>
+      run(() =>
+        placeReady
+          ? api.invoke("video:stage", { sessionId, scriptIds: ids })
+          : navigate({ to: "/sessions/$sessionId/staging", params: { sessionId } }),
+      ),
     toggleRef: (id) => {
       if (toggleRef(sessionId, id)) requestChatFocus(sessionId);
     },

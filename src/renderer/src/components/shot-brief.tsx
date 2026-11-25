@@ -11,6 +11,7 @@ import {
   type SceneAction,
   sceneAction,
 } from "@shared/scene-actions";
+import { stagedWithoutPlace } from "@shared/series-place";
 import { frameFor, type JobFrame, type JobShot, type VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, Trash2, X } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
@@ -80,7 +81,7 @@ export function ShotBrief({
     );
   }
 
-  if (!job?.plan) {
+  if (!job?.plan || stagedWithoutPlace(job)) {
     if (!staging && !error) return null;
     return (
       <div data-shot-brief className={cn("flex flex-col items-start gap-2", className)}>

@@ -2,6 +2,7 @@ import { estimateSeconds, formatSeconds } from "@shared/board";
 import { costToFinishUsd } from "@shared/cost/estimate";
 import type { Script } from "@shared/ipc";
 import { type MediaLevel, type MediaLevelId, mediaLevel } from "@shared/media-level";
+import { NO_PLACE } from "@shared/series-place";
 import { OUTDATED_TEXT, readyToMake, stageable } from "@shared/staging-status";
 import { followBatch, type VideoJob } from "@shared/video-job";
 import { planAtLevel } from "@shared/video-takes";
@@ -18,14 +19,16 @@ import {
 import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, GALLERY_DEFAULT_MAX, requestCardFocus, requestChatFocus } from "@/lib/board";
-import type { ScriptStaging } from "@/lib/staging";
+import { type ScriptStaging, useHasPlace } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
+import { refreshWorkspace } from "@/lib/workspace";
+import { AssetPicker } from "./asset-picker";
 import { BoardToast } from "./board-notice";
 import { LivePlanFold } from "./live-plan";
 import { type Batch, useBatch } from "./make-all";
 import { VideoQuality } from "./quality-chip";
-import { ReadyCheckDialog } from "./ready-check";
+import { ReadyCheckDialog, useSeriesPlaceIds } from "./ready-check";
 import { ShotBrief } from "./shot-brief";
 import { Button } from "./ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -51,6 +54,7 @@ function useCommitToVideos(sessionId: string) {
 
 export function StagingList({ sessionId }: { sessionId: string }) {
   const batch = useBatch(sessionId);
+  const placeReady = useHasPlace(sessionId);
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
   if (!batch) return null;
   const { unstarted, started } = onStagingStep(batch);
@@ -80,6 +84,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
 
   return (
     <section aria-label="Dàn dựng" className={cn("px-6 pt-2 pb-8", !grid && "mx-auto max-w-5xl")}>
+      {!placeReady && <p className="mb-3 text-muted-foreground">{NO_PLACE}</p>}
       <ul
         className={cn(
           "grid items-start gap-4",
@@ -93,6 +98,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
             script={script}
             number={number(script)}
             batch={batch}
+            placeReady={placeReady}
             open={openCards[script.id] ?? grid}
             onToggle={() =>
               setOpenCards((current) => ({
@@ -163,6 +169,7 @@ function StagingCard({
   script,
   number,
   batch,
+  placeReady,
   open,
   onToggle,
 }: {
@@ -170,6 +177,7 @@ function StagingCard({
   script: Script;
   number: number;
   batch: Batch;
+  placeReady: boolean;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -194,7 +202,7 @@ function StagingCard({
   const ready = staging.status === "ready" && job;
 
   let action: ReactNode = null;
-  const stageLabel = STAGE_ACTION[staging.status];
+  const stageLabel = placeReady && STAGE_ACTION[staging.status];
   if (stageLabel) {
     action = (
       <Button variant="outline" onClick={() => stage()}>
@@ -247,7 +255,7 @@ function StagingCard({
             <Ellipsis />
           </MenuTrigger>
           <MenuPopup align="end">
-            {staging.status === "ready" && (
+            {placeReady && staging.status === "ready" && (
               <MenuItem onClick={() => stage(true)}>
                 <RotateCw />
                 Dàn dựng lại
@@ -303,6 +311,9 @@ function StagingCard({
 export function StagingToolbar({ sessionId }: { sessionId: string }) {
   const batch = useBatch(sessionId);
   const commit = useCommitToVideos(sessionId);
+  const placeReady = useHasPlace(sessionId);
+  const placeIds = useSeriesPlaceIds(sessionId);
+  const [pickingPlace, setPickingPlace] = useState(false);
   const { error, run } = useAction();
   if (!batch) return null;
   const { unstarted, toStage, toCommit } = onStagingStep(batch);
@@ -310,7 +321,12 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
   const allOutdated = toStage.every((s) => batch.stagingOfScript(s).status === "outdated");
   const stageAll = () =>
     run(() => api.invoke("video:stage", { sessionId, scriptIds: toStage.map((s) => s.id) }));
-  const commitIds = toCommit.map((s) => s.id);
+  const commitIds = placeReady ? toCommit.map((s) => s.id) : [];
+  const addPlaces = (environmentIds: string[]) =>
+    run(async () => {
+      await api.invoke("series:update", { id: batch.session.seriesId, environmentIds });
+      await refreshWorkspace();
+    });
   const makeVideos = () =>
     batch.make.needsCheck(commitIds) ? batch.make.open(commitIds) : run(() => commit(commitIds));
 
@@ -320,16 +336,19 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
       {staging > 0 && (
         <span className="text-xs text-muted-foreground tabular-nums">{staging} đang dàn dựng</span>
       )}
-      {toStage.length > 0 && (
+      {!placeReady && unstarted.length > 0 && (
+        <Button onClick={() => setPickingPlace(true)}>Thêm bối cảnh</Button>
+      )}
+      {placeReady && toStage.length > 0 && (
         <Button onClick={stageAll}>
           {allOutdated
             ? `Cập nhật ${toStage.length} dàn dựng`
             : `Dàn dựng ${toStage.length} kịch bản`}
         </Button>
       )}
-      {toCommit.length > 0 ? (
+      {commitIds.length > 0 ? (
         <Button variant={toStage.length > 0 ? "outline" : "default"} onClick={makeVideos}>
-          Tạo {toCommit.length} video
+          Tạo {commitIds.length} video
           <ArrowRight />
         </Button>
       ) : (
@@ -343,6 +362,13 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
           </Button>
         )
       )}
+      <AssetPicker
+        kind="environment"
+        open={pickingPlace}
+        onOpenChange={setPickingPlace}
+        selected={placeIds}
+        onConfirm={addPlaces}
+      />
       <ReadyCheckDialog
         sessionId={sessionId}
         scope={batch.make.scope ?? []}

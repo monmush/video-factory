@@ -1,6 +1,7 @@
 import { videoLevel } from "@shared/batch-settings";
 import type { Script } from "@shared/ipc";
 import type { MediaLevelId } from "@shared/media-level";
+import { hasPlace } from "@shared/series-place";
 import {
   needsStaging,
   type OutdatedReason,
@@ -17,6 +18,15 @@ export function useVideoLevel(sessionId: string): (scriptId: string) => MediaLev
   const session = sessions.find((s) => s.id === sessionId);
   const own = series.find((s) => s.id === session?.seriesId);
   return (scriptId) => videoLevel(session, own, scriptId);
+}
+
+export function useHasPlace(sessionId: string): boolean {
+  const { sessions, series, assets } = useWorkspace();
+  const session = sessions.find((s) => s.id === sessionId);
+  return hasPlace(
+    series.find((s) => s.id === session?.seriesId),
+    assets,
+  );
 }
 
 export interface ScriptStaging {

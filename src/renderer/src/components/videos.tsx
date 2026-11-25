@@ -226,7 +226,7 @@ function statusLine(
   const stagingNow = stagingLine(staging);
   if (stagingNow) return stagingNow;
   const length = formatSeconds(estimateSeconds(script.lines));
-  if (!job?.plan && staging.canStage && staging.status === "none") {
+  if (staging.canStage && staging.status === "none") {
     return `Chưa dàn dựng · ${length}`;
   }
   if (!job || job.status === "idle") return length;

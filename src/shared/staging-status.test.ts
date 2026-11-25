@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildDirection } from "./build-direction";
+import { batchToMake } from "./cost/estimate";
 import type { DirectionEntry } from "./direction";
 import type { Script } from "./ipc";
 import { mediaLevel } from "./media-level";
@@ -137,6 +138,18 @@ describe("whether a staging still fits its script", () => {
     expect(stagingStatus({ ...idle, planning: true }, script(), "balanced")).toBe("staging");
     expect(stagingStatus({ ...idle, status: "failed" }, script(), "balanced")).toBe("failed");
     expect(stagingStatus(staged(), script({ status: "writing" }), "balanced")).toBe("none");
+  });
+
+  it("does not count a staging made while the series had no place", () => {
+    const placeless = staged("balanced", { useEnvironment: false });
+    expect(stagingStatus(placeless, script(), "balanced")).toBe("none");
+    expect(readyToMake(placeless, script(), "balanced")).toBe(false);
+    expect(batchToMake([placeless, staged()]).count).toBe(1);
+    expect(outdatedReasons(placeless, script({ productIds: ["q"] }), "balanced")).toEqual([]);
+
+    const started = staged("balanced", { useEnvironment: false, status: "stopped" });
+    expect(stagingStatus(started, script(), "balanced")).toBe("started");
+    expect(readyToMake(started, script(), "balanced")).toBe(true);
   });
 
   it("can never be made from an outdated or missing staging", () => {

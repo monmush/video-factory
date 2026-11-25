@@ -15,6 +15,7 @@ import { type MediaLevel, mediaLevel } from "../../shared/media-level";
 import { DIRECTOR_AREAS, notesBlock } from "../../shared/notes";
 import { builtinRecipe, type Recipe, readRecipe } from "../../shared/recipe";
 import { restagePlan } from "../../shared/restage";
+import { NO_PLACE } from "../../shared/series-place";
 import {
   readShotList,
   rulesShotList,
@@ -172,7 +173,7 @@ export async function directJob(
     hasPlace: job.useEnvironment && Boolean(place),
   };
 
-  if (!ctx.hasPlace || !place) return { plan: rulesPlan(ctx) };
+  if (!ctx.hasPlace || !place) throw new Error(NO_PLACE);
   const level = mediaLevel(job.level);
   const liveCtx: LiveContext = { ...ctx, refs: liveRefs(place, cast), level };
   if (providerMode() === "fixture") {

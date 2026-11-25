@@ -3,6 +3,7 @@ import { recipeModels } from "../build-direction";
 import { type LiveDirection, PAID_ROUTES, ROUTE_LABEL, requestCost } from "../live-plan";
 import { mediaLevel } from "../media-level";
 import { builtinRecipe } from "../recipe";
+import { stagedWithoutPlace } from "../series-place";
 import { asksUsd, type JobSound, type SoundAsk, soundInFlight, soundToSend } from "../sound";
 import {
   billedSeconds,
@@ -130,7 +131,7 @@ export const costToPreviewUsd = (job: VideoJob): number | null =>
   job.plan ? voiceToMakeUsd(job) + stillsToMakeUsd(job) : null;
 
 export const stagedToMake = (job: VideoJob | null | undefined): job is VideoJob =>
-  Boolean(job?.plan && !job.planning);
+  Boolean(job?.plan && !job.planning && !stagedWithoutPlace(job));
 
 export function batchToMake(jobs: readonly (VideoJob | null | undefined)[]): {
   count: number;

@@ -3,6 +3,7 @@ import { productChanged, sameDirection, sameSpokenLines } from "./direction";
 import { failedUnpaid, videoUntouched } from "./edit-in-place";
 import type { Script } from "./ipc";
 import { mediaLevel } from "./media-level";
+import { stagedWithoutPlace } from "./series-place";
 import { spokenLines, type VideoJob } from "./video-job";
 import { planAtLevel } from "./video-takes";
 
@@ -33,7 +34,7 @@ export function outdatedReasons(
   script: StagedScript,
   level: string,
 ): OutdatedReason[] {
-  if (!job?.plan || !videoUntouched(job)) return [];
+  if (!job?.plan || !videoUntouched(job) || stagedWithoutPlace(job)) return [];
   const reasons: OutdatedReason[] = [];
   if (!sameSpokenLines(job.lines, script.lines)) reasons.push("words");
   if (productChanged(job, script)) reasons.push("product");
@@ -58,7 +59,7 @@ export function stagingStatus(
   if (!job || !stageable(script)) return "none";
   if (job.planning) return "staging";
   if (failedUnpaid(job)) return "failed";
-  if (!job.plan) return "none";
+  if (!job.plan || stagedWithoutPlace(job)) return "none";
   return outdatedReasons(job, script, level).length ? "outdated" : "ready";
 }
 
