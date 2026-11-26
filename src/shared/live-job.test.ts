@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateVoiceUsd } from "./board";
-import { withInUsePaid } from "./cost/charges.fixture";
-import { costToFinishUsd, shotEstimateUsd } from "./cost/estimate";
-import { costPanel } from "./cost/table";
 import {
-  cheaperAlternatives,
   emptyRecord,
   evidenceMinimumSec,
   fitDuration,
@@ -15,15 +10,14 @@ import {
   readLivePlan,
   readMediaUrl,
   recordResult,
-  requestCost,
   statedMinimumSec,
   type ToolRecord,
 } from "./live-plan";
-import { mediaLevel } from "./media-level";
+import { AUTO_MODELS } from "./models";
 import { MAX_BUSY_ANSWERS } from "./net-error";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 import {
   applyLivePlan,
-  followBatch,
   frameDeps,
   madeByProvider,
   newJob,
@@ -36,12 +30,12 @@ import {
 } from "./video-job";
 
 const NOW = "2026-11-13T10:00:00.000Z";
-const level = mediaLevel("balanced");
 const LINES = [
   { characterId: "a", speaker: "An", text: "Chào ông, hôm nay trời đẹp quá ạ." },
   { characterId: "b", speaker: "Ba", text: "Ừ, ngồi xuống uống chén trà đã cháu." },
 ];
 const ctx: LiveContext = {
+  pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
   lines: LINES,
   cast: [
     { id: "a", name: "An" },
@@ -50,7 +44,6 @@ const ctx: LiveContext = {
   products: [],
   hasPlace: true,
   refs: ["place-1", "cast1-1", "cast2-1"],
-  level,
 };
 
 const IMAGE = "img/edit";
@@ -170,11 +163,16 @@ function plannedJob(): VideoJob {
   const record = session();
   const { plan, errors } = readLivePlan(answer(), ctx, record);
   expect(errors).toEqual([]);
-  const live = liveDirection(plan, record, LINES, {
-    connection: "signed-in",
-    model: null,
-    ms: 0,
-  });
+  const live = liveDirection(
+    plan,
+    record,
+    {
+      connection: "signed-in",
+      model: null,
+      ms: 0,
+    },
+    PACE_OF_VIDEOS_MADE_BEFORE_PACES,
+  );
   const job = newJob({
     sessionId: "s",
     seriesId: "r",
@@ -182,6 +180,7 @@ function plannedJob(): VideoJob {
     title: "t",
     lines: LINES,
     useEnvironment: true,
+    models: AUTO_MODELS,
     now: NOW,
   });
   return { ...applyLivePlan(job, live), status: "running" };
@@ -196,27 +195,6 @@ describe("minimum lengths from what the tools said", () => {
     const guide = `## Host\\n\`${CHEAP}\`: animates a face.\\n- \`audio_url\`: required, at least 3 s and up to 15 min.`;
     expect(evidenceMinimumSec(guide, CHEAP)).toBe(3);
     expect(evidenceMinimumSec(guide, "other/model")).toBeUndefined();
-  });
-
-  it("bills and pads lip-sync to the minimum, and counts per-minute rates", () => {
-    const record = session();
-    const rate = { usd: 0.08, unit: "seconds", minSeconds: 5 };
-    expect(requestCost(rate, record.schemas[LIPS], {}, "lip-sync", 2.2)).toMatchObject({
-      quantity: "5 giây",
-    });
-    expect(requestCost(rate, undefined, {}, "lip-sync", 2.2).usd).toBeCloseTo(0.4);
-    expect(requestCost({ usd: 6, unit: "minutes" }, undefined, {}, "lip-sync", 3).usd).toBeCloseTo(
-      0.3,
-    );
-  });
-
-  it("names a cheaper fit-checked model for these shots", () => {
-    const record = session();
-    const { plan } = readLivePlan(answer(), ctx, record);
-    const [warning] = cheaperAlternatives(plan, record);
-    expect(warning).toMatch(
-      /^Nói: lips\/free would cost ~\$0\.\d\d for these shots instead of ~\$0\.80/,
-    );
   });
 });
 
@@ -262,8 +240,6 @@ describe("a planned job", () => {
         ...s,
         start: i * 3,
         end: i * 3 + 3,
-        audio: `a${i}.mp3`,
-        audioSec: 2.4,
         state: "queued" as const,
       })),
     };
@@ -278,30 +254,7 @@ describe("a planned job", () => {
     ]);
   });
 
-  it("shows the same price on the table and the hold, before and after the voice", () => {
-    const job = plannedJob();
-    const table = costPanel(job);
-    expect(table?.estimateUsd).toBeCloseTo(costToFinishUsd(job) ?? Number.NaN);
-    expect(table?.estimateUsd).toBeCloseTo((job.live?.costs.rows[0]?.usd ?? 0) + 0.24 + 0.8);
-    expect(table?.estimateUsd).toBeCloseTo(job.live?.costs.knownUsd ?? 0);
-    expect(table?.paid).toBeNull();
-    const voiced = withInUsePaid({
-      ...job,
-      status: "running" as const,
-      dialogue: "d.mp3",
-      voiceCostUsd: 0.01,
-      shots: job.shots.map((s) => ({ ...s, start: 0, end: 6, audioSec: 6 })),
-    });
-    const after = costPanel(voiced);
-    expect(after?.estimateUsd).toBeCloseTo(
-      estimateVoiceUsd(LINES) + (costToFinishUsd(voiced) ?? Number.NaN),
-    );
-    expect(after?.paid).toEqual({ usd: 0.01, billed: false });
-    expect(after?.leftUsd).toBeCloseTo(costToFinishUsd(voiced) ?? Number.NaN);
-    expect(after?.steps.at(-1)).toMatchObject({ quantity: "6 giây" });
-  });
-
-  it("falls back after a planned shot fails twice", () => {
+  it("falls back to a local clip after a planned shot fails twice, never to another provider", () => {
     const job = plannedJob();
     const shot = job.shots[0];
     if (!shot) throw new Error("no shot");
@@ -309,36 +262,9 @@ describe("a planned job", () => {
     expect(once).toMatchObject({ state: "queued", retried: true, endpoint: undefined });
     const twice = shotAttemptFailed(job, once, "x");
     expect(twice).toMatchObject({ state: "queued", fallback: true, retried: false });
-    expect(madeByProvider(twice)).toBe(true);
+    expect(madeByProvider(twice)).toBe(false);
     expect(madeByProvider({ kind: "wide", route: "motion", fallback: true })).toBe(false);
     expect(madeByProvider({ kind: "wide", route: "motion" })).toBe(true);
-  });
-
-  it("keeps a made step with no recorded price unknown, never free", () => {
-    const base = plannedJob();
-    if (!base.live) throw new Error("no plan");
-    const { [LIPS]: _, ...rates } = base.live.rates;
-    const job: VideoJob = { ...base, live: { ...base.live, rates } };
-    const shot = job.shots[0];
-    if (!shot) throw new Error("no shot");
-    expect(shotEstimateUsd(job, shot)).toBeNull();
-    const made: VideoJob = {
-      ...job,
-      shots: job.shots.map((s) =>
-        s.index === 0 ? { ...s, state: "done", clip: "c.mp4", costUsd: null } : s,
-      ),
-    };
-    const table = costPanel(made);
-    expect(table?.steps.find((r) => r.label.startsWith("Cảnh 1"))).toMatchObject({
-      estimateUsd: null,
-      paid: { usd: null, billed: false },
-    });
-    expect(table?.unknownSteps).toBe(costPanel(job)?.unknownSteps);
-  });
-
-  it("keeps its own size and models whatever the batch says", () => {
-    const job = { ...plannedJob(), resolution: "1080p" };
-    expect(followBatch(job, { model: "kling-avatar-v2-standard", resolution: "720p" })).toBe(job);
   });
 });
 

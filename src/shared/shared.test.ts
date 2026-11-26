@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  boardOrder,
-  estimateSeconds,
-  formatSeconds,
-  MAX_HOLDS_SEC,
-  SPEECH_RATE,
-  syllables,
-} from "./board";
+import { boardOrder, formatSeconds, MAX_HOLDS_SEC, syllables } from "./board";
 import { cleanHandleInput, toHandle } from "./handle";
 import { HIDDEN_CHAT_MODELS, resolveChoice, type Script } from "./ipc";
+import { estimateSeconds, paceFor } from "./pace";
 
 describe("boardOrder", () => {
   const s = (id: string, pinned = false, deleted = false) =>
@@ -27,9 +21,8 @@ describe("length estimate", () => {
 
   it("counts every hold at its cap before a plan exists, so the plan never adds length or price", () => {
     const lines = [{ text: "Trà ngon uống chậm thôi." }, { text: "Dạ, con mời bà." }];
-    expect(estimateSeconds(lines) - syllables(lines) / SPEECH_RATE).toBeGreaterThanOrEqual(
-      MAX_HOLDS_SEC,
-    );
+    const speaking = syllables(lines) / paceFor(lines, 30);
+    expect(estimateSeconds(lines, 30) - speaking).toBeGreaterThanOrEqual(MAX_HOLDS_SEC);
   });
 
   it("formats seconds and minutes", () => {

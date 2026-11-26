@@ -1,8 +1,8 @@
 import { type JobSegment, segmentAskedSec, segmentEstimateUsd } from "../speech";
-import { isNative, type JobCut, levelSpeech, type VideoJob } from "../video-job";
+import { type JobCut, type VideoJob, videoModelOf } from "../video-job";
 import type { PaidItem } from "./charges";
 import type { StepEstimate } from "./estimate";
-import { SPEAKING_SCENES, SPEAKING_SCENES_WITH_VOICE } from "./group-names";
+import { SPEAKING_SCENES } from "./group-names";
 import type { CostPart } from "./parts";
 
 const SEGMENT_STEP = "segment:";
@@ -11,7 +11,7 @@ export const segmentStep = (id: string) => `${SEGMENT_STEP}${id}`;
 
 const SPEECH = "Nói";
 
-const segmentUsd = (job: VideoJob, s: JobSegment) => segmentEstimateUsd(levelSpeech(job), s) ?? 0;
+const segmentUsd = (job: VideoJob, s: JobSegment) => segmentEstimateUsd(videoModelOf(job), s) ?? 0;
 
 const reusedOrFree = (s: JobSegment) => s.state === "done" && s.costUsd === undefined;
 
@@ -33,13 +33,13 @@ function inUse(cut: JobCut): PaidItem[] {
 
 function steps(job: VideoJob): StepEstimate[] {
   return (job.segments ?? []).map((s, k) => {
-    const asked = segmentAskedSec(levelSpeech(job), s);
+    const asked = segmentAskedSec(videoModelOf(job), s);
     return {
       key: segmentStep(s.id),
-      group: SPEAKING_SCENES_WITH_VOICE,
+      group: SPEAKING_SCENES,
       label: `Đoạn ${k + 1} · ${SPEECH}`,
       quantity: asked ? `${asked} giây` : "",
-      usd: reusedOrFree(s) ? 0 : segmentEstimateUsd(levelSpeech(job), s),
+      usd: reusedOrFree(s) ? 0 : segmentEstimateUsd(videoModelOf(job), s),
     };
   });
 }
@@ -61,7 +61,6 @@ function stepLabel(step: string): string | null {
 }
 
 export const speechCost: CostPart = {
-  replacesVoiceTrack: isNative,
   inUse,
   steps,
   toMakeUsd,

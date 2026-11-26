@@ -1,4 +1,3 @@
-import { VOICE_USD_PER_CHAR } from "./cost/rates";
 import { withoutCues } from "./cues";
 import type { Board, Script, ScriptLine } from "./ipc";
 
@@ -15,14 +14,25 @@ export function clearMarks(board: Board) {
 }
 
 export const DEFAULT_TARGET_SEC = 45;
-export const SPEECH_RATE = 3.7;
-const BREATH_BETWEEN_LINES_SEC = 0.3;
-export const MAX_HOLDS_SEC = 4;
-const HOLDS_PRICED_AT_THEIR_CAP_BEFORE_PLAN_SEC = MAX_HOLDS_SEC;
-const TYPICAL_LINE_COUNT = 10;
-const SMALLEST_SYLLABLE_BUDGET = 20;
+const MIN_TARGET_SEC = 10;
+const MAX_TARGET_SEC = 180;
 
-export const syllables = (lines: Pick<ScriptLine, "text">[]) =>
+export function clampTarget(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(MAX_TARGET_SEC, Math.max(MIN_TARGET_SEC, Math.round(n)));
+}
+
+export function statedLength(text: string): { seconds: number | null; phrase: string } | null {
+  const found = text.match(/(\d+)\s*(giây|s\b|phút)/i);
+  if (!found) return null;
+  const perUnit = found[2]?.toLowerCase() === "phút" ? 60 : 1;
+  return { seconds: clampTarget(Number(found[1]) * perUnit), phrase: found[0] };
+}
+
+export const MAX_HOLDS_SEC = 4;
+
+export const syllables = (lines: readonly Pick<ScriptLine, "text">[]) =>
   lines.reduce(
     (n, line) =>
       n +
@@ -31,33 +41,6 @@ export const syllables = (lines: Pick<ScriptLine, "text">[]) =>
         .filter((w) => /\p{L}/u.test(w)).length,
     0,
   );
-
-export function estimateSeconds(lines: Pick<ScriptLine, "text">[]): number {
-  if (lines.length === 0) return 0;
-  return (
-    syllables(lines) / SPEECH_RATE +
-    lines.length * BREATH_BETWEEN_LINES_SEC +
-    HOLDS_PRICED_AT_THEIR_CAP_BEFORE_PLAN_SEC
-  );
-}
-
-export function syllableBudget(seconds: number): number {
-  return Math.max(
-    SMALLEST_SYLLABLE_BUDGET,
-    Math.round(
-      (seconds -
-        HOLDS_PRICED_AT_THEIR_CAP_BEFORE_PLAN_SEC -
-        TYPICAL_LINE_COUNT * BREATH_BETWEEN_LINES_SEC) *
-        SPEECH_RATE,
-    ),
-  );
-}
-
-const spokenChars = (lines: Pick<ScriptLine, "text">[]) =>
-  lines.reduce((n, line) => n + line.text.trim().length, 0);
-
-export const estimateVoiceUsd = (lines: Pick<ScriptLine, "text">[]) =>
-  spokenChars(lines) * VOICE_USD_PER_CHAR;
 
 export function formatSeconds(seconds: number): string {
   const s = Math.round(seconds);

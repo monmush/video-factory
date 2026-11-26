@@ -49,6 +49,7 @@ function limiter(limit: number) {
 }
 
 const CLAUDE_CODE_PROCESSES_AT_ONCE = 5;
+const CLAUDE_CODE_TIMEOUT_MS = 240_000;
 const queues = { "claude-code": limiter(CLAUDE_CODE_PROCESSES_AT_ONCE), fal: limiter(6) };
 
 export async function askText(input: {
@@ -61,6 +62,7 @@ export async function askText(input: {
   effort?: string;
   onText?: (soFar: string) => void;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }): Promise<string> {
   const mode = textAiMode();
   if (mode === "fixture") throw new Error("Text AI is not available in fixture mode");
@@ -74,7 +76,7 @@ export async function askText(input: {
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.onText ? { onText: input.onText } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
-        timeoutMs: 240_000,
+        timeoutMs: input.timeoutMs ?? CLAUDE_CODE_TIMEOUT_MS,
       });
       await logUsage({
         provider: "claude-code",

@@ -1,10 +1,8 @@
-import { boardOrder, estimateSeconds } from "./board";
+import { boardOrder } from "./board";
 import type { Asset, Script, Session } from "./ipc";
+import { lengthFit, scriptSeconds, scriptTargetSec } from "./pace";
 import { flaggedPlaces } from "./place-check";
-import type { VoiceMode } from "./speech-models";
-import { resolveVoice, takenVoiceIds, type VoiceId } from "./voices";
-
-const WARNED_PAST_OWN_TARGET_SHARE = 0.2;
+import { characterVoice, voiceKey } from "./voices";
 
 export const finishedScripts = (scripts: Script[]) =>
   boardOrder(scripts).filter((s) => s.status === "ready");
@@ -33,22 +31,17 @@ export type Blocker =
 export interface ScriptCheck {
   script: Script;
   seconds: number;
+  targetSec: number;
   blockers: Blocker[];
   overTarget: boolean;
-}
-
-export interface CastMember {
-  character: Asset;
-  voiceId: VoiceId;
-  sharesVoice: boolean;
 }
 
 export interface ReadyCheck {
   checks: ScriptCheck[];
   makeable: ScriptCheck[];
   blocked: ScriptCheck[];
-  cast: CastMember[];
   characters: Map<string, Asset>;
+  sharedVoices: Asset[][];
   seconds: number;
   toMake: ScriptCheck[];
   places: Asset[];
@@ -63,8 +56,13 @@ function unknownSpeakers(script: Script, assets: readonly Asset[]): string[] {
   return [...new Map(names.map((n) => [speakerKey(n), n])).values()];
 }
 
-export function checkScript(script: Script, assets: readonly Asset[]): ScriptCheck {
-  const seconds = estimateSeconds(script.lines);
+export function checkScript(
+  script: Script,
+  assets: readonly Asset[],
+  seriesTargetSec: number,
+): ScriptCheck {
+  const seconds = scriptSeconds(script, seriesTargetSec);
+  const targetSec = scriptTargetSec(script, seriesTargetSec);
   const blockers: Blocker[] = unknownSpeakers(script, assets).map((speaker) => ({
     kind: "unknown-speaker",
     speaker,
@@ -76,12 +74,12 @@ export function checkScript(script: Script, assets: readonly Asset[]): ScriptChe
       blockers.push({ kind: "no-image", characterId: id });
     }
   }
-  const target = script.brief.targetSec;
   return {
     script,
     seconds,
+    targetSec,
     blockers,
-    overTarget: target ? seconds > target * (1 + WARNED_PAST_OWN_TARGET_SHARE) : false,
+    overTarget: lengthFit(seconds, targetSec) === "long",
   };
 }
 
@@ -89,42 +87,46 @@ export function readyCheck(
   scripts: Script[],
   scope: readonly string[],
   assets: readonly Asset[],
-  { placeIds = [], voiceMode }: { placeIds?: readonly string[]; voiceMode?: VoiceMode } = {},
+  { placeIds = [], seriesTargetSec }: { placeIds?: readonly string[]; seriesTargetSec: number },
 ): ReadyCheck {
   const checks = finishedScripts(scripts)
     .filter((s) => scope.includes(s.id))
-    .map((s) => checkScript(s, assets));
+    .map((s) => checkScript(s, assets, seriesTargetSec));
   const makeable = checks.filter((c) => c.blockers.length === 0);
   const blocked = checks.filter((c) => c.blockers.length > 0);
 
   const characters = new Map(assets.filter((a) => a.kind === "character").map((a) => [a.id, a]));
-  const castIds = [
-    ...new Set(checks.flatMap((c) => c.script.lines.flatMap((l) => l.characterId ?? []))),
-  ].filter((id) => characters.has(id));
-  const voices = castIds.map((id) => {
-    const character = characters.get(id) as Asset;
-    return { character, voiceId: resolveVoice(character, takenVoiceIds(assets, id)) };
-  });
-  const dubbed = voiceMode !== "native";
-  const cast = voices.map((v) => ({
-    ...v,
-    sharesVoice: dubbed && voices.some((o) => o !== v && o.voiceId === v.voiceId),
-  }));
 
   return {
     checks,
     makeable,
     blocked,
-    cast,
     characters,
+    sharedVoices: sharedVoices(checks, characters, assets),
     seconds: makeable.reduce((n, c) => n + c.seconds, 0),
     toMake: makeable,
     places: flaggedPlaces(placeIds, assets),
   };
 }
 
+function sharedVoices(
+  checks: readonly ScriptCheck[],
+  characters: ReadonlyMap<string, Asset>,
+  assets: readonly Asset[],
+): Asset[][] {
+  const cast = [
+    ...new Set(checks.flatMap((c) => c.script.lines.flatMap((l) => l.characterId ?? []))),
+  ].flatMap((id) => characters.get(id) ?? []);
+  const byVoice = new Map<string, Asset[]>();
+  for (const character of cast) {
+    const key = voiceKey(characterVoice(character, assets));
+    byVoice.set(key, [...(byVoice.get(key) ?? []), character]);
+  }
+  return [...byVoice.values()].filter((group) => group.length > 1);
+}
+
 export const needsAttention = (check: ReadyCheck) =>
   check.blocked.length > 0 ||
   check.makeable.some((c) => c.overTarget) ||
-  check.cast.some((m) => m.sharesVoice) ||
+  check.sharedVoices.length > 0 ||
   check.places.length > 0;

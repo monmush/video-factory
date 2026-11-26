@@ -1,11 +1,11 @@
 import { costToFinishUsd } from "./cost/estimate";
 import { coverageErrors, holdErrors, type PlannedShot, type ShotPlan } from "./shot-plan";
 import {
+  cutOf,
   frameFor,
   frameIdFor,
   hasInput,
   isGenerated,
-  isNative,
   type JobCut,
   type JobFrame,
   type JobShot,
@@ -17,29 +17,10 @@ import {
 export type FixChange =
   | { op: "redo_shot"; shot: number; visual?: string }
   | { op: "redo_still"; frame: string; note?: string }
-  | { op: "replace_line"; line: number; shots: PlannedShot[] }
-  | { op: "redo_voice" };
+  | { op: "replace_line"; line: number; shots: PlannedShot[] };
 
 export const canFix = (job: VideoJob) =>
-  (job.status === "done" && Boolean(job.final)) || job.status === "review";
-
-export const cutOf = (job: VideoJob): JobCut => ({
-  plan: job.plan,
-  dialogue: job.dialogue,
-  dialogueSec: job.dialogueSec,
-  voiceCostUsd: job.voiceCostUsd,
-  voiceChars: job.voiceChars,
-  lineSpans: job.lineSpans,
-  frames: job.frames,
-  shots: job.shots,
-  ...(job.sounds ? { sounds: job.sounds } : {}),
-  ...(job.segments ? { segments: job.segments } : {}),
-  ...(job.live ? { routes: job.live.plan.routes } : {}),
-  final: job.final,
-  finalSec: job.finalSec,
-  cutRev: job.cutRev,
-  ...(job.firstPass ? { firstPass: job.firstPass } : {}),
-});
+  !job.dubbed && ((job.status === "done" && Boolean(job.final)) || job.status === "review");
 
 const sameLayout = (a: JobShot[], b: JobShot[]) =>
   a.length === b.length &&
@@ -80,11 +61,11 @@ export const clearShot = (s: JobShot): JobShot => ({
   resultUrl: undefined,
   costUsd: undefined,
   costBilled: undefined,
-  model: undefined,
   reused: undefined,
   materialClip: undefined,
   retried: false,
   failures: 0,
+  mishaps: [],
   error: undefined,
 });
 
@@ -102,6 +83,7 @@ const clearFrame = (f: JobFrame, note?: string): JobFrame => ({
   retried: false,
   redone: false,
   check: undefined,
+  mishaps: [],
   error: undefined,
   materialFile: undefined,
   ...(f.material ? { fresh: true } : {}),
@@ -113,9 +95,11 @@ const freshFrame = (f: JobFrame): JobFrame => (f.material ? { ...f, fresh: true 
 export class FixError extends Error {}
 
 export function applyFix(job: VideoJob, changes: FixChange[], now: string): VideoJob {
+  if (job.dubbed) throw new FixError(MADE_THE_OLD_WAY);
   if (!canFix(job)) throw new FixError("Video này đang được tạo, chưa sửa được");
   if (!changes.length) throw new FixError("Không có gì để sửa");
-  if (isNative(job) && speechExists(job) && changes.some((c) => changesSpeech(job, c))) {
+  if (changes.some((c) => !FIX_OPS.includes(c.op))) throw new FixError(SPEECH_FIXED);
+  if (speechExists(job) && changes.some((c) => changesSpeech(job, c))) {
     throw new FixError(SPEECH_FIXED);
   }
   let next: VideoJob = {
@@ -126,7 +110,7 @@ export function applyFix(job: VideoJob, changes: FixChange[], now: string): Vide
       : {}),
   };
   for (const change of changes) next = applyChange(next, change);
-  if (isNative(next)) next = withSpeech(next);
+  next = withSpeech(next);
   return {
     ...next,
     status: "waiting",
@@ -138,7 +122,11 @@ export function applyFix(job: VideoJob, changes: FixChange[], now: string): Vide
   };
 }
 
-const SPEECH_FIXED = "Video tự tạo giọng nói chưa sửa được phần lời nói";
+const SPEECH_FIXED = "Chưa sửa được phần lời nói của video";
+
+const FIX_OPS: readonly string[] = ["redo_shot", "redo_still", "replace_line"];
+
+export const MADE_THE_OLD_WAY = "Video làm theo cách cũ";
 
 const speechExists = (job: VideoJob) =>
   (job.segments ?? []).some((s) => s.requestId || s.clip || s.state !== "queued");
@@ -146,7 +134,7 @@ const speechExists = (job: VideoJob) =>
 const framesOfSpeech = (job: VideoJob) => new Set((job.segments ?? []).map((s) => s.frame));
 
 function changesSpeech(job: VideoJob, change: FixChange): boolean {
-  if (change.op === "redo_voice" || change.op === "replace_line") return true;
+  if (change.op === "replace_line") return true;
   if (change.op === "redo_still") return framesOfSpeech(job).has(change.frame);
   const shot = job.shots[change.shot];
   if (!shot) return false;
@@ -155,7 +143,7 @@ function changesSpeech(job: VideoJob, change: FixChange): boolean {
 }
 
 export const speechFixRefused = (job: VideoJob, change: FixChange) =>
-  isNative(job) && speechExists(job) && changesSpeech(job, change);
+  speechExists(job) && changesSpeech(job, change);
 
 function applyChange(job: VideoJob, change: FixChange): VideoJob {
   switch (change.op) {
@@ -165,23 +153,6 @@ function applyChange(job: VideoJob, change: FixChange): VideoJob {
       return redoStill(job, change.frame, change.note);
     case "replace_line":
       return replaceLine(job, change.line, change.shots);
-    case "redo_voice":
-      return {
-        ...job,
-        dialogue: undefined,
-        dialogueSec: undefined,
-        voiceCostUsd: undefined,
-        voiceChars: undefined,
-        lineSpans: undefined,
-        shots: job.shots.map((s) => ({
-          ...clearShot(s),
-          state: "planned",
-          start: undefined,
-          end: undefined,
-          audio: undefined,
-          audioSec: undefined,
-        })),
-      };
   }
 }
 
@@ -399,7 +370,6 @@ export function fixScope(job: VideoJob, changes: FixChange[], now: string) {
   return {
     shots: fixed.shots.filter((s) => s.state !== "done" || !before.has(s.clip)).length,
     stills: fixed.frames.filter((f) => !f.file && isGenerated(fixed, f)).length,
-    voice: !fixed.dialogue,
   };
 }
 
@@ -410,6 +380,7 @@ export const settled = (job: VideoJob) =>
 export const previousIsNewer = (job: VideoJob) => (job.previous?.cutRev ?? 0) > (job.cutRev ?? 0);
 
 export const canRestore = (job: VideoJob) =>
+  !job.dubbed &&
   Boolean(job.previous?.final && canUseCut(job, job.previous)) &&
   settled(job) &&
   job.status !== "running" &&

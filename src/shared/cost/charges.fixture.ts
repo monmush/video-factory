@@ -1,5 +1,4 @@
 import type { VideoJob } from "../video-job";
-import { workingVersion } from "../video-takes";
 import { matchCharges, redoneCharges, withCharge } from "./charges";
 
 const AT = "2026-11-20T10:00:00.000Z";
@@ -14,7 +13,6 @@ export const withInUsePaid = <J extends VideoJob>(job: J): J =>
         usd: item.usd as number,
         billed: item.billed,
         ...(item.requestId ? { requestId: item.requestId } : {}),
-        version: workingVersion(j),
       }),
     job,
   );

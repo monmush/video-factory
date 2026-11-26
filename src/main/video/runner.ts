@@ -12,13 +12,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { app, BrowserWindow, dialog } from "electron";
-import { outputSize, videoLevel } from "../../shared/batch-settings";
-import {
-  rejectClip,
-  rejectSegmentClip,
-  speakerForNextClip,
-  withUnrecordedSpeakerRejections,
-} from "../../shared/clip-check";
+import { rejectClip, rejectSegmentClip } from "../../shared/clip-check";
 import {
   type ChargeKind,
   STEP,
@@ -26,15 +20,10 @@ import {
   withCharge,
   withRecordedCharges,
 } from "../../shared/cost/charges";
-import {
-  frameUsd,
-  shotEstimateUsd,
-  stagedToMake,
-  withCurrentRates,
-  withFirstPass,
-} from "../../shared/cost/estimate";
-import type { ResultCost } from "../../shared/cost/rates";
+import { frameUsd, shotEstimateUsd, stagedToMake, withFirstPass } from "../../shared/cost/estimate";
+import { type ResultCost, VOICE_SAMPLE_USD } from "../../shared/cost/rates";
 import { segmentStep } from "../../shared/cost/speech-cost";
+import { voiceStep } from "../../shared/cost/voice-cost";
 import {
   anchoredDirection,
   type DirectionEntry,
@@ -42,10 +31,18 @@ import {
   setDirection,
 } from "../../shared/direction";
 import { editsInPlace, failedUnpaid, unstarted, videoUntouched } from "../../shared/edit-in-place";
-import type { Asset, Script } from "../../shared/ipc";
+import type { Asset, Script, Series } from "../../shared/ipc";
 import { plannedMotion } from "../../shared/material";
-import { mediaLevel } from "../../shared/media-level";
+import {
+  type MishapKind,
+  mishapOfError,
+  NO_SPEECH_HEARD,
+  TOO_LONG_TO_SAY,
+} from "../../shared/mishaps";
+import { resolvedModels } from "../../shared/models";
 import { isNetworkError, providerBusy } from "../../shared/net-error";
+import { OUTPUT_SIZE } from "../../shared/output-size";
+import { paceFor, scriptTargetSec } from "../../shared/pace";
 import {
   makingVideo,
   type PaidWork,
@@ -69,12 +66,12 @@ import {
 import { reconcileJob, withSending } from "../../shared/request-reconcile";
 import { classifyScriptEdit, listFitsPlan, type RestageBasis } from "../../shared/restage";
 import { reworded, rewordedFrom } from "../../shared/reworded";
+import { seriesTargetSec } from "../../shared/series-guide";
 import { hasPlace, NO_PLACE, stagedWithoutPlace } from "../../shared/series-place";
 import type { ShotList } from "../../shared/shot-list";
 import {
   castOf,
   heldSpans,
-  heldTiming,
   holdInserts,
   lineOffsets,
   shotTimes,
@@ -84,6 +81,7 @@ import { asksUsd, type JobSound, placeLayers, soundToSend } from "../../shared/s
 import type { JobSegment } from "../../shared/speech";
 import {
   cutFrom,
+  cutOffAskedAgainLonger,
   type SpeechTimeline,
   segmentAskedSec,
   segmentEstimateUsd,
@@ -91,7 +89,6 @@ import {
   speechCutOff,
   speechTimeline,
 } from "../../shared/speech";
-import type { VoiceMode } from "../../shared/speech-models";
 import {
   freeSettle,
   type OutdatedReason,
@@ -104,7 +101,7 @@ import {
   wishesChanged,
 } from "../../shared/staging-status";
 import { buildAss, wordCues } from "../../shared/subtitles";
-import { type Tempo, tempoOf } from "../../shared/tempo";
+import { jobTempo, pickedTempo } from "../../shared/tempo";
 import {
   type ExportPick,
   exportableVideos,
@@ -117,6 +114,7 @@ import {
   type FixChange,
   fixPriceUsd,
   fixScope,
+  MADE_THE_OLD_WAY,
   restorePrevious,
 } from "../../shared/video-fix";
 import {
@@ -124,11 +122,10 @@ import {
   applyLivePlan,
   applyPlan,
   backOnline,
-  followBatch,
+  followSeriesModels,
   frameFor,
   holdsSec,
   isGenerated,
-  isNative,
   type JobAction,
   type JobFrame,
   type JobShot,
@@ -136,16 +133,17 @@ import {
   jobPhase,
   jobSoundCues,
   jobSoundSource,
-  levelSpeech,
-  MIN_SHOT_SEC,
+  keepModels,
+  liveSeconds,
   madeByProvider,
   migrateJob,
-  modelLocked,
+  modelsOf,
   newJob,
   nextActions,
   nextAverage,
   pickNext,
   plannedFrame,
+  repaced,
   requestWithdrawn,
   resumeJob,
   resumesOnStart,
@@ -158,30 +156,37 @@ import {
   segmentAnchor,
   segmentHeard,
   settle,
-  shotModel,
   spokenLines,
   stepReportedFailure,
   stepThrew,
   stillToDrawAgain,
   stopJob,
   type VideoJob,
+  videoModelOf,
   waitingForNetwork,
   wentOffline,
   withJobSounds,
-  withShotAudio,
+  withShotTimes,
   withSpeech,
-  withVoiceMode,
 } from "../../shared/video-job";
-import { fitResolution } from "../../shared/video-models";
+import { motionSec } from "../../shared/video-models";
 import {
-  chooseVersion,
-  chosenView,
-  deleteVersion,
-  focusVersion,
-  planAtLevel,
-  startVersion,
-  workingVersion,
-} from "../../shared/video-takes";
+  type JobVoice,
+  keptVoices,
+  type VoiceChoice,
+  voiceMade,
+  voiceOf,
+  voicesNeeded,
+  voicesToRecord,
+  voiceToSend,
+  withVoiceChoices,
+} from "../../shared/voice-step";
+import {
+  characterVoice,
+  characterVoiceTraits,
+  defaultVoiceText,
+  guessVoiceTraits,
+} from "../../shared/voices";
 import { getBoard, onBoardChanged } from "../board";
 import { type Canceller, falCancel, falCancelUnlessStarted } from "../fal";
 import { type CancelOutcome, mayStillBeBilled } from "../fal-queue";
@@ -196,9 +201,17 @@ import {
 import { assetDir } from "../media";
 import { dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
-import { nativeVoiceOn } from "../settings";
 import { getWorkspace } from "../store";
 import { logUsage, openFalRequests } from "../usage";
+import {
+  cancelVoice,
+  downloadVoice,
+  pollVoice,
+  sampleExists,
+  samplePath,
+  submitVoice,
+  voiceChoice,
+} from "../voice-maker";
 import { checkStill } from "./checks";
 import { clipAddedLettering } from "./clip-check";
 import { directJob } from "./director";
@@ -207,18 +220,14 @@ import {
   assertFfmpegBeforeAnyPaidStep,
   atTempo,
   audible,
-  cropCloser,
-  cutLine,
   exactClip,
   frameCount,
   insertSilence,
   integratedLufs,
   joinSpeech,
   mixSoundtrack,
-  padAudio,
   probeSeconds,
   productStill,
-  silence,
   speechShotClip,
   stillClip,
 } from "./ffmpeg";
@@ -248,17 +257,14 @@ import {
   coverFrame,
   download,
   type FrameInputs,
-  generateVoice,
   type LiveFiles,
   pollFrame,
   pollLiveFrame,
-  pollLiveShot,
-  pollShot,
+  pollMotion,
   type StepPoll,
   submitFrame,
   submitLiveFrame,
-  submitLiveShot,
-  submitShot,
+  submitMotion,
 } from "./steps";
 
 const JOB_FILE = "job.json";
@@ -282,8 +288,8 @@ let timer: NodeJS.Timeout | null = null;
 let loaded: Promise<void> | null = null;
 
 const DEFAULT_AVERAGES: Record<"live" | "fixture", StepAverages> = {
-  live: { plan: 70, voice: 25, frame: 45, shot: 150, assemble: 20 },
-  fixture: { plan: 3, voice: 4, frame: 4, shot: 8, assemble: 5 },
+  live: { plan: 70, frame: 45, shot: 150, assemble: 20 },
+  fixture: { plan: 3, frame: 4, shot: 8, assemble: 5 },
 };
 let averages: Record<"live" | "fixture", StepAverages> | null = null;
 
@@ -366,6 +372,7 @@ async function loadAll(): Promise<void> {
   await loadAverages();
   const ws = await getWorkspace();
   const open = await openFalRequests();
+  const picked = (seriesId: string) => ws.series.find((s) => s.id === seriesId)?.models;
   for (const session of ws.sessions) {
     const dir = join(mediaDir(session.seriesId, session.id), "videos");
     const names = await readdir(dir).catch(() => [] as string[]);
@@ -379,9 +386,9 @@ async function loadAll(): Promise<void> {
         continue;
       }
       try {
-        const migrated = withUnrecordedSpeakerRejections(migrateJob(JSON.parse(raw)));
+        const migrated = migrateJob(JSON.parse(raw));
         let job = restartedClock(
-          withCurrentRates(withRecordedCharges(migrated, workingVersion(migrated))),
+          followSeriesModels(withRecordedCharges(migrated), picked(migrated.seriesId)),
           Date.now(),
         );
         delete job.planning;
@@ -410,6 +417,7 @@ function ensureLoaded() {
 
 export async function startRunner(): Promise<void> {
   await ensureLoaded();
+  void followVoices().catch((error) => console.error("[video] could not follow voices", error));
   const resumed = [...jobs.values()].filter(resumesOnStart);
   if (resumed.length) console.log(`[video] resuming ${resumed.length} job(s)`);
   timer ??= setInterval(pump, TICK_MS);
@@ -593,21 +601,21 @@ async function createJob(
   }
   if (!script) throw new Error("Không tìm thấy kịch bản");
   const series = ws.series.find((s) => s.id === session.seriesId);
-  const level = mediaLevel(videoLevel(session, series, scriptId));
   const job = newJob({
     sessionId,
     seriesId: session.seriesId,
     scriptId,
     title: script.title,
     lines: script.lines,
+    pace: paceFor(
+      spokenLines(script.lines),
+      scriptTargetSec(script, seriesTargetSec(series ?? {})),
+    ),
     useEnvironment: hasPlace(series, ws.assets),
-    model: level.speaker,
-    resolution: fitResolution(level.speaker, level.output),
+    models: resolvedModels(series?.models),
     now: nowIso(),
   });
   if (job.lines.length === 0) throw new Error("Kịch bản không có lời thoại");
-  job.level = level.id;
-  if (nativeVoiceOn()) job.voiceMode = "native";
   if (status) job.status = status;
   job.productIds = [...script.productIds];
   if (direction?.length) job.direction = direction;
@@ -616,7 +624,12 @@ async function createJob(
   if (test && !(await readLook(job.seriesId))) job.pause = true;
   await mkdir(jobDir(job), { recursive: true });
   const key = jobKey(job);
-  if (!replaces(jobs.get(key))) throw new JobInUse();
+  const current = jobs.get(key);
+  if (!replaces(current)) throw new JobInUse();
+  if (current?.oldFiles) {
+    job.oldFiles = true;
+    job.rev = current.rev;
+  }
   jobs.set(key, job);
   await save(key, job);
   emit(job);
@@ -637,18 +650,18 @@ async function boardNow(sessionId: string) {
   const session = ws.sessions.find((s) => s.id === sessionId);
   const series = ws.series.find((s) => s.id === session?.seriesId);
   const board = await getBoard(sessionId);
-  const levelOf = (id: string) => videoLevel(session, series, id);
   const find = (id: string) => board.scripts.find((s) => s.id === id && !s.deletedAt);
-  return { ws, session, board, levelOf, find };
+  return { ws, session, series, board, find };
 }
 
 const STAGING_BEHIND = "Dàn dựng chưa theo thay đổi mới";
 const NOT_STAGED = "Chưa dàn dựng";
 
-function assertStagedToMake(job: VideoJob | undefined, script: Script | undefined, level: string) {
+function assertStagedToMake(job: VideoJob | undefined, script: Script | undefined) {
+  if (job?.dubbed) throw new Error(MADE_THE_OLD_WAY);
   if (job && !videoUntouched(job)) return;
   if (!stagedToMake(job) || !script) throw new Error(NOT_STAGED);
-  if (!readyToMake(job, script, level)) throw new Error(STAGING_BEHIND);
+  if (!readyToMake(job, script)) throw new Error(STAGING_BEHIND);
 }
 
 export async function start(sessionId: string, scriptId: string): Promise<null> {
@@ -661,23 +674,24 @@ export async function start(sessionId: string, scriptId: string): Promise<null> 
     await update(key, (job) => retryNetworkNow(job, Date.now()));
     return null;
   }
-  const { find, levelOf } = await boardNow(sessionId);
+  const { find, series } = await boardNow(sessionId);
   const script = find(scriptId);
-  const level = levelOf(scriptId);
-  assertStagedToMake(current, script, level);
+  assertStagedToMake(current, script);
   const available = current ? await availabilityIn(current.seriesId) : (j: VideoJob) => j;
+  const voiced = current ? await voiceChoicesOf(current, await assets()) : [];
   await update(key, (job) =>
-    videoUntouched(job) && !(script && readyToMake(job, script, level))
+    videoUntouched(job) && !(script && readyToMake(job, script))
       ? job
-      : resumeJob(spendingStarts(available(job), nowIso()), nowIso()),
+      : resumeJob(
+          spendingStarts(withVoiceChoices(available(job), voiced), series, nowIso()),
+          nowIso(),
+        ),
   );
   return null;
 }
 
-const voiceModeNow = (): VoiceMode => (nativeVoiceOn() ? "native" : "dubbed");
-
-function spendingStarts(job: VideoJob, now: string): VideoJob {
-  const ready = withVoiceMode(job, voiceModeNow());
+function spendingStarts(job: VideoJob, series: Series | undefined, now: string): VideoJob {
+  const ready = followSeriesModels(job, series?.models);
   return ready.status === "idle" ? withFirstPass(ready, now) : ready;
 }
 
@@ -696,7 +710,6 @@ function charged(
     usd: cost.usd,
     billed: cost.billed,
     ...(requestId ? { requestId } : {}),
-    version: workingVersion(job),
   });
 }
 
@@ -710,12 +723,12 @@ const chargedIfStillBilled = (
 ) =>
   mayStillBeBilled(outcome) ? charged(job, kind, step, { usd, billed: false }, requestId) : job;
 
-export async function followVoiceMode(): Promise<void> {
+export async function followModels(seriesId: string): Promise<void> {
   await ensureLoaded();
-  const mode = voiceModeNow();
+  const picked = (await getWorkspace()).series.find((s) => s.id === seriesId)?.models;
   for (const job of [...jobs.values()]) {
-    if (!unstarted(job) || withVoiceMode(job, mode) === job) continue;
-    await update(jobKey(job), (j) => (unstarted(j) ? withVoiceMode(j, mode) : j));
+    if (job.seriesId !== seriesId || followSeriesModels(job, picked) === job) continue;
+    await update(jobKey(job), (j) => followSeriesModels(j, picked));
   }
 }
 
@@ -742,24 +755,25 @@ async function finishStaging(key: string, planning: VideoJob | null, staging: Ab
     });
   }
   if (planning) await syncScripts(planning.sessionId, (await getBoard(planning.sessionId)).scripts);
+  await followVoicesOf(key, await assets());
 }
 
 export async function stage(sessionId: string, scriptIds: string[], again = false): Promise<null> {
   if (!scriptIds.length) return null;
   await ensureLoaded();
   await assertHasPlace(sessionId);
-  const { levelOf, find } = await boardNow(sessionId);
+  const { find } = await boardNow(sessionId);
   for (const scriptId of new Set(scriptIds)) {
     const key = keyOf(sessionId, scriptId);
     const script = find(scriptId);
     if (!script || preparing.has(key) || stagings.has(key)) continue;
     const job = jobs.get(key);
-    const status = stagingStatus(job, script, levelOf(scriptId));
+    const status = stagingStatus(job, script);
     if (!stageable(script) || status === "started" || status === "staging") continue;
     if (status === "ready" && !again) continue;
     preparing.add(key);
     try {
-      await jobForStaging(sessionId, script, job, status === "ready", levelOf(scriptId));
+      await jobForStaging(sessionId, script, job, status === "ready");
       await beginStaging(key);
     } catch (error) {
       if (!(error instanceof JobInUse)) logStaging(error);
@@ -775,16 +789,13 @@ async function jobForStaging(
   script: Script,
   job: VideoJob | undefined,
   fromScratch: boolean,
-  level: string,
 ) {
   const direction = anchoredDirection(job?.direction, script.lines);
   if (!job || fromScratch || stagedWithoutPlace(job)) {
     await createJob(sessionId, script.id, true, "idle", direction, freeToReplace);
     return;
   }
-  const otherLevel = Boolean(job.plan && mediaLevel(job.level).id !== mediaLevel(level).id);
-  const planMustBeRewritten = otherLevel || wishesChanged(job, direction);
-  const restageFrom = planMustBeRewritten ? undefined : await restageBasis(job, script);
+  const restageFrom = wishesChanged(job, direction) ? undefined : await restageBasis(job, script);
   const wordsChanged = !sameSpokenLines(job.lines, script.lines);
   const rewordedBasis = wordsChanged
     ? rewordedFrom(job, direction)
@@ -803,14 +814,10 @@ export async function stagingOf(
 ): Promise<{ status: StagingStatus; reasons: OutdatedReason[] }> {
   await ensureLoaded();
   const job = jobs.get(keyOf(sessionId, scriptId));
-  const { find, levelOf } = await boardNow(sessionId);
+  const { find } = await boardNow(sessionId);
   const script = find(scriptId);
   if (!script) return { status: job && !videoUntouched(job) ? "started" : "none", reasons: [] };
-  const level = levelOf(scriptId);
-  return {
-    status: stagingStatus(job, script, level),
-    reasons: outdatedReasons(job, script, level),
-  };
+  return { status: stagingStatus(job, script), reasons: outdatedReasons(job, script) };
 }
 
 export async function stopStaging(sessionId: string, scriptId: string): Promise<null> {
@@ -862,7 +869,10 @@ async function removeJob(key: string) {
   jobs.delete(key);
   await writes.get(key)?.catch(() => undefined);
   writes.delete(key);
-  await rm(jobDir(job), { recursive: true, force: true });
+  await rm(job.oldFiles ? join(jobDir(job), JOB_FILE) : jobDir(job), {
+    recursive: true,
+    force: true,
+  });
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("video:job-removed", {
       sessionId: job.sessionId,
@@ -874,30 +884,29 @@ async function removeJob(key: string) {
 async function syncScripts(sessionId: string, scripts: Script[]) {
   await ensureLoaded();
   const ws = await getWorkspace();
-  const session = ws.sessions.find((s) => s.id === sessionId);
-  const series = ws.series.find((s) => s.id === session?.seriesId);
+  const seriesId = ws.sessions.find((s) => s.id === sessionId)?.seriesId;
+  const fallbackSec = seriesTargetSec(ws.series.find((s) => s.id === seriesId) ?? {});
   for (const job of [...jobs.values()]) {
     if (job.sessionId !== sessionId) continue;
     const script = scripts.find((s) => s.id === job.scriptId);
-    await followScriptNow(job, script, videoLevel(session, series, job.scriptId), ws.assets);
+    await followScriptNow(job, script, ws.assets, fallbackSec);
   }
 }
 
 async function followScriptNow(
   job: VideoJob,
   script: Script | undefined,
-  level: string,
   all: readonly Asset[],
+  seriesFallbackSec: number,
 ) {
   const key = jobKey(job);
-  const { abort, step } = freeSettle(job, script, level);
+  const { abort, step } = freeSettle(job, script);
   if (abort) stagings.get(key)?.abort();
   try {
     if (step === "remove") await removeJob(key);
-    if (step === "level") {
-      const atLevel = planAtLevel(job, level);
-      const next = atLevel && (await update(key, (j) => (j === job ? withSpeech(atLevel) : j)));
-      if (next?.live) await writeJsonAtomic(join(jobDir(next), "live-plan.json"), next.live);
+    if (step === "keep" && script?.status === "ready") {
+      const pace = paceFor(job.lines, scriptTargetSec(script, seriesFallbackSec));
+      if (repaced(job, pace) !== job) await update(key, (j) => (j === job ? repaced(j, pace) : j));
     }
     if (step === "product" && script) {
       const followed = followProduct(job, script, productOf(all), cutoutsOf(all));
@@ -909,7 +918,7 @@ async function followScriptNow(
       if (!next?.plan) return;
       await writeJsonAtomic(join(jobDir(next), "plan.json"), next.plan);
       if (next.live) await writeJsonAtomic(join(jobDir(next), "live-plan.json"), next.live);
-      await followScriptNow(next, script, level, all);
+      await followScriptNow(next, script, all, seriesFallbackSec);
     }
   } catch (error) {
     console.warn("[video] could not follow the script:", (error as Error).message);
@@ -935,7 +944,7 @@ async function plannedBasis(job: VideoJob): Promise<RestageBasis | undefined> {
     ) as ShotList;
     const list: ShotList = { ...saved, shots: plan };
     if (!listFitsPlan(list, live.plan)) return undefined;
-    return { lines: job.lines, productIds, level: mediaLevel(job.level).id, list };
+    return { lines: job.lines, productIds, list };
   } catch {
     return undefined;
   }
@@ -956,12 +965,8 @@ export async function followScript(sessionId: string, scriptId: string): Promise
   await ensureLoaded();
   const job = jobs.get(keyOf(sessionId, scriptId));
   if (!job) return;
-  const { ws, find, levelOf } = await boardNow(sessionId);
-  await followScriptNow(job, find(scriptId), levelOf(scriptId), ws.assets);
-}
-
-export async function followLevel(sessionId: string): Promise<void> {
-  await syncScripts(sessionId, (await getBoard(sessionId)).scripts);
+  const { ws, series, find } = await boardNow(sessionId);
+  await followScriptNow(job, find(scriptId), ws.assets, seriesTargetSec(series ?? {}));
 }
 
 export async function videoStarted(sessionId: string, scriptId: string): Promise<boolean> {
@@ -984,16 +989,23 @@ export async function runAll(sessionId: string): Promise<null> {
   const ws = await getWorkspace();
   const session = ws.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên này");
-  const { board, levelOf, find } = await boardNow(sessionId);
+  const { board, series, find } = await boardNow(sessionId);
   const available = await availabilityIn(session.seriesId);
+  const all = await assets();
   for (const scriptId of committedIds(session, board.scripts)) {
     const key = keyOf(sessionId, scriptId);
     const script = find(scriptId);
-    const toMake = (job: VideoJob | undefined) =>
-      Boolean(script && readyToMake(job, script, levelOf(scriptId)));
-    if (!toMake(jobs.get(key))) continue;
+    const toMake = (job: VideoJob | undefined) => Boolean(script && readyToMake(job, script));
+    const current = jobs.get(key);
+    if (!current || !toMake(current)) continue;
+    const voiced = await voiceChoicesOf(current, all);
     await update(key, (job) =>
-      toMake(job) ? runThrough(spendingStarts(available(job), nowIso()), nowIso()) : job,
+      toMake(job)
+        ? runThrough(
+            spendingStarts(withVoiceChoices(available(job), voiced), series, nowIso()),
+            nowIso(),
+          )
+        : job,
     );
   }
   return null;
@@ -1020,56 +1032,45 @@ export async function fix(
   scriptId: string,
   changes: FixChange[],
   rev?: number,
-  version?: string,
 ): Promise<null> {
   const job = await jobOf(sessionId, scriptId);
   await committedOrThrow(sessionId, scriptId);
   if (rev !== undefined && rev !== (job.rev ?? 0)) {
     throw new Error("Video đã thay đổi sau đề xuất này");
   }
-  const run = (j: VideoJob) =>
-    applyFix(version ? focusVersion(j, version, nowIso()) : j, changes, nowIso());
+  const run = (j: VideoJob) => applyFix(j, changes, nowIso());
   run(job);
   await update(keyOf(sessionId, scriptId), run);
   return null;
 }
 
-export async function restore(
-  sessionId: string,
-  scriptId: string,
-  version?: string,
-): Promise<null> {
+export async function restore(sessionId: string, scriptId: string): Promise<null> {
   const job = await jobOf(sessionId, scriptId);
-  const run = (j: VideoJob) =>
-    restorePrevious(version ? focusVersion(j, version, nowIso()) : j, nowIso());
+  const run = (j: VideoJob) => restorePrevious(j, nowIso());
   run(job);
   await update(keyOf(sessionId, scriptId), run);
   return null;
 }
 
-export async function version(
-  sessionId: string,
-  scriptId: string,
-  action: "start" | "use" | "delete" | "focus",
-  version: string,
-): Promise<null> {
-  const job = await jobOf(sessionId, scriptId);
-  const key = keyOf(sessionId, scriptId);
-  if (action === "start") await committedOrThrow(sessionId, scriptId);
-  if (action === "delete") {
-    const { files } = deleteVersion(job, version, nowIso());
-    await update(key, (j) => deleteVersion(j, version, nowIso()).job);
-    for (const file of files) await rm(join(jobDir(job), file), { force: true });
-    return null;
-  }
-  const run = (j: VideoJob) =>
-    action === "start"
-      ? startVersion(j, version, nowIso())
-      : action === "use"
-        ? chooseVersion(j, version, nowIso())
-        : focusVersion(j, version, nowIso());
-  run(job);
-  await update(key, run);
+const OLD_JOB_FILE = "job-cach-cu.json";
+
+export async function remake(sessionId: string, scriptId: string): Promise<null> {
+  const old = await jobOf(sessionId, scriptId);
+  if (!old.dubbed) throw new Error("Video này không làm theo cách cũ");
+  await committedOrThrow(sessionId, scriptId);
+  await assertHasPlace(sessionId);
+  await writes.get(keyOf(sessionId, scriptId))?.catch(() => undefined);
+  await copyFile(join(jobDir(old), JOB_FILE), join(jobDir(old), OLD_JOB_FILE));
+  jobs.set(keyOf(sessionId, scriptId), {
+    ...old,
+    oldFiles: true,
+    rev: (old.rev ?? 0) + 1,
+  });
+  const direction = anchoredDirection(old.direction, old.lines);
+  await createJob(sessionId, scriptId, true, "idle", direction, (current) =>
+    Boolean(current?.dubbed),
+  );
+  await stage(sessionId, [scriptId]);
   return null;
 }
 
@@ -1094,7 +1095,7 @@ function cancelSent(job: VideoJob, step: JobStep, cancel: Canceller): Promise<Ca
   const nothingSent = Promise.resolve<CancelOutcome>("removed");
   if ("frame" in step) {
     const frame = job.frames.find((f) => f.id === step.frame);
-    return frame ? cancelFrame(frame, cancel) : nothingSent;
+    return frame ? cancelFrame(job, frame, cancel) : nothingSent;
   }
   if ("shot" in step) {
     const shot = job.shots.find((s) => s.index === step.shot);
@@ -1103,6 +1104,10 @@ function cancelSent(job: VideoJob, step: JobStep, cancel: Canceller): Promise<Ca
   if ("segment" in step) {
     const segment = job.segments?.find((s) => s.id === step.segment);
     return segment ? cancelSegment(segment, cancel) : nothingSent;
+  }
+  if ("voice" in step) {
+    const voice = voiceOf(job, step.voice);
+    return voice ? cancelVoice(voice, cancel) : nothingSent;
   }
   const sound = job.sounds?.find((s) => s.id === step.sound);
   return sound ? soundMaker(job).cancel(sound, cancel) : nothingSent;
@@ -1161,7 +1166,7 @@ export async function retryShot(sessionId: string, scriptId: string, shot: numbe
 
 export async function setTempo(sessionId: string, scriptId: string, tempo: unknown): Promise<null> {
   await ensureLoaded();
-  const chosen = tempoOf(tempo);
+  const chosen = pickedTempo(tempo) ?? 1;
   await update(keyOf(sessionId, scriptId), ({ tempo: _old, ...job }) =>
     chosen === 1 ? job : { ...job, tempo: chosen },
   );
@@ -1199,8 +1204,7 @@ export async function abandonSessions(sessionIds: readonly string[]): Promise<vo
 }
 
 export async function saveFinal(sessionId: string, scriptId: string): Promise<string | null> {
-  const working = jobs.get(keyOf(sessionId, scriptId));
-  const job = working && chosenView(working);
+  const job = jobs.get(keyOf(sessionId, scriptId));
   if (!job?.final) throw new Error("Video chưa xong");
   const safe = (job.title || "video")
     .replace(/[\\/:*?"<>|]+/g, " ")
@@ -1218,7 +1222,7 @@ export async function saveFinal(sessionId: string, scriptId: string): Promise<st
   if (result.canceled || !result.filePath) return null;
   const destination = result.filePath;
   const source = join(jobDir(job), job.final);
-  const tempo = tempoOf(job.tempo);
+  const tempo = jobTempo(job);
   if (tempo === 1) await copyFile(source, destination);
   else
     await renderedAtTempo(source, tempo, dirname(destination), (rendered) =>
@@ -1236,7 +1240,7 @@ export async function saveFinal(sessionId: string, scriptId: string): Promise<st
 
 async function renderedAtTempo(
   source: string,
-  tempo: Tempo,
+  tempo: number,
   folder: string,
   place: (rendered: string) => Promise<void>,
 ): Promise<void> {
@@ -1251,7 +1255,7 @@ async function renderedAtTempo(
 
 async function deliverWithoutOverwriting(
   source: string,
-  tempo: Tempo,
+  tempo: number,
   folder: string,
   base: string,
   taken: Set<string>,
@@ -1289,8 +1293,7 @@ async function placeWithoutOverwriting(
 const keepMaterial = (job: VideoJob) =>
   markVideoKept(job).catch((error) => console.error("[material] could not mark kept", error));
 
-async function keepLook(working: VideoJob): Promise<void> {
-  const job = chosenView(working);
+async function keepLook(job: VideoJob): Promise<void> {
   try {
     const inputs = await frameInputs(job);
     await saveLook(job, jobDir(job), await assets(), inputs?.place);
@@ -1330,7 +1333,7 @@ export async function saveFinals(
     try {
       await deliverWithoutOverwriting(
         join(jobDir(job), file.final),
-        tempoOf(job.tempo),
+        jobTempo(job),
         folder,
         file.base,
         taken,
@@ -1370,7 +1373,8 @@ function pump() {
         action.kind === "poll-shot" ||
         action.kind === "poll-frame" ||
         action.kind === "poll-sound" ||
-        action.kind === "poll-segment"
+        action.kind === "poll-segment" ||
+        action.kind === "poll-voice"
       ) {
         if (Date.now() - (lastPoll.get(busyKey) ?? 0) < pollEvery) continue;
         lastPoll.set(busyKey, Date.now());
@@ -1415,8 +1419,8 @@ async function perform(key: string, action: JobAction): Promise<void> {
   switch (action.kind) {
     case "plan":
       return runPlan(key, job, new AbortController().signal);
-    case "voice":
-      return runVoice(key, job);
+    case "timeline":
+      return runSpeechTimeline(key, job);
     case "frame":
       return runFrame(key, job, action.frame);
     case "poll-frame":
@@ -1433,6 +1437,12 @@ async function perform(key: string, action: JobAction): Promise<void> {
       return runSubmitSegment(key, job, action.segment);
     case "poll-segment":
       return runPollSegment(key, job, action.segment);
+    case "voices":
+      return runVoices(key, job);
+    case "submit-voice":
+      return runSubmitVoice(key, job, action.voice);
+    case "poll-voice":
+      return runPollVoice(key, job, action.voice);
     case "assemble":
       return runAssemble(key, job);
   }
@@ -1468,8 +1478,7 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
   let releaseScene: () => void = () => undefined;
   try {
     await mkdir(jobDir(job), { recursive: true });
-    const { level } = await batchNow(job);
-    const { material, release } = await stagingMaterial(job, level, seriesStaged(job), signal);
+    const { material, release } = await stagingMaterial(job, seriesStaged(job), signal);
     releaseScene = release;
     let shown = "";
     const onSteps = (steps: string[]) => {
@@ -1478,13 +1487,7 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
       shown = now;
       void update(key, (j) => (j.plan ? j : { ...j, planningSteps: steps }));
     };
-    const { plan, live } = await directJob(
-      { ...job, level },
-      jobDir(job),
-      onSteps,
-      signal,
-      material,
-    );
+    const { plan, live } = await directJob(job, jobDir(job), onSteps, signal, material);
     const script = (await getBoard(job.sessionId)).scripts.find((s) => s.id === job.scriptId);
     if (signal.aborted || (job.planning && stagingOutdated(job, script))) {
       console.log(`[video] ${job.scriptId}: staging dropped, the script changed`);
@@ -1507,16 +1510,10 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
       const { planningSteps: _, restageFrom: __, rewordedFrom: from, ...rest } = j;
       const applied = live ? applyLivePlan(rest, live) : applyPlan(rest, plan);
       const planned = from ? { ...applied, reworded: reworded(from, applied.shots) } : applied;
-      const model = modelLocked(j) ? j.model : mediaLevel(level).speaker;
       const staging = available(
         withSpeech({
           ...withCutouts(planned),
           stagedDirection: job.direction ?? [],
-          level,
-          model,
-          resolution: live
-            ? mediaLevel(level).output
-            : fitResolution(model, mediaLevel(level).output),
           ...(live && !j.reviewed ? { pause: true } : {}),
           phaseStartedAt: nowIso(),
         }),
@@ -1531,86 +1528,19 @@ async function runPlan(key: string, job: VideoJob, signal: AbortSignal) {
   }
 }
 
-async function runVoice(key: string, job: VideoJob) {
-  if (isNative(job)) return runSpeechTimeline(key, job);
-  const dir = jobDir(job);
-  const startedAt = Date.now();
-  try {
-    await assertFfmpegBeforeAnyPaidStep();
-    await mkdir(dir, { recursive: true });
-    let current = job;
-    let timing: Awaited<ReturnType<typeof generateVoice>>["timing"];
-    if (!current.dialogue || !current.lineSpans) {
-      const dialogue = revFile(current, "dialogue", "mp3");
-      const result = await generateVoice(current, await assets(), join(dir, dialogue));
-      await online(key);
-      timing = result.timing;
-      const saved = await update(key, (j) => ({
-        ...charged(
-          j,
-          "voice",
-          STEP.voice,
-          { usd: result.costUsd, billed: false },
-          result.requestId,
-        ),
-        dialogue,
-        dialogueSec: result.seconds,
-        voiceCostUsd: result.costUsd,
-        voiceChars: result.chars,
-        lineSpans: result.spans,
-      }));
-      if (!saved) return;
-      current = saved;
-      measured("voice", (Date.now() - startedAt) / 1000);
-    } else {
-      timing = await savedTiming(
-        join(dir, `${current.dialogue}.timing.json`),
-        current.lines.length,
-      );
-    }
-    await placeShots(key, current, timing);
-  } catch (error) {
-    if (await offline(key, error)) return;
-    await fail(key, error);
-  }
-}
-
-async function placeShots(
-  key: string,
-  current: VideoJob,
-  timing: Awaited<ReturnType<typeof generateVoice>>["timing"],
-  speech?: SpeechTimeline,
-) {
-  const dir = jobDir(current);
+async function placeShots(key: string, current: VideoJob, speech: SpeechTimeline) {
   const total = current.dialogueSec ?? 0;
   const planned = current.shots.map((s) => ({ line: s.lineIndex, text: s.text, hold: s.hold }));
-  const spoken = shotTimes(planned, current.lineSpans ?? [], total, timing);
+  const spoken = shotTimes(planned, current.lineSpans ?? [], total, speech.timing);
   const { times } = withHolds(spoken, planned);
-  const inputs: ShotInput[] = [];
-  for (const [i, shot] of current.shots.entries()) {
+  const inputs: ShotInput[] = current.shots.map((shot, i) => {
     const time = times[i] as { start: number; end: number };
-    if (!madeByProvider(shot)) {
-      const piece = shot.speech && speech?.pieces.find((p) => p.segment === shot.speech);
-      const words = spoken[i] as { start: number; end: number };
-      inputs.push(piece ? { ...time, cutFrom: cutFrom(piece, words.start) } : time);
-      continue;
-    }
-    const audio = revFile(current, `audio-${String(i + 1).padStart(2, "0")}`, "mp3");
-    if (shot.kind === "listener") {
-      await silence(Math.max(MIN_SHOT_SEC, time.end - time.start), join(dir, audio));
-    } else {
-      const words = spoken[i] as { start: number; end: number };
-      await cutLine(
-        join(dir, current.dialogue as string),
-        words,
-        join(dir, audio),
-        Math.max(MIN_SHOT_SEC, words.end - words.start + (shot.hold ?? 0)),
-      );
-    }
-    inputs.push({ ...time, audio, audioSec: await probeSeconds(join(dir, audio)) });
-  }
+    const piece = shot.speech && speech.pieces.find((p) => p.segment === shot.speech);
+    const words = spoken[i] as { start: number; end: number };
+    return piece ? { ...time, cutFrom: cutFrom(piece, words.start) } : time;
+  });
   await update(key, (j) => ({
-    ...withJobSounds(withShotAudio(j, inputs)),
+    ...withJobSounds(withShotTimes(j, inputs)),
     phaseStartedAt: nowIso(),
   }));
 }
@@ -1653,33 +1583,9 @@ async function runSpeechTimeline(key: string, job: VideoJob) {
       if (!saved) return;
       current = saved;
     }
-    await placeShots(key, current, timeline.timing, timeline);
+    await placeShots(key, current, timeline);
   } catch (error) {
     await fail(key, error);
-  }
-}
-
-async function savedTiming(path: string, lineCount: number) {
-  try {
-    const saved = JSON.parse(await readFile(path, "utf8"));
-    const segments = (saved.voiceSegments ?? []) as {
-      dialogueInputIndex: number;
-      characterStartIndex: number;
-      characterEndIndex: number;
-    }[];
-    if (!saved.alignment?.characters?.length) return undefined;
-    const lineChars = [];
-    for (let i = 0; i < lineCount; i++) {
-      const mine = segments.filter((s) => s.dialogueInputIndex === i);
-      if (!mine.length) return undefined;
-      lineChars.push({
-        start: Math.min(...mine.map((s) => s.characterStartIndex)),
-        end: Math.max(...mine.map((s) => s.characterEndIndex)),
-      });
-    }
-    return { alignment: saved.alignment, lineChars };
-  } catch {
-    return undefined;
   }
 }
 
@@ -1715,13 +1621,26 @@ const patchFrameOf = (key: string, frameId: string) => (patch: Partial<JobFrame>
     frames: j.frames.map((f) => (f.id === frameId ? { ...f, ...patch } : f)),
   }));
 
-async function markSending(key: string, step: JobStep): Promise<VideoJob | null> {
-  return update(key, (j) => withSending(j, step, randomUUID()));
+async function seriesModelsOf(key: string) {
+  const job = jobs.get(key);
+  if (!job || job.modelsKept) return undefined;
+  return (await getWorkspace()).series.find((s) => s.id === job.seriesId)?.models;
 }
 
-async function sendMarked(key: string, job: VideoJob, frameId: string, inputs: FrameInputs) {
-  const marked = (await markSending(key, { frame: frameId }))?.frames.find((f) => f.id === frameId);
-  if (!marked) return;
+async function keptModels(key: string): Promise<VideoJob | null> {
+  const picked = await seriesModelsOf(key);
+  return update(key, (j) => keepModels(j, picked));
+}
+
+async function markSending(key: string, step: JobStep): Promise<VideoJob | null> {
+  const picked = await seriesModelsOf(key);
+  return update(key, (j) => withSending(keepModels(j, picked), step, randomUUID()));
+}
+
+async function sendMarked(key: string, frameId: string, inputs: FrameInputs) {
+  const job = await markSending(key, { frame: frameId });
+  const marked = job?.frames.find((f) => f.id === frameId);
+  if (!job || !marked) return;
   const sent = await sendFrame(job, marked, inputs);
   await patchFrameOf(key, frameId)({ ...sent, submittedAt: nowIso(), sending: undefined });
 }
@@ -1736,7 +1655,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
   const dir = jobDir(job);
   const running = () => jobs.get(key)?.status === "running";
   try {
-    if (isNative(job)) await assertFfmpegBeforeAnyPaidStep();
+    await assertFfmpegBeforeAnyPaidStep();
     await mkdir(dir, { recursive: true });
     const all = await assets();
     if (frame.kind === "product") {
@@ -1758,17 +1677,13 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
         }
         if (cutout) {
           if (jobs.get(key)?.status !== "running") return;
-          await sendMarked(key, job, frameId, inputs);
+          await sendMarked(key, frameId, inputs);
           await online(key);
           return;
         }
       }
       const file = frameFile(job, frame);
-      await productStill(
-        join(assetDir(product.id), photo.file),
-        join(dir, file),
-        outputSize(job.resolution),
-      );
+      await productStill(join(assetDir(product.id), photo.file), join(dir, file), OUTPUT_SIZE);
       await patchFrame({ file, source: "photo" });
       return;
     }
@@ -1789,7 +1704,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
       return;
     }
     if (jobs.get(key)?.status !== "running") return;
-    await sendMarked(key, job, frameId, inputs);
+    await sendMarked(key, frameId, inputs);
     await online(key);
   } catch (error) {
     if (error instanceof CutoutStopped) return;
@@ -1801,7 +1716,7 @@ async function runFrame(key: string, job: VideoJob, frameId: string) {
       await offline(key, error);
       return;
     }
-    await frameFailed(key, frameId, (error as Error).message);
+    await frameFailed(key, frameId, (error as Error).message, mishapOfError(error));
   }
 }
 
@@ -1922,8 +1837,8 @@ async function sendFrame(
   return { requestId: await submitFrame(job, frame, inputs) };
 }
 
-async function frameFailed(key: string, frameId: string, message: string) {
-  const next = await update(key, (j) => stepReportedFailure(j, { frame: frameId }, message));
+async function frameFailed(key: string, frameId: string, message: string, kind?: MishapKind) {
+  const next = await update(key, (j) => stepReportedFailure(j, { frame: frameId }, message, kind));
   const frame = next?.frames.find((f) => f.id === frameId);
   if (frame?.fallback && !frame.retried)
     console.warn(`[video] keyframe ${frame.keyframe} falls back:`, message);
@@ -1947,14 +1862,14 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
   let url = frame.resultUrl;
   if (!url) {
     if (requestOverdue("still", frame.submittedAt, Date.now())) {
-      const outcome = await cancelFrame(frame);
+      const outcome = await cancelFrame(job, frame);
       await update(key, (j) =>
         chargedIfStillBilled(
           outcome,
           j,
           "still",
           STEP.frame(frameId),
-          frameUsd(j, frame),
+          frameUsd(j),
           frame.requestId,
         ),
       );
@@ -1999,7 +1914,9 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
       const rejected = problem;
       await update(key, (j) => ({
         ...j,
-        frames: j.frames.map((f) => (f.id === frameId ? stillToDrawAgain(f, rejected) : f)),
+        frames: j.frames.map((f) =>
+          f.id === frameId ? stillToDrawAgain(f, rejected, modelsOf(j).image) : f,
+        ),
       }));
       return;
     }
@@ -2008,7 +1925,7 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
         path,
         join(jobDir(job), frame.cutout as string),
         join(jobDir(job), file),
-        outputSize(job.resolution),
+        OUTPUT_SIZE,
       );
     }
   } catch (error) {
@@ -2038,7 +1955,9 @@ async function runPollFrame(key: string, job: VideoJob, frameId: string) {
 async function pollThrew(key: string, step: JobStep, error: unknown) {
   if (await offline(key, error)) return;
   console.warn("[video] poll:", error);
-  await update(key, (j) => stepReportedFailure(j, step, (error as Error).message || String(error)));
+  await update(key, (j) =>
+    stepReportedFailure(j, step, (error as Error).message || String(error), mishapOfError(error)),
+  );
 }
 
 function resultFailure(error: unknown): string {
@@ -2047,30 +1966,12 @@ function resultFailure(error: unknown): string {
   return unreadableResultMessage((error as Error).message || String(error));
 }
 
-async function batchNow(
-  job: VideoJob,
-): Promise<{ model: string; resolution: string; level: string }> {
-  const ws = await getWorkspace();
-  const session = ws.sessions.find((s) => s.id === job.sessionId);
-  const series = ws.series.find((s) => s.id === job.seriesId);
-  const level = videoLevel(session, series, job.scriptId);
-  return { model: mediaLevel(level).speaker, resolution: mediaLevel(level).output, level };
-}
-
-async function saveModelAndSizeBeforeFirstSend(key: string, job: VideoJob) {
-  if (modelLocked(job)) return job;
-  const batch = await batchNow(job);
-  return update(key, (j) => (modelLocked(j) ? j : { ...followBatch(j, batch), modelLocked: true }));
-}
-
 function stillQueuedToSend(key: string, index: number) {
   const latest = jobs.get(key);
   return latest?.status === "running" && latest.shots[index]?.state === "queued";
 }
 
-async function runSubmitShot(key: string, initial: VideoJob, index: number) {
-  const job = await saveModelAndSizeBeforeFirstSend(key, initial);
-  if (!job) return;
+async function runSubmitShot(key: string, job: VideoJob, index: number) {
   const shot = job.shots[index];
   if (!shot || shot.end === undefined || shot.start === undefined) return;
   const dir = jobDir(job);
@@ -2089,7 +1990,7 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
           shot.cutFrom ?? 0,
           frameCount(shot.start, shot.end),
           join(dir, clip),
-          outputSize(job.resolution),
+          OUTPUT_SIZE,
         );
       } else if (frame.plate && frame.cutout) {
         await productClip(
@@ -2097,14 +1998,14 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
           join(dir, frame.cutout),
           frameCount(shot.start, shot.end),
           join(dir, clip),
-          outputSize(job.resolution),
+          OUTPUT_SIZE,
         );
       } else {
         await stillClip(
           join(dir, frame.file),
           frameCount(shot.start, shot.end),
           join(dir, clip),
-          outputSize(job.resolution),
+          OUTPUT_SIZE,
         );
       }
       const clipSec = await probeSeconds(join(dir, clip));
@@ -2121,54 +2022,15 @@ async function runSubmitShot(key: string, initial: VideoJob, index: number) {
       });
       return;
     }
-    const marked = (await markSending(key, { shot: index }))?.shots[index];
-    if (!marked) return;
-    if (job.live && shot.route && !shot.fallback) {
-      const sent = await submitLiveShot(
-        job,
-        marked,
-        join(dir, frame.file),
-        shot.audio ? join(dir, shot.audio) : undefined,
-        dir,
-      );
-      await update(key, (j) => ({
-        ...j,
-        shots: j.shots.map((s) =>
-          s.index === index
-            ? { ...s, state: "rendering", ...sent, submittedAt: nowIso(), sending: undefined }
-            : s,
-        ),
-      }));
-      await online(key);
-      return;
-    }
-    if (!shot.audio) throw new Error("Thiếu âm thanh");
-    let still = join(dir, frame.file);
-    if (shot.framing === "close" && !shot.keyframe) {
-      const closer = join(dir, `close-${frame.file}`);
-      await cropCloser(still, closer);
-      still = closer;
-    }
-    const model = shotModel(job, shot);
-    let audio = join(dir, shot.audio);
-    if (model.minSec && (shot.audioSec ?? 0) < model.minSec) {
-      const padded = join(dir, `min${model.minSec}-${shot.audio}`);
-      await padAudio(audio, model.minSec, padded);
-      audio = padded;
-    }
-    const requestId = await submitShot(job, marked, model, still, audio);
+    const sending = await markSending(key, { shot: index });
+    const marked = sending?.shots[index];
+    if (!sending || !marked) return;
+    const sent = await submitMotion(sending, marked, join(dir, frame.file));
     await update(key, (j) => ({
       ...j,
       shots: j.shots.map((s) =>
         s.index === index
-          ? {
-              ...s,
-              state: "rendering",
-              model: model.id,
-              requestId,
-              submittedAt: nowIso(),
-              sending: undefined,
-            }
+          ? { ...s, state: "rendering", ...sent, submittedAt: nowIso(), sending: undefined }
           : s,
       ),
     }));
@@ -2205,7 +2067,7 @@ async function runPollShot(key: string, job: VideoJob, index: number) {
     }
     let result: StepPoll;
     try {
-      result = await (shot.endpoint ? pollLiveShot(job, shot) : pollShot(job, shot));
+      result = await pollMotion(job, shot);
     } catch (error) {
       await pollThrew(key, { shot: index }, error);
       return;
@@ -2232,8 +2094,7 @@ async function runPollShot(key: string, job: VideoJob, index: number) {
   let clipSec: number;
   try {
     await download(url, join(dir, clip), {
-      audioPath: shot.audio ? join(dir, shot.audio) : undefined,
-      size: outputSize(job.resolution),
+      seconds: motionSec(videoModelOf(job), liveSeconds(job, shot)),
     });
     await online(key);
     clipSec = await probeSeconds(join(dir, clip));
@@ -2278,9 +2139,8 @@ async function clipRejected(
   await rename(join(dir, clip), join(dir, setAside));
   const next = await update(key, (j) => rejectClip(j, shot.index, url));
   const now = next?.shots[shot.index];
-  const speaker = next && now ? speakerForNextClip(next, now) : null;
   console.log(
-    `[video] shot ${shot.index + 1}: clip set aside as ${setAside} (${added}); now ${now?.state}${speaker ? ` on ${speaker}` : ""}, redos ${now?.autoRedos ?? 0} for the shot, ${next?.autoRedos ?? 0} for the video`,
+    `[video] shot ${shot.index + 1}: clip set aside as ${setAside} (${added}); now ${now?.state}, redos ${now?.autoRedos ?? 0} for the shot, ${next?.autoRedos ?? 0} for the video`,
   );
   return true;
 }
@@ -2291,10 +2151,8 @@ const patchSegmentOf = (key: string, id: string) => (patch: Partial<JobSegment>)
     segments: j.segments?.map((s) => (s.id === id ? { ...s, ...patch } : s)),
   }));
 
-const TOO_LONG_TO_SAY = "Câu thoại dài quá mức tạo được";
-
 async function runSubmitSegment(key: string, initial: VideoJob, id: string) {
-  const job = await saveModelAndSizeBeforeFirstSend(key, initial);
+  const job = initial.modelsKept ? initial : await keptModels(key);
   if (!job) return;
   const segment = job.segments?.find((s) => s.id === id);
   const frame = job.frames.find((f) => f.id === segment?.frame);
@@ -2302,14 +2160,15 @@ async function runSubmitSegment(key: string, initial: VideoJob, id: string) {
   if (jobs.get(key)?.status !== "running") return;
   try {
     await assertFfmpegBeforeAnyPaidStep();
-    const model = segmentModel(levelSpeech(job), segment);
-    const seconds = segmentAskedSec(levelSpeech(job), segment);
+    const model = segmentModel(videoModelOf(job), segment);
+    const seconds = segmentAskedSec(videoModelOf(job), segment);
     if (!model || !seconds) {
       await update(key, (j) => stepReportedFailure(j, { segment: id }, TOO_LONG_TO_SAY));
       return;
     }
-    const character = (await assets()).find((a) => a.id === segment.characterId);
-    const prompt = segmentPrompt(job, segment, character);
+    const voice = voiceOf(job, segment.characterId);
+    if (!voice?.ready) return;
+    const prompt = segmentPrompt(job, segment);
     const marked = (await markSending(key, { segment: id }))?.segments?.find((s) => s.id === id);
     if (!marked) return;
     const requestId = await submitSegment({
@@ -2318,6 +2177,7 @@ async function runSubmitSegment(key: string, initial: VideoJob, id: string) {
       model,
       seconds,
       stillPath: join(jobDir(job), frame.file),
+      voicePath: samplePath(voice.file),
       prompt,
     });
     await patchSegmentOf(
@@ -2338,8 +2198,6 @@ async function runSubmitSegment(key: string, initial: VideoJob, id: string) {
   }
 }
 
-const NO_SPEECH_HEARD = "Không nghe thấy lời nói trong cảnh quay";
-
 async function runPollSegment(key: string, job: VideoJob, id: string) {
   const segment = job.segments?.find((s) => s.id === id);
   if (!segment?.requestId) return;
@@ -2355,7 +2213,7 @@ async function runPollSegment(key: string, job: VideoJob, id: string) {
             j,
             "speech",
             segmentStep(id),
-            segmentEstimateUsd(levelSpeech(j), segment),
+            segmentEstimateUsd(videoModelOf(j), segment),
             segment.requestId,
           ),
           { segment: id },
@@ -2427,7 +2285,9 @@ async function runPollSegment(key: string, job: VideoJob, id: string) {
   try {
     speech = await heardSpeech(join(dir, clip), clipSec);
   } catch (error) {
-    await update(key, (j) => stepReportedFailure(j, { segment: id }, resultFailure(error)));
+    await update(key, (j) =>
+      stepReportedFailure(j, { segment: id }, resultFailure(error), mishapOfError(error)),
+    );
     return;
   }
   if (!speech) {
@@ -2435,7 +2295,7 @@ async function runPollSegment(key: string, job: VideoJob, id: string) {
     return;
   }
   const cutOff = speechCutOff(speech, clipSec);
-  if (cutOff) {
+  if (cutOffAskedAgainLonger(segment, cutOff)) {
     const setAside = revFile(job, `speech-${id}-cut-${attempt}`, "mp4");
     await rename(join(dir, clip), join(dir, setAside));
     console.log(`[video] speech ${id}: speech runs to the end, asked again longer`);
@@ -2444,6 +2304,134 @@ async function runPollSegment(key: string, job: VideoJob, id: string) {
     const heard = segmentHeard(j, id, url, { clip, clipSec, speech, cutOff });
     return jobPhase(heard) === "voice" ? { ...heard, phaseStartedAt: nowIso() } : heard;
   });
+}
+
+const UNKNOWN_CHARACTER_VOICE = defaultVoiceText(characterVoiceTraits("", ""));
+
+async function voiceChoicesOf(job: VideoJob, all: readonly Asset[]): Promise<VoiceChoice[]> {
+  return Promise.all(
+    voicesNeeded(job).map((id) => {
+      const character = all.find((a) => a.id === id && a.kind === "character");
+      return character
+        ? voiceChoice(
+            id,
+            characterVoice(character, all),
+            guessVoiceTraits(character.name, character.description),
+          )
+        : voiceChoice(id, UNKNOWN_CHARACTER_VOICE, {});
+    }),
+  );
+}
+
+async function followVoicesOf(key: string, all: readonly Asset[]): Promise<void> {
+  const job = jobs.get(key);
+  if (!job || job.voicesKept || job.dubbed || !voicesNeeded(job).length) return;
+  const choices = await voiceChoicesOf(job, all);
+  if (withVoiceChoices(job, choices) === job) return;
+  await update(key, (j) => withVoiceChoices(j, choices));
+}
+
+export async function followVoices(): Promise<void> {
+  await ensureLoaded();
+  const all = await assets();
+  for (const key of [...jobs.keys()]) await followVoicesOf(key, all);
+}
+
+async function runVoices(key: string, job: VideoJob) {
+  if (!voicesToRecord(job) || job.status !== "running") return;
+  const choices = await voiceChoicesOf(job, await assets());
+  await update(key, (j) => (voicesToRecord(j) ? keptVoices(j, choices) : j));
+}
+
+const patchVoiceOf = (key: string, id: string, change: (v: JobVoice) => JobVoice) =>
+  update(key, (j) => ({
+    ...j,
+    voices: j.voices?.map((v) => (v.characterId === id ? change(v) : v)),
+  }));
+
+async function runSubmitVoice(key: string, job: VideoJob, id: string) {
+  const voice = voiceOf(job, id);
+  if (!voice || !voiceToSend(voice) || jobs.get(key)?.status !== "running") return;
+  try {
+    if (await sampleExists(voice.file)) {
+      await patchVoiceOf(key, id, voiceMade);
+      return;
+    }
+    await assertFfmpegBeforeAnyPaidStep();
+    const sending = await markSending(key, { voice: id });
+    const marked = sending && voiceOf(sending, id);
+    if (!marked) return;
+    const requestId = await submitVoice(job, marked);
+    await patchVoiceOf(key, id, (v) => ({
+      ...v,
+      requestId,
+      submittedAt: nowIso(),
+      sending: undefined,
+    }));
+    await online(key);
+  } catch (error) {
+    if (isNetworkError(error) && !providerBusy(error)) await offline(key, error);
+    else await update(key, (j) => stepThrew(j, { voice: id }, error, Date.now()));
+  }
+}
+
+async function runPollVoice(key: string, job: VideoJob, id: string) {
+  const voice = voiceOf(job, id);
+  if (!voice?.requestId || voice.ready) return;
+  let url = voice.resultUrl;
+  if (!url) {
+    if (requestOverdue("voice", voice.submittedAt, Date.now())) {
+      const outcome = await cancelVoice(voice);
+      await update(key, (j) =>
+        stepReportedFailure(
+          chargedIfStillBilled(
+            outcome,
+            j,
+            "voice",
+            voiceStep(id),
+            VOICE_SAMPLE_USD,
+            voice.requestId,
+          ),
+          { voice: id },
+          timedOutMessage("voice"),
+        ),
+      );
+      return;
+    }
+    let result: StepPoll;
+    try {
+      result = await pollVoice(job, voice);
+    } catch (error) {
+      await pollThrew(key, { voice: id }, error);
+      return;
+    }
+    await online(key);
+    if (result.state === "pending") return;
+    if (result.state === "failed") {
+      await update(key, (j) => stepReportedFailure(j, { voice: id }, result.message));
+      return;
+    }
+    url = result.url;
+    const { cost } = result;
+    await update(key, (j) => ({
+      ...charged(j, "voice", voiceStep(id), cost, voice.requestId),
+      voices: j.voices?.map((v) =>
+        v.characterId === id
+          ? { ...v, resultUrl: url, costUsd: cost.usd, costBilled: cost.billed }
+          : v,
+      ),
+    }));
+  }
+  try {
+    await downloadVoice(url, voice);
+    await online(key);
+  } catch (error) {
+    if (await offline(key, error)) return;
+    await update(key, (j) => stepReportedFailure(j, { voice: id }, resultFailure(error)));
+    return;
+  }
+  await patchVoiceOf(key, id, voiceMade);
+  void followVoices().catch((error) => console.error("[video] could not follow voices", error));
 }
 
 const patchSoundOf = (key: string, id: string) => (patch: Partial<JobSound>) =>
@@ -2567,7 +2555,7 @@ async function runAssemble(key: string, job: VideoJob) {
         join(dir, shot.clip as string),
         frameCount(shot.start ?? 0, shot.end ?? 0),
         out,
-        outputSize(job.resolution),
+        OUTPUT_SIZE,
       );
       exact.push(out);
       progress(((i + 1) / shots.length) * 0.5);
@@ -2585,8 +2573,6 @@ async function runAssemble(key: string, job: VideoJob) {
       dialogue = held;
     }
     const assFile = join(work, "subtitles.ass");
-    const saved = await savedTiming(join(dir, `${job.dialogue}.timing.json`), job.lines.length);
-    const timing = saved && heldTiming(saved, offsets);
     const spans = job.lines.map((_, i) => {
       const mine = shots.filter((s) => s.lineIndex === i);
       if (job.lineSpans?.[i]) return heldSpans([job.lineSpans[i]], [offsets[i] ?? 0])[0];
@@ -2596,8 +2582,8 @@ async function runAssemble(key: string, job: VideoJob) {
         end: Math.max(...mine.map((s) => s.end ?? 0)),
       };
     });
-    const cues = wordCues(job.lines, spans, timing);
-    await writeFile(assFile, buildAss(cues, outputSize(job.resolution)), "utf8");
+    const cues = wordCues(job.lines, spans);
+    await writeFile(assFile, buildAss(cues, OUTPUT_SIZE), "utf8");
     const soundtrack = join(work, "soundtrack.wav");
     const voiceOnly = { voice: dialogue, layers: [], totalSec: total, out: soundtrack };
     const layers = await soundLayers(job, shots, total).catch((error) => {

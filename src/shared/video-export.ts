@@ -1,8 +1,7 @@
 import { boardOrder } from "./board";
 import type { Script } from "./ipc";
-import { atTempoSec } from "./tempo";
+import { finalSecAtTempo } from "./tempo";
 import type { VideoJob } from "./video-job";
-import { chosenVersion, versionLabel, versions, viewVersion, workingVersion } from "./video-takes";
 
 export interface ExportVersion {
   version: string;
@@ -34,28 +33,20 @@ export interface ExportFile extends ExportPick {
 
 export const pickKey = (pick: ExportPick) => `${pick.scriptId}|${pick.version}`;
 
-function finishedView(job: VideoJob, version: string): VideoJob | null {
-  const view = viewVersion(job, version);
-  const ownView = version === workingVersion(job) || view !== job;
-  return ownView && view.status === "done" && view.final ? view : null;
-}
+const VERSION_IN_USE = "in-use";
 
-function finishedVersions(job: VideoJob): ExportVersion[] {
-  const inUse = chosenVersion(job);
-  return versions(job).flatMap((version) => {
-    const view = finishedView(job, version);
-    if (!view?.final) return [];
-    return [
-      {
-        version,
-        label: versionLabel(job, version),
-        inUse: version === inUse,
-        final: view.final,
-        seconds: view.finalSec === undefined ? null : atTempoSec(view.finalSec, job.tempo),
-      },
-    ];
-  });
-}
+const finishedVersions = (job: VideoJob): ExportVersion[] =>
+  job.status === "done" && job.final
+    ? [
+        {
+          version: VERSION_IN_USE,
+          label: "Bản đang dùng",
+          inUse: true,
+          final: job.final,
+          seconds: finalSecAtTempo(job),
+        },
+      ]
+    : [];
 
 const firstChoice = (video: ExportVideo) =>
   (video.versions.find((v) => v.inUse) ?? video.versions[0]) as ExportVersion;

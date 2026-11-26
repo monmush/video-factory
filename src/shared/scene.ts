@@ -38,16 +38,19 @@ export function sceneFraming(
 
 export const sceneMoves = (shot: Pick<SceneShot, "route">) => shot.route === "motion";
 
-export function sceneSeconds(shot: {
-  text: string;
-  hold?: number;
-  start?: number;
-  end?: number;
-}): number {
+export function sceneSeconds(
+  shot: {
+    text: string;
+    hold?: number;
+    start?: number;
+    end?: number;
+  },
+  pace: number,
+): number {
   const sec =
     shot.start !== undefined && shot.end !== undefined
       ? shot.end - shot.start
-      : plannedShotSec(shot);
+      : plannedShotSec(shot, pace);
   return Math.max(1, Math.round(sec));
 }
 

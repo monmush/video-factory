@@ -96,17 +96,20 @@ export function newTopicProducts(input: {
   savedMix?: ProductMix;
   seriesProductIds: readonly string[];
   offset: number;
+  withoutProducts?: boolean;
 }): (string | null | undefined)[] {
   const { named, onBoard, mentioned, savedMix, seriesProductIds, offset } = input;
   const given = named.filter((p): p is string | null => p !== undefined);
   const open = named.filter((p) => p === undefined).length;
-  const assigned = mentioned?.length
+  const assigned: (string | null | undefined)[] = mentioned?.length
     ? assignProducts(evenMix(mentioned), [], open)
-    : assignProducts(
-        savedMix?.length ? savedMix : defaultMix(seriesProductIds, offset),
-        [...onBoard, ...given],
-        open,
-      );
+    : input.withoutProducts
+      ? Array.from({ length: open }, () => null)
+      : assignProducts(
+          savedMix?.length ? savedMix : defaultMix(seriesProductIds, offset),
+          [...onBoard, ...given],
+          open,
+        );
   let next = 0;
   return named.map((p) => (p !== undefined ? p : assigned[next++]));
 }

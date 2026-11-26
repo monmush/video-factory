@@ -1,16 +1,37 @@
 # Series setup
 
-Updated 19 November 2026 to match the app. The earlier conversational setup (rough idea → sample script → sample video → approve series, with a context sidebar) is superseded. This document also owns the workspace shell, since it frames the series and session screens.
+Updated 25 November 2026 (the direction became a structured record the app drafts and the operator confirms; see "Direction"). Earlier: 19 November 2026, to match the app. The earlier conversational setup (rough idea → sample script → sample video → approve series, with a context sidebar) is superseded. This document also owns the workspace shell, since it frames the series and session screens.
 
 ## Series as a saved record
 
 Built in the app; the owner is still to review the flow.
 
-- **A series is a record, not a conversation.** Fields: name, direction text (`guidance`), and characters, products and Bối cảnh chosen from the shared library. It works like a Claude Project: saved context every session inherits.
+- **A series is a record, not a conversation.** Fields: name, the description typed at creation (`guidance`), the direction drafted from it (`guide`, see "Direction"), and characters, products and Bối cảnh chosen from the shared library. It works like a Claude Project: saved context every session inherits.
 - **A session is the conversation.** Each request typed on the series page starts one session with its own scripts, videos and chat. The request becomes the first chat message.
-- **No setup gate.** "Tạo series" is one plain page: optional name, a description and asset pickers. The description becomes the first direction. The series is usable at once; the first session doubles as the sample. Nothing is saved until sent.
-- **Chat edits the record, it does not hold it.** Direction is edited in "Sửa series" today. Later, AI can expand a rough description. Lessons from the chat are kept as separate [learned preferences](VIDEO_REVIEW_DECISIONS.md#learned-preferences-ghi-nhớ--agreed-and-built-13-november-2026), listed under "Ghi nhớ" on the series page; the direction stays the operator's own text. Changes apply to future sessions only; existing scripts and videos change only when explicitly targeted, never by automatic paid regeneration.
+- **No setup gate.** "Tạo series" is one plain page: optional name, a description and asset pickers. The app reads the description back as the direction; the series is usable at once, also while that runs. The first session doubles as the sample. Nothing is saved until sent.
+- **Chat edits the record, it does not hold it.** Direction is edited in "Sửa series", and the chat can save a correction into it (see "Direction"). Other lessons from the chat are kept as separate [learned preferences](VIDEO_REVIEW_DECISIONS.md#learned-preferences-ghi-nhớ--agreed-and-built-13-november-2026), listed under "Ghi nhớ" on the series page. Changes apply to future sessions only; existing scripts and videos change only when explicitly targeted, never by automatic paid regeneration.
 - **Delete** asks for confirmation, removes the series and its sessions, and moves their media folder to the Trash. Library assets are untouched.
+
+## Direction ("Định hướng") — 25 November 2026
+
+Built 25 November 2026 on the owner's request; tried in the built app with the user's own AI on three real descriptions and one batch of two scripts. No video was made from it yet.
+
+**Why.** Operators describe a series in two or three rough lines. That text went unchanged into the writer's and the director's prompts, and three things followed in the saved test sessions: the writer's fixed rules imposed one format on every series (a wise idea and a laugh, the product named once), nobody saw how the app understood the description until scripts came out, and corrections made in a session were lost for the next one.
+
+- **The description stays free text.** No form and no template to fill in. A structure is asked of the app, not of the operator.
+- **The app reads it back.** The user's own AI turns the description, the chosen assets and the series' saved "Ghi nhớ" into a short direction: Nhân vật (who each character is and how they address each other), Câu chuyện, Giọng điệu (sample lines copied word for word), Câu kết, Hình và nhịp, Tránh, Khác, plus two settings, Sản phẩm (Không nhắc, Nhắc tự nhiên, Giới thiệu cuối video) and Độ dài. What the description states is kept in full; of what it leaves out, only what every script needs is filled in, marked "Tự điền". It also proposes a short series name when none was typed.
+- **At most two questions, as buttons**, only where the answer changes the scripts and cannot be guessed (forms of address, the relationship, where each video ends). An option carries the whole new text of its line.
+- **A missing character is said, not guessed around**: "Mô tả có 2 nhân vật, mới chọn 1" with "Thêm nhân vật".
+- **Never a gate, never paid.** The prompt box works while the direction is read; a request sent meanwhile waits for it. The draft runs only on the user's own AI (a deterministic stand-in in fixture mode, nothing with a paid text AI). A series created before this gets its direction the first time its page opens.
+- **Confirm once.** The card stays open until "Đúng rồi" or a save in "Sửa series"; after that the series page shows one line, as before. "Sửa series" edits each part, the product rule and the length.
+- **The writer and the director read the direction, not the raw description** (`directionText` in `src/shared/series-guide.ts`). The writer's rules are composed from it (`src/shared/writing-rules.ts`): the default "one idea, one highlight" applies only when the direction states neither a story nor a tone; the product line follows the series' product rule and is absent for a script without a product; the last line follows "Câu kết" when there is one; idioms are optional. In a series whose rule is "Không nhắc", new scripts get no product unless one is named.
+- **Length is the series' value**, 45 seconds unless the description says otherwise; a length named in a request still wins for that request.
+- **Words follow the voice.** Each character is listed with its voice text; when that text names a region the writer keeps to that region's words ([voices](VOICE_DECISIONS.md)).
+- **The chat saves a correction to the series.** When a correction to a script is about what the series is (address, roles, kind of story, tone, product, ending, length) the chat applies it, then asks once "Lưu cho cả series?"; "Cả series" rewrites that part of the direction (`update_series_direction`). Anything else, and "Mọi series", stays a "Ghi nhớ". Existing scripts and videos never change.
+
+Code: `src/shared/series-guide.ts` (record and rules, tested), `src/main/series-guide.ts` (the draft and its prompt), `src/renderer/src/components/series-direction.tsx`.
+
+Not done: example series to start from, a length control on the prompt boxes, the voice shown beside each character in the direction, drafting again after the description changes (the description is not edited after creation). Not yet seen: the chat's "Lưu cho cả series?" with real AI, dark mode, and any video made from a drafted direction.
 
 ## Reference images live in the library
 
@@ -48,9 +69,9 @@ Shared library, reusable across series; product name and original photos are eno
 ## Open
 
 - Whether a sample video is required before the first real batch.
-- AI-written direction; per-series staging references (seated, opposite side, from behind).
+- Per-series staging references (seated, opposite side, from behind).
 - Which product each script features when a series has several: built, see [product per video](SCRIPT_BOARD_DECISIONS.md#product-per-video).
-- How character voices relate to a series. Voices belong to the character, with previews in the character dialog ([voices](VOICE_DECISIONS.md)).
+- How character voices relate to a series. Voices belong to the character as a text, with suggestions and a sample to listen to in the character dialog ([voices](VOICE_DECISIONS.md)).
 - "Series" versus "Chuỗi video" in the UI; avoid "lô".
 
 ## Workspace shell, steps and appearance
@@ -65,8 +86,8 @@ Accepted by the owner; pilot-client staff have not used it yet.
 
 Flow rules (built 16 November 2026):
 
-- **A setting sits beside the button it changes.** Settings for making videos are chips in one bar at the top of the Video step; today that is "Chất lượng". Products need no setting: they are shared across new scripts automatically and `@` in a prompt box names one.
-- **One inheritance rule, shown the same way.** "Chất lượng" is set on the series form as the default, and as the same chip on the series page's prompt box (for the batch about to start) and on the Video step (for the batch). The chip's menu shows each level's price for a 45-second video and tags the series' own level "Series". Choosing the series' level follows the series again.
+- **A setting sits beside the button it changes.** The one setting for making videos is the series' "Mô hình" chip on the series page's prompt box (since 25 November 2026; it replaced "Chất lượng"). Products need no setting: they are shared across new scripts automatically and `@` in a prompt box names one.
+- **No inheritance.** "Mô hình" belongs to the series only, on the series form and the series page's chip; a video takes it when its first paid request is sent ([scripts to videos](VIDEO_COMMIT_DECISIONS.md), "Models, named").
 - **The header's right corner names the next thing to do.** On Kịch bản: "Duyệt N kịch bản" while scripts are unsent (approving sends them to the Video step and spends nothing), then an outline link to the Video step, "Xem video". On Video: the batch hold button.
 - Each step shows a count (scripts on the board; videos done out of sent). Kịch bản shows a check once every finished script is sent. Video shows a dot while a sent video waits on the operator (not started, at "Nghe và xem cảnh chính", stopped or failed). Logic: `src/shared/session-steps.ts`.
 - A sent script's mark on the board says where its video really stands: "Chờ tạo" until it is started, "Lên cảnh quay" while it is planned, then as before.
@@ -75,4 +96,4 @@ Shell principles: panel controls stay at consistent edges; breadcrumbs show loca
 
 Appearance: a T3-derived light and dark theme. Roles: navigation background, a continuous canvas for header, board and chat, slightly raised cards and composer, restrained selection and hover; background differences must communicate a purpose. Blue marks primary actions and focus; at most two primary-coloured actions per screen ([design lessons](DESIGN_LESSONS.md), "Primary colour"). Tokens live in `src/renderer/src/styles.css`.
 
-Still open: planning every video automatically after approval (the plan takes about a minute of the user's own AI per video; re-planning stays never automatic), and showing a video card's level only when it differs from the batch's. To test with staff: finding daily work without instructions, recovering failures, understanding count changes and paid actions, and, later, continuing another staff member's work (multi-staff sharing is deferred by the single-machine MVP, [technology decisions](TECH_STACK_AND_SKILLS.md)).
+Still open: planning every video automatically after approval (the plan takes about a minute of the user's own AI per video; re-planning stays never automatic). To test with staff: finding daily work without instructions, recovering failures, understanding count changes and paid actions, and, later, continuing another staff member's work (multi-staff sharing is deferred by the single-machine MVP, [technology decisions](TECH_STACK_AND_SKILLS.md)).

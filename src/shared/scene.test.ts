@@ -31,17 +31,17 @@ describe("scene framing", () => {
 
 describe("scene length", () => {
   it("uses the shot's place in the video when known, whole seconds, at least 1", () => {
-    expect(sceneSeconds({ text: "x", start: 1.2, end: 4.6 })).toBe(3);
-    expect(sceneSeconds({ text: "x", start: 0, end: 0.2 })).toBe(1);
+    expect(sceneSeconds({ text: "x", start: 1.2, end: 4.6 }, 4)).toBe(3);
+    expect(sceneSeconds({ text: "x", start: 0, end: 0.2 }, 4)).toBe(1);
   });
 
   it("estimates from the words and the hold before the voice exists", () => {
     const words = "Ông ơi, ba ngày rồi con chưa đi được, ông có cách nào không";
-    expect(sceneSeconds({ text: words })).toBe(Math.round(plannedShotSec({ text: words })));
-    expect(sceneSeconds({ text: words, hold: 2 })).toBe(
-      Math.round(plannedShotSec({ text: words, hold: 2 })),
+    expect(sceneSeconds({ text: words }, 4)).toBe(Math.round(plannedShotSec({ text: words }, 4)));
+    expect(sceneSeconds({ text: words, hold: 2 }, 4)).toBe(
+      Math.round(plannedShotSec({ text: words, hold: 2 }, 4)),
     );
-    expect(sceneSeconds({ text: "À" })).toBe(1);
+    expect(sceneSeconds({ text: "À" }, 4)).toBe(1);
   });
 });
 

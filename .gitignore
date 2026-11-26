@@ -26,3 +26,4 @@
 /references/ui-patterns/
 /.agents/skills/sources.json
 /.agents/skills/make-interfaces-feel-better/
+*.tsbuildinfo

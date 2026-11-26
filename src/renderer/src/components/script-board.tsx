@@ -1,7 +1,9 @@
-import { boardOrder, estimateSeconds, formatSeconds, formatSecondsShort } from "@shared/board";
+import { boardOrder, formatSeconds, formatSecondsShort } from "@shared/board";
 import { editsInPlace } from "@shared/edit-in-place";
 import type { Script } from "@shared/ipc";
+import { estimateSeconds, scriptSeconds, scriptTargetSec } from "@shared/pace";
 import { committedIds } from "@shared/ready-check";
+import { seriesTargetSec } from "@shared/series-guide";
 import { hasVideo } from "@shared/session-steps";
 import type { VideoJob } from "@shared/video-job";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -19,7 +21,6 @@ import {
   RotateCw,
   Trash2,
   WandSparkles,
-  X,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -46,6 +47,7 @@ import {
   toggleRef,
   useBoard,
   useBoardView,
+  usePreferredLayout,
 } from "@/lib/board";
 import {
   type LineSaved,
@@ -55,13 +57,7 @@ import {
 } from "@/lib/board-notice";
 import { useLiveWriting } from "@/lib/chat";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
-import {
-  type ScriptStaging,
-  stagingOf,
-  useHasPlace,
-  useStaging,
-  useVideoLevel,
-} from "@/lib/staging";
+import { type ScriptStaging, stagingOf, useHasPlace, useStaging } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -124,6 +120,7 @@ const NOT_EMPTY_BOARD_SPACE = "[data-card], [data-reader], button, a, input, tex
 export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const [view, setView] = useBoardView(sessionId);
+  const preferredLayout = usePreferredLayout();
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const askedFocus = view.focusId;
@@ -162,7 +159,7 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
   const pending = board.messages.some((m) => m.pending);
   const refs = view.refs.filter((id) => scripts.some((s) => s.id === id));
   const selected = selection.filter((id) => scripts.some((s) => s.id === id));
-  const layout = boardLayout(view, scripts.length);
+  const layout = boardLayout(view, scripts.length, preferredLayout);
 
   const run = action.run;
   const followCopy = (saved: LineSaved) => {
@@ -324,10 +321,12 @@ export function ScriptBoard({ sessionId }: { sessionId: string }) {
     e.preventDefault();
   };
 
-  const seriesProductIds = series.find((x) => x.id === session.seriesId)?.productIds ?? [];
+  const sessionSeries = series.find((x) => x.id === session.seriesId);
+  const seriesProductIds = sessionSeries?.productIds ?? [];
   const shared: SharedProps = {
     sessionId,
     seriesProductIds,
+    seriesTargetSec: seriesTargetSec(sessionSeries ?? {}),
     sourceOf: (id) => board.scripts.find((x) => x.id === id),
     jobOf,
     refs,
@@ -390,6 +389,7 @@ interface Box {
 interface SharedProps {
   sessionId: string;
   seriesProductIds: readonly string[];
+  seriesTargetSec: number;
   sourceOf: (id: string) => Script | undefined;
   jobOf: (id: string) => VideoJob | null | undefined;
   refs: string[];
@@ -476,7 +476,8 @@ function ListView({
           const isActive = script.id === active?.id;
           const isRef = shared.refs.includes(script.id);
           const isSelected = shared.selected.includes(script.id);
-          const seconds = script.status === "ready" ? estimateSeconds(script.lines) : 0;
+          const seconds =
+            script.status === "ready" ? scriptSeconds(script, shared.seriesTargetSec) : 0;
           return (
             <CardMenu key={script.id} script={script} shared={shared}>
               <div
@@ -594,7 +595,7 @@ function ScriptCard({
         ? { ...line, text: saving.text }
         : line,
   );
-  const seconds = shownLines.length ? estimateSeconds(shownLines) : 0;
+  const seconds = estimateSeconds(shownLines, scriptTargetSec(script, shared.seriesTargetSec));
   const openLine = (index: number) => {
     const was = script.lines[index]?.text;
     if (was === undefined) return;
@@ -983,11 +984,10 @@ function VersionTag({ script }: { script: Script }) {
 function useStageable(sessionId: string, ids: string[]): string[] {
   const board = useBoard(sessionId);
   const jobs = useVideoJobs(sessionId);
-  const levelOf = useVideoLevel(sessionId);
   if (!board || !jobs) return [];
   return ids.filter((id) => {
     const script = board.scripts.find((s) => s.id === id);
-    return script && stagingOf(jobs.jobs.get(id), script, levelOf(id)).canStage;
+    return script && stagingOf(jobs.jobs.get(id), script).canStage;
   });
 }
 

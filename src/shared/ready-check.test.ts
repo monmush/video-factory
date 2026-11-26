@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeconds, estimateVoiceUsd } from "./board";
 import type { Asset, Script, Session } from "./ipc";
 import {
   assertCommitted,
@@ -8,6 +7,8 @@ import {
   needsAttention,
   readyCheck,
 } from "./ready-check";
+
+const SERIES = { seriesTargetSec: 45 };
 
 const character = (id: string, fields: Partial<Asset> = {}): Asset => ({
   id,
@@ -53,15 +54,6 @@ const session = (id: string, seriesId: string, approvedAt: string | null = null)
   updatedAt: "",
 });
 
-describe("all-in estimate", () => {
-  const lines = [{ text: "a".repeat(1000) }];
-
-  it("prices voice at about $0.08 per 1,000 characters", () => {
-    expect(estimateVoiceUsd(lines)).toBeCloseTo(0.08);
-    expect(estimateVoiceUsd([])).toBe(0);
-  });
-});
-
 describe("readyCheck", () => {
   const a = character("a");
   const b = character("b");
@@ -73,7 +65,7 @@ describe("readyCheck", () => {
       script("2", [line("c")]),
       script("3", [line("a"), line("b")]),
     ];
-    const check = readyCheck(scripts, ["1", "2", "3"], [a, b, noPhoto]);
+    const check = readyCheck(scripts, ["1", "2", "3"], [a, b, noPhoto], SERIES);
     expect(check.blocked.map((c) => c.script.id)).toEqual(["1", "2"]);
     expect(check.blocked[0]?.blockers).toEqual([{ kind: "unknown-speaker", speaker: "Bà Tư" }]);
     expect(check.blocked[1]?.blockers).toEqual([{ kind: "no-image", characterId: "c" }]);
@@ -81,7 +73,7 @@ describe("readyCheck", () => {
   });
 
   it("treats a deleted character as not in the library", () => {
-    const check = readyCheck([script("1", [line("gone")])], ["1"], [a]);
+    const check = readyCheck([script("1", [line("gone")])], ["1"], [a], SERIES);
     expect(check.blocked).toHaveLength(1);
   });
 
@@ -91,37 +83,23 @@ describe("readyCheck", () => {
       script("2", [line("a")], { status: "failed" }),
       script("3", [line("a")], { pinned: true }),
     ];
-    const check = readyCheck(scripts, ["1", "2", "3"], [a]);
+    const check = readyCheck(scripts, ["1", "2", "3"], [a], SERIES);
     expect(check.checks.map((c) => c.script.id)).toEqual(["3", "1"]);
-    expect(readyCheck(scripts, ["1"], [a]).checks).toHaveLength(1);
+    expect(readyCheck(scripts, ["1"], [a], SERIES).checks).toHaveLength(1);
   });
 
-  it("warns past the script's own target, never a fixed length", () => {
+  it("warns when a script runs long for its own target, else for the series target", () => {
     const long = Array.from({ length: 20 }, () => line("a", "một hai ba bốn năm sáu bảy tám"));
-    const seconds = estimateSeconds(long);
-    const check = readyCheck(
-      [
-        script("short-target", long, { brief: { kind: "topic", targetSec: seconds / 1.3 } }),
-        script("long-target", long, { brief: { kind: "topic", targetSec: seconds } }),
-        script("no-target", long, { brief: { kind: "topic" } }),
-      ],
-      ["short-target", "long-target", "no-target"],
-      [a],
-    );
+    const scripts = [
+      script("short-target", long, { brief: { kind: "topic", targetSec: 30 } }),
+      script("fitting-target", long, { brief: { kind: "topic", targetSec: 45 } }),
+      script("no-target", long, { brief: { kind: "topic" } }),
+    ];
+    const ids = ["short-target", "fitting-target", "no-target"];
+    const check = readyCheck(scripts, ids, [a], { seriesTargetSec: 45 });
     expect(check.checks.map((c) => c.overTarget)).toEqual([true, false, false]);
-  });
-
-  it("lists speaking characters once and flags a shared voice", () => {
-    const same = [character("a", { voiceId: "mai" }), character("b", { voiceId: "mai" })];
-    const check = readyCheck(
-      [script("1", [line("a"), line("b")]), script("2", [line("b")])],
-      ["1", "2"],
-      same,
-    );
-    expect(check.cast.map((m) => [m.character.id, m.voiceId, m.sharesVoice])).toEqual([
-      ["a", "mai", true],
-      ["b", "mai", true],
-    ]);
+    const shortSeries = readyCheck(scripts, ids, [a], { seriesTargetSec: 30 });
+    expect(shortSeries.checks.map((c) => c.overTarget)).toEqual([true, false, true]);
   });
 });
 
@@ -149,21 +127,46 @@ describe("commits and the first batch", () => {
   });
 });
 
+describe("characters who speak with the same voice", () => {
+  const speaking = script("1", [line("a"), line("b")]);
+
+  it("warns when two speakers' voice texts differ only in case and spacing", () => {
+    const cast = [
+      character("a", { voice: "Giọng nam trẻ, miền Bắc,  sáng" }),
+      character("b", { voice: " giọng Nam trẻ, miền bắc, sáng" }),
+      character("c", { voice: "Giọng nam trẻ, miền Bắc, sáng" }),
+    ];
+    const check = readyCheck([speaking], ["1"], cast, SERIES);
+    expect(check.sharedVoices.map((g) => g.map((c) => c.id))).toEqual([["a", "b"]]);
+    expect(check.toMake).toHaveLength(1);
+    expect(needsAttention(check)).toBe(true);
+  });
+
+  it("says nothing when the speakers' voices differ", () => {
+    const cast = [
+      character("a", { voice: "Giọng nam trẻ, miền Bắc, sáng" }),
+      character("b", { voice: "Giọng nữ trẻ, miền Bắc, sáng" }),
+    ];
+    expect(readyCheck([speaking], ["1"], cast, SERIES).sharedVoices).toEqual([]);
+  });
+});
+
 describe("needsAttention", () => {
-  const cast = [character("a", { voiceId: "mai" }), character("b", { voiceId: "tuan-anh" })];
+  const cast = [
+    character("a", { voice: "Giọng nữ trẻ, miền Bắc, tươi sáng" }),
+    character("b", { voice: "Giọng nam lớn tuổi, miền Bắc, trầm ấm" }),
+  ];
   const fine = script("1", [line("a"), line("b")], { brief: { kind: "topic" } });
 
   it("starts without a dialog when nothing needs fixing", () => {
-    expect(needsAttention(readyCheck([fine], ["1"], cast))).toBe(false);
+    expect(needsAttention(readyCheck([fine], ["1"], cast, SERIES))).toBe(false);
   });
 
   it("asks first for a blocked video or a warning", () => {
     const unknown = script("2", [line(null)]);
-    expect(needsAttention(readyCheck([fine, unknown], ["1", "2"], cast))).toBe(true);
-    const same = [character("a", { voiceId: "mai" }), character("b", { voiceId: "mai" })];
-    expect(needsAttention(readyCheck([fine], ["1"], same))).toBe(true);
+    expect(needsAttention(readyCheck([fine, unknown], ["1", "2"], cast, SERIES))).toBe(true);
     const long = script("3", fine.lines, { brief: { kind: "topic", targetSec: 1 } });
-    expect(needsAttention(readyCheck([long], ["3"], cast))).toBe(true);
+    expect(needsAttention(readyCheck([long], ["3"], cast, SERIES))).toBe(true);
   });
 
   it("warns, without blocking, about a series place whose photo shows people or packaging", () => {
@@ -174,11 +177,11 @@ describe("needsAttention", () => {
       images: [{ id: "p", file: "p.png", placeCheck: { people, packaging: null, checkedAt } }],
     });
     const assets = [...cast, place("yard", true), place("hall", false)];
-    const flagged = readyCheck([fine], ["1"], assets, { placeIds: ["yard", "hall"] });
+    const flagged = readyCheck([fine], ["1"], assets, { placeIds: ["yard", "hall"], ...SERIES });
     expect(flagged.places.map((p) => p.id)).toEqual(["yard"]);
     expect(flagged.toMake).toHaveLength(1);
     expect(needsAttention(flagged)).toBe(true);
-    const other = readyCheck([fine], ["1"], assets, { placeIds: ["hall"] });
+    const other = readyCheck([fine], ["1"], assets, { placeIds: ["hall"], ...SERIES });
     expect(other.places).toEqual([]);
     expect(needsAttention(other)).toBe(false);
   });

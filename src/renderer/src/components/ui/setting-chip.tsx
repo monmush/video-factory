@@ -8,7 +8,7 @@ function SettingChip({
   className,
   children: _children,
   ...props
-}: React.ComponentProps<"button"> & { label: string; value: React.ReactNode }) {
+}: React.ComponentProps<"button"> & { label?: string; value: React.ReactNode }) {
   return (
     <button
       type="button"
@@ -18,7 +18,7 @@ function SettingChip({
       )}
       {...props}
     >
-      <span className="shrink-0 text-muted-foreground">{label}</span>
+      {label && <span className="shrink-0 text-muted-foreground">{label}</span>}
       <span className="min-w-0 truncate font-medium text-foreground">{value}</span>
       <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
     </button>

@@ -1,6 +1,13 @@
 import { chmod, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
-import { type IpcChannel, type IpcContract, MAX_IMPORT_PHOTOS } from "../shared/ipc";
+import {
+  type IpcChannel,
+  type IpcContract,
+  MAX_IMPORT_PHOTOS,
+  mediaUrl,
+  type VoiceSampleAsk,
+} from "../shared/ipc";
+import { guessVoiceTraits } from "../shared/voices";
 import { estimateAngles, generateAngles } from "./angles";
 import { createAsset, createProductBatch, deleteAsset, refPaths, updateAsset } from "./assets";
 import { balances } from "./balances";
@@ -36,8 +43,10 @@ import { groupProducts } from "./product-grouping";
 import { createProfile, deleteProfile, listProfiles, switchProfile } from "./profiles";
 import { clearKey, providersInfo, setKey } from "./providers";
 import { childPath } from "./safe-path";
-import { nativeVoiceOn, readSettings, writeSettings } from "./settings";
+import { draftGuide } from "./series-guide";
+import { readSettings, writeSettings } from "./settings";
 import {
+  answerSeriesQuestion,
   approveSession,
   createSeries,
   createSession,
@@ -45,12 +54,13 @@ import {
   deleteSession,
   getWorkspace,
   removeNote,
-  setVideoLevel,
   updateNote,
   updateSeries,
   updateSession,
 } from "./store";
 import * as video from "./video/runner";
+import { makeSample, remakeSample, sampleFile, sampleVersion } from "./voice-maker";
+import { suggestVoices } from "./voice-suggestions";
 
 type Handler<C extends IpcChannel> = (
   ...args: IpcContract[C]["args"]
@@ -85,13 +95,6 @@ export function registerIpc() {
   handle("dev:create-profile", createProfile);
   handle("dev:switch-profile", switchProfile);
   handle("dev:delete-profile", deleteProfile);
-  handle("dev:native-voice", () => (devFeatures() ? nativeVoiceOn() : null));
-  handle("dev:set-native-voice", async (on) => {
-    if (!devFeatures()) return null;
-    await writeSettings({ nativeVoice: on === true });
-    await video.followVoiceMode();
-    return nativeVoiceOn();
-  });
   handle("theme:set", async (preference) => {
     if (!["system", "light", "dark"].includes(preference)) throw new Error("Unknown theme");
     nativeTheme.themeSource = preference;
@@ -100,14 +103,17 @@ export function registerIpc() {
   });
 
   handle("workspace:get", getWorkspace);
-  handle("series:create", createSeries);
+  handle("series:create", async (input) => {
+    const series = await createSeries(input);
+    void draftGuide(series.id).catch((e) => console.warn("[series] draft failed:", e.message));
+    return series;
+  });
+  handle("series:draft-guide", draftGuide);
+  handle("series:answer-guide", answerSeriesQuestion);
   handle("series:update", async (input) => {
     const series = await updateSeries(input);
-    if (input.mediaLevel !== undefined) {
-      const ws = await getWorkspace();
-      for (const s of ws.sessions.filter((x) => x.seriesId === series.id)) {
-        void video.followLevel(s.id).catch((e) => console.warn("[video] level:", e.message));
-      }
+    if (input.models !== undefined) {
+      void video.followModels(series.id).catch((e) => console.warn("[video] models:", e.message));
     }
     return series;
   });
@@ -133,11 +139,7 @@ export function registerIpc() {
     return session;
   });
   handle("session:update", async (input) => {
-    const session = await updateSession(input);
-    if (input.settings?.mediaLevel !== undefined) {
-      void video.followLevel(session.id).catch((e) => console.warn("[video] level:", e.message));
-    }
-    return session;
+    return updateSession(input);
   });
   handle("session:delete", async (id) => {
     const agentId = (await board.getBoard(id).catch(() => null))?.agent?.sessionId;
@@ -239,10 +241,13 @@ export function registerIpc() {
     return result.canceled ? [] : stageImages(result.filePaths);
   });
   handle("assets:stage-paths", stageImages);
+  const followVoices = () =>
+    void video.followVoices().catch((e) => console.warn("[video] voices:", e.message));
   const checkSaved = <T extends { id: string; kind: string }>(asset: T): T => {
     if (asset.kind === "environment") {
       void checkPlace(asset.id).catch((e) => console.warn("[place] check failed:", e));
     }
+    if (asset.kind === "character") followVoices();
     return asset;
   };
   handle("assets:create", async (input) => checkSaved(await createAsset(input)));
@@ -263,6 +268,26 @@ export function registerIpc() {
   });
   handle("assets:describe", async ({ kind, name, images }) =>
     describeAsset(kind, name, refPaths(await getWorkspace(), images)),
+  );
+
+  handle("voices:suggest", suggestVoices);
+  const sampleUrl = async (file: string) => {
+    const version = await sampleVersion(file);
+    return version === null ? null : mediaUrl.voice(file, version);
+  };
+  const madeSampleUrl = async (file: string) => {
+    followVoices();
+    const url = await sampleUrl(file);
+    if (!url) throw new Error("Không tìm thấy giọng vừa tạo");
+    return { url };
+  };
+  const characterOf = (ask: VoiceSampleAsk) => guessVoiceTraits(ask.name, ask.description);
+  handle("voices:sample", async (ask) => ({
+    url: await sampleUrl(sampleFile(ask.text, characterOf(ask))),
+  }));
+  handle("voices:make", async (ask) => madeSampleUrl(await makeSample(ask.text, characterOf(ask))));
+  handle("voices:remake", async (ask) =>
+    madeSampleUrl(await remakeSample(ask.text, characterOf(ask))),
   );
 
   handle("assets:check-place", ({ images }) => checkPlaceImages(images));
@@ -327,23 +352,14 @@ export function registerIpc() {
   handle("video:retry-shot", ({ sessionId, scriptId, shot }) =>
     video.retryShot(sessionId, scriptId, shot),
   );
-  handle("video:fix", ({ sessionId, scriptId, changes, version }) =>
-    video.fix(sessionId, scriptId, changes, undefined, version),
+  handle("video:fix", ({ sessionId, scriptId, changes }) =>
+    video.fix(sessionId, scriptId, changes),
   );
-  handle("video:restore", ({ sessionId, scriptId, version }) =>
-    video.restore(sessionId, scriptId, version),
-  );
-  handle("video:version", ({ sessionId, scriptId, action, version }) =>
-    video.version(sessionId, scriptId, action, version),
-  );
+  handle("video:restore", ({ sessionId, scriptId }) => video.restore(sessionId, scriptId));
+  handle("video:remake", ({ sessionId, scriptId }) => video.remake(sessionId, scriptId));
   handle("video:fresh-picture", ({ sessionId, scriptId, frameId, fresh }) =>
     video.setFreshPicture(sessionId, scriptId, frameId, fresh === true),
   );
-  handle("video:level", async ({ sessionId, scriptId, level }) => {
-    await setVideoLevel(sessionId, scriptId, level);
-    await video.followScript(sessionId, scriptId);
-    return null;
-  });
   handle("video:tempo", ({ sessionId, scriptId, tempo }) =>
     video.setTempo(sessionId, scriptId, tempo),
   );

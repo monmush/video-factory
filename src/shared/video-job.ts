@@ -1,5 +1,3 @@
-import { outputResolution } from "./batch-settings";
-import { SPEECH_RATE, syllables } from "./board";
 import type { Charge } from "./cost/charges";
 import type { FirstPass } from "./cost/estimate";
 import type { DirectionEntry } from "./direction";
@@ -10,10 +8,22 @@ import {
   type PlannedRoute,
   plannedShotSec,
   type Route,
-  SHORTEST_AUDIO_A_SPEAKING_SHOT_IS_GIVEN_SEC,
 } from "./live-plan";
-import { mediaLevel } from "./media-level";
+import {
+  frameMishapsFromCounters,
+  type Mishap,
+  type MishapKind,
+  mishapOfError,
+  mishapOfMessage,
+  segmentMishapsFromCounters,
+  shotMishapsFromCounters,
+  stillProblemMishaps,
+  withMishaps,
+  withMishapsFromCounters,
+} from "./mishaps";
+import { AUTO_MODELS, type JobModels, resolvedModels, type SeriesModels } from "./models";
 import { isNetworkError, MAX_BUSY_ANSWERS, providerBusy, retryDelayMs } from "./net-error";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 import type { RestageBasis } from "./restage";
 import type { Reworded, RewordedFrom } from "./reworded";
 import type { Framing, ShotKind, ShotPlan } from "./shot-plan";
@@ -30,36 +40,40 @@ import {
   soundWithdrawn,
   withAsks,
 } from "./sound";
-import { speakerInsteadOf } from "./speaker-switch";
 import {
+  cutOffAskedAgainLonger,
   type JobSegment,
   type SpeechBounds,
   segmentAttemptFailed,
   segmentCutOff,
+  segmentKept,
   segmentOpen,
+  segmentTriedAfresh,
   segmentWithdrawn,
   speechSegments,
   withSegments,
 } from "./speech";
-import type { VoiceMode } from "./speech-models";
 import type { Tempo } from "./tempo";
+import { type VideoModel, videoModel } from "./video-models";
 import {
-  fitResolution,
-  legacyModel,
-  modelForClip,
-  type VideoModel,
-  videoModel,
-} from "./video-models";
-
-export const MIN_SHOT_SEC = SHORTEST_AUDIO_A_SPEAKING_SHOT_IS_GIVEN_SEC;
-const SILENCE_KEPT_AROUND_EACH_LINE_SEC = 0.12;
+  type JobVoice,
+  voiceAttemptFailed,
+  voiceFailed,
+  voiceInFlight,
+  voiceReady,
+  voiceRetried,
+  voicesToRecord,
+  voiceToSend,
+  voiceWithdrawn,
+} from "./voice-step";
 
 export type ShotState = "planned" | "queued" | "rendering" | "done" | "failed" | "stopped";
 
 export const madeByProvider = (shot: Pick<JobShot, "kind" | "route" | "fallback" | "speech">) =>
   !shot.speech &&
+  !shot.fallback &&
   (shot.route
-    ? shot.route === "lip-sync" || (shot.route === "motion" && !shot.fallback)
+    ? shot.route === "motion" || shot.route === "lip-sync"
     : shot.kind === "speaker" || shot.kind === "listener");
 
 export interface JobShot {
@@ -84,9 +98,6 @@ export interface JobShot {
   start?: number;
   end?: number;
   state: ShotState;
-  audio?: string;
-  audioSec?: number;
-  model?: string;
   requestId?: string;
   submittedAt?: string;
   sending?: string;
@@ -100,9 +111,9 @@ export interface JobShot {
   failures: number;
   autoRedos?: number;
   rejectedClips?: number;
-  rejectedSpeakers?: string[];
   materialClip?: { id: string; file: string; seconds: number };
   reused?: string;
+  mishaps?: Mishap[];
   error?: string;
 }
 
@@ -141,6 +152,7 @@ export interface JobFrame {
   retried: boolean;
   redone?: boolean;
   check?: string;
+  mishaps?: Mishap[];
   error?: string;
 }
 
@@ -150,8 +162,10 @@ export type JobPhase = "plan" | "voice" | "frames" | "speech" | "shots" | "assem
 
 export type TimedPhase = Exclude<JobPhase, "done">;
 
+export const JOB_VERSION = 3;
+
 export interface VideoJob {
-  version: 2;
+  version: typeof JOB_VERSION;
   sessionId: string;
   scriptId: string;
   seriesId: string;
@@ -161,10 +175,15 @@ export interface VideoJob {
   updatedAt: string;
   title: string;
   lines: ScriptLine[];
+  pace?: number;
   plan?: ShotPlan;
   live?: LiveDirection;
-  level?: string;
-  voiceMode?: "native";
+  models?: JobModels;
+  modelsKept?: true;
+  voices?: JobVoice[];
+  voicesKept?: true;
+  dubbed?: true;
+  oldFiles?: true;
   segments?: JobSegment[];
   planning?: boolean;
   planningSteps?: string[];
@@ -180,10 +199,6 @@ export interface VideoJob {
   voiceChars?: number;
   lineSpans?: { start: number; end: number }[];
   useEnvironment: boolean;
-  model?: string;
-  ownModel?: string;
-  modelLocked?: boolean;
-  resolution?: string;
   frames: JobFrame[];
   shots: JobShot[];
   sounds?: JobSound[];
@@ -191,7 +206,7 @@ export interface VideoJob {
   assembleProgress?: number;
   final?: string;
   finalSec?: number;
-  tempo?: Exclude<Tempo, 1>;
+  tempo?: Tempo;
   error?: string;
   offline?: { since: string; tries: number; retryAt: string; error: string };
   phaseStartedAt?: string;
@@ -205,27 +220,7 @@ export interface VideoJob {
   charges?: Charge[];
   firstPass?: FirstPass;
   pastCostUsd?: number;
-  takes?: JobTake[];
-  chosen?: string;
-  takeOrder?: string[];
-  takeLedger?: TakeLedger;
   autoRedos?: number;
-}
-
-export interface TakeLedger {
-  shared: number;
-  spent: Record<string, number>;
-  since: number;
-  unknown?: boolean;
-}
-
-export interface JobTake {
-  model: string;
-  level?: string;
-  resolution?: string;
-  status: JobStatus;
-  cut: JobCut;
-  previous?: JobCut;
 }
 
 export interface JobCut {
@@ -239,12 +234,31 @@ export interface JobCut {
   shots: JobShot[];
   sounds?: JobSound[];
   segments?: JobSegment[];
+  voices?: JobVoice[];
   routes?: PlannedRoute[];
   final?: string;
   finalSec?: number;
   cutRev?: number;
   firstPass?: FirstPass;
 }
+
+export const cutOf = (job: Omit<VideoJob, "version">): JobCut => ({
+  plan: job.plan,
+  dialogue: job.dialogue,
+  dialogueSec: job.dialogueSec,
+  voiceCostUsd: job.voiceCostUsd,
+  voiceChars: job.voiceChars,
+  lineSpans: job.lineSpans,
+  frames: job.frames,
+  shots: job.shots,
+  ...(job.sounds ? { sounds: job.sounds } : {}),
+  ...(job.segments ? { segments: job.segments } : {}),
+  ...(job.live ? { routes: job.live.plan.routes } : {}),
+  final: job.final,
+  finalSec: job.finalSec,
+  cutRev: job.cutRev,
+  ...(job.firstPass ? { firstPass: job.firstPass } : {}),
+});
 
 export const revFile = (job: Pick<VideoJob, "rev">, base: string, ext: string) =>
   job.rev ? `${base}-r${job.rev}.${ext}` : `${base}.${ext}`;
@@ -258,13 +272,13 @@ export function newJob(input: {
   scriptId: string;
   title: string;
   lines: ScriptLine[];
+  pace?: number;
   useEnvironment: boolean;
-  model?: string;
-  resolution?: string;
+  models: JobModels;
   now: string;
 }): VideoJob {
   return {
-    version: 2,
+    version: JOB_VERSION,
     sessionId: input.sessionId,
     seriesId: input.seriesId,
     scriptId: input.scriptId,
@@ -274,9 +288,9 @@ export function newJob(input: {
     createdAt: input.now,
     updatedAt: input.now,
     lines: spokenLines(input.lines).map((l) => ({ ...l, text: l.text.trim() })),
+    ...(input.pace === undefined ? {} : { pace: input.pace }),
     useEnvironment: input.useEnvironment,
-    ...(input.model ? { model: videoModel(input.model).id } : {}),
-    ...(input.resolution ? { resolution: outputResolution(input.resolution) } : {}),
+    models: input.models,
     frames: [],
     shots: [],
   };
@@ -380,12 +394,24 @@ export const frameDeps = (job: Pick<VideoJob, "live">, frame: JobFrame): string[
     ? keyframeDeps(job.live, frame.keyframe).map((id) => `kf:${id}`)
     : [];
 
-export const isNative = (job: Pick<VideoJob, "voiceMode">) => job.voiceMode === "native";
+export const modelsOf = (job: Pick<VideoJob, "models">): JobModels => job.models ?? AUTO_MODELS;
 
-export const voiceModeOf = (job: Pick<VideoJob, "voiceMode">): VoiceMode =>
-  isNative(job) ? "native" : "dubbed";
+export const videoModelOf = (job: Pick<VideoJob, "models">): VideoModel =>
+  videoModel(modelsOf(job).video);
 
-export const levelSpeech = (job: Pick<VideoJob, "level">) => mediaLevel(job.level).speech;
+const sameModels = (a: JobModels | undefined, b: JobModels) =>
+  a?.image === b.image && a?.video === b.video;
+
+export function followSeriesModels(job: VideoJob, picked: SeriesModels | undefined): VideoJob {
+  if (job.modelsKept || job.dubbed) return job;
+  const models = resolvedModels(picked);
+  return sameModels(job.models, models) ? job : { ...job, models };
+}
+
+export function keepModels(job: VideoJob, picked: SeriesModels | undefined): VideoJob {
+  if (job.modelsKept || job.dubbed) return job;
+  return { ...followSeriesModels(job, picked), modelsKept: true };
+}
 
 function pictureOfSpeaker(job: VideoJob, characterId: string): string | null {
   const own = job.frames.find((f) => f.kind === "character" && f.characterId === characterId);
@@ -400,13 +426,13 @@ const withoutSpeechMark = (shot: JobShot): JobShot => {
 };
 
 export function withSpeech(job: VideoJob): VideoJob {
-  if (!isNative(job) || !job.plan) {
-    if (!job.segments && !job.shots.some((s) => s.speech)) return job;
-    const { segments: _, ...rest } = job;
-    return { ...rest, shots: job.shots.map(withoutSpeechMark) };
-  }
-  const planned = speechSegments(job.lines, job.shots, frameIdFor, (id) =>
-    pictureOfSpeaker(job, id),
+  if (!job.plan) return job;
+  const planned = speechSegments(
+    job.lines,
+    job.shots,
+    frameIdFor,
+    (id) => pictureOfSpeaker(job, id),
+    job.pace,
   );
   const segments = withSegments(job.segments, planned);
   return {
@@ -422,16 +448,15 @@ export function withSpeech(job: VideoJob): VideoJob {
 
 const segmentSent = (s: JobSegment) => Boolean(s.requestId || s.sending || s.state !== "queued");
 
-export const voiceModeSettled = (job: VideoJob) =>
-  job.status !== "idle" ||
-  Boolean(job.dialogue) ||
-  Boolean(job.charges?.length) ||
+export const speechSent = (job: Pick<VideoJob, "segments">) =>
   (job.segments ?? []).some(segmentSent);
 
-export function withVoiceMode(job: VideoJob, mode: VoiceMode): VideoJob {
-  if (voiceModeSettled(job) || voiceModeOf(job) === mode) return job;
-  const { voiceMode: _, ...rest } = job;
-  return withSpeech(mode === "native" ? { ...rest, voiceMode: "native" } : rest);
+export const jobPace = (job: Pick<VideoJob, "pace">) =>
+  job.pace ?? PACE_OF_VIDEOS_MADE_BEFORE_PACES;
+
+export function repaced(job: VideoJob, pace: number): VideoJob {
+  if (job.pace === undefined || job.pace === pace || speechSent(job)) return job;
+  return withSpeech({ ...job, pace });
 }
 
 export const segmentAnchor = (s: Pick<JobSegment, "speakerShot" | "shots">) =>
@@ -442,70 +467,20 @@ export const speechMade = (job: Pick<VideoJob, "segments">) =>
 
 export function jobPhase(job: VideoJob): JobPhase {
   if (!job.plan) return "plan";
-  if (isNative(job)) {
-    if (job.frames.some((f) => !f.file)) return "frames";
-    if (!speechMade(job)) return "speech";
-  }
-  if (
-    !job.dialogue ||
-    job.shots.some((s) => s.end === undefined || (madeByProvider(s) && !s.audio))
-  )
-    return "voice";
   if (job.frames.some((f) => !f.file)) return "frames";
+  if (!speechMade(job)) return "speech";
+  if (!job.dialogue || job.shots.some((s) => s.end === undefined)) return "voice";
   if (job.shots.some((s) => s.state !== "done")) return "shots";
   if (!job.final) return "assemble";
   return "done";
 }
 
-function shotSeconds(shot: JobShot): number {
-  if (shot.start !== undefined && shot.end !== undefined) return shot.end - shot.start;
-  return syllables([shot]) / SPEECH_RATE + 2 * SILENCE_KEPT_AROUND_EACH_LINE_SEC + (shot.hold ?? 0);
-}
-
 export const holdsSec = (shots: Pick<JobShot, "hold">[]) =>
   shots.reduce((n, s) => n + (s.hold ?? 0), 0);
 
-export function billedSeconds(shot: JobShot): number {
-  if (!madeByProvider(shot)) return 0;
-  if (shot.clipSec) return shot.clipSec;
-  if (shot.audioSec) return Math.max(MIN_SHOT_SEC, shot.audioSec);
-  return Math.max(MIN_SHOT_SEC, shotSeconds(shot));
-}
-
-export function shotModel(job: Pick<VideoJob, "model">, shot: JobShot): VideoModel {
-  if (shot.requestId || shot.state === "rendering" || shot.state === "done") {
-    return videoModel(shot.model);
-  }
-  const seconds = billedSeconds(shot);
-  return speakerInsteadOf(modelForClip(job.model, seconds), shot.rejectedSpeakers ?? [], seconds);
-}
-
-export function liveSeconds(shot: JobShot): number {
-  if (shot.route === "lip-sync" && shot.audioSec) return shot.audioSec;
+export function liveSeconds(job: Pick<VideoJob, "pace">, shot: JobShot): number {
   if (shot.start !== undefined && shot.end !== undefined) return shot.end - shot.start;
-  return plannedShotSec(shot);
-}
-
-export const modelLocked = (job: VideoJob) =>
-  Boolean(
-    job.modelLocked ||
-      job.takes?.length ||
-      job.final ||
-      job.previous ||
-      (job.segments ?? []).some(
-        (s) => s.requestId || s.state === "rendering" || s.state === "done",
-      ) ||
-      job.shots.some(
-        (s) =>
-          madeByProvider(s) &&
-          Boolean(s.requestId || s.model || s.state === "rendering" || s.state === "done"),
-      ),
-  );
-
-export function followBatch(job: VideoJob, batch: { model: string; resolution: string }): VideoJob {
-  if (modelLocked(job) || job.live) return job;
-  const model = videoModel(job.ownModel ?? batch.model).id;
-  return { ...job, model, resolution: fitResolution(model, batch.resolution) };
+  return plannedShotSec(shot, jobPace(job));
 }
 
 export const isGenerated = (job: Pick<VideoJob, "useEnvironment">, frame: JobFrame) =>
@@ -514,22 +489,20 @@ export const isGenerated = (job: Pick<VideoJob, "useEnvironment">, frame: JobFra
 const soundTotalSec = (job: VideoJob) =>
   job.dialogueSec !== undefined
     ? job.dialogueSec + holdsSec(job.shots)
-    : job.shots.reduce((n, s) => n + liveSeconds(s), 0);
+    : job.shots.reduce((n, s) => n + liveSeconds(job, s), 0);
 
 const timedShots = (job: VideoJob): CueShot[] => {
   let at = 0;
   return job.shots.map((s) => {
     const start = s.start ?? at;
-    const end = s.end ?? start + liveSeconds(s);
+    const end = s.end ?? start + liveSeconds(job, s);
     at = end;
     return { index: s.index, kind: s.kind, sound: s.sound, start, end };
   });
 };
 
 export const jobSoundCues = (job: VideoJob): SoundCue[] =>
-  mediaLevel(job.level).sound && job.plan
-    ? soundCues(job.plan.ambience, timedShots(job), soundTotalSec(job))
-    : [];
+  job.plan ? soundCues(job.plan.ambience, timedShots(job), soundTotalSec(job)) : [];
 
 export const jobSoundSource = (job: Pick<VideoJob, "soundSource">) => soundSource(job.soundSource);
 
@@ -542,8 +515,7 @@ export function withJobSounds(job: VideoJob): VideoJob {
 
 const framesToMake = (job: VideoJob) => job.frames.filter((f) => !f.file && isGenerated(job, f));
 
-const previewStillToMake = (job: VideoJob) =>
-  (!isNative(job) && !job.dialogue) || job.frames.some((f) => !f.file);
+const previewStillToMake = (job: VideoJob) => job.frames.some((f) => !f.file);
 
 export const stopsForPreview = (job: VideoJob) =>
   Boolean(
@@ -553,21 +525,32 @@ export const stopsForPreview = (job: VideoJob) =>
       job.status !== "review" &&
       previewStillToMake(job) &&
       job.shots.every((s) => s.state === "queued" || s.state === "planned") &&
-      !(job.segments ?? []).some(segmentSent),
+      !speechSent(job),
   );
 
 export const doneShots = (job: VideoJob) => job.shots.filter((s) => s.state === "done").length;
 
-function legacyJobModel<T extends Pick<VideoJob, "model" | "resolution">>(job: T): T {
-  const legacy = legacyModel(job.model);
-  return legacy
-    ? { ...job, model: legacy.id, resolution: job.resolution ?? legacy.resolution }
-    : job;
+type SavedJob = Omit<VideoJob, "version"> & {
+  version: number;
+  voiceMode?: string;
+  level?: string;
+  model?: string;
+  ownModel?: string;
+  modelLocked?: boolean;
+  resolution?: string;
+  takes?: SavedTake[];
+  chosen?: string;
+};
+
+interface SavedTake {
+  model?: string;
+  level?: string;
+  status?: JobStatus;
+  cut: JobCut;
+  previous?: JobCut;
 }
 
-export function migrateJob(raw: unknown): VideoJob {
-  const job = legacyJobModel(raw as VideoJob & { version: number });
-  if (job.version === 2) return job;
+function fromVersion1(job: SavedJob): SavedJob {
   type OldShot = Omit<JobShot, "kind" | "framing" | "visual" | "productId">;
   type OldFrame = Omit<JobFrame, "id" | "kind">;
   const oldShots = job.shots as unknown as OldShot[];
@@ -625,6 +608,133 @@ export function migrateJob(raw: unknown): VideoJob {
   };
 }
 
+const SAME_LEVEL: Record<string, string> = {
+  fastest: "fast",
+  detailed: "balanced",
+  "most-detailed": "balanced",
+};
+
+const versionOf = (made: { level?: string; model?: string }) =>
+  made.level ? (SAME_LEVEL[made.level] ?? made.level) : (made.model ?? "");
+
+const LEVELS_THAT_SPOKE_WITH_MINIMAX = ["fast", "fastest"];
+
+function withoutOldModelFields(job: SavedJob): VideoJob {
+  const {
+    voiceMode: _mode,
+    level: _level,
+    model: _model,
+    ownModel: _own,
+    modelLocked: _locked,
+    resolution: _size,
+    ...rest
+  } = job;
+  return { ...rest, version: JOB_VERSION };
+}
+
+const startedToPay = (job: Pick<VideoJob, "status" | "dialogue" | "charges">) =>
+  job.status !== "idle" || Boolean(job.dialogue) || Boolean(job.charges?.length);
+
+function nativeJob(job: SavedJob): VideoJob {
+  const video = LEVELS_THAT_SPOKE_WITH_MINIMAX.includes(job.level ?? "")
+    ? "minimax-h3-max"
+    : AUTO_MODELS.video;
+  const kept = withoutOldModelFields(job);
+  return {
+    ...kept,
+    models: { image: AUTO_MODELS.image, video },
+    ...(startedToPay(kept) ? { modelsKept: true as const } : {}),
+  };
+}
+
+function withVersionInUse(job: SavedJob): SavedJob {
+  const working = versionOf(job);
+  const take =
+    job.chosen && job.chosen !== working
+      ? job.takes?.find((t) => versionOf(t) === job.chosen && t.cut.final)
+      : undefined;
+  if (!take || (job.live && !take.cut.routes)) return job;
+  const { routes, ...fields } = take.cut;
+  const parked: SavedTake = {
+    ...(job.model ? { model: job.model } : {}),
+    ...(job.level ? { level: job.level } : {}),
+    status: job.status,
+    cut: cutOf(job),
+    ...(job.previous ? { previous: job.previous } : {}),
+  };
+  const { chosen: _, ...rest } = job;
+  return {
+    ...rest,
+    ...fields,
+    ...(take.model ? { model: take.model } : {}),
+    ...(take.level ? { level: take.level } : {}),
+    status: take.status ?? "done",
+    previous: take.previous,
+    ...(routes && job.live ? { live: { ...job.live, plan: { ...job.live.plan, routes } } } : {}),
+    takes: [...(job.takes ?? []).filter((t) => t !== take), parked],
+  };
+}
+
+const dubbedVideo = (job: SavedJob): VideoJob => ({
+  ...withoutOldModelFields(withVersionInUse(job)),
+  dubbed: true,
+});
+
+function freshVideo(job: SavedJob): VideoJob {
+  const fresh = newJob({
+    sessionId: job.sessionId,
+    seriesId: job.seriesId,
+    scriptId: job.scriptId,
+    title: job.title,
+    lines: job.lines,
+    pace: job.pace,
+    useEnvironment: job.useEnvironment,
+    models: AUTO_MODELS,
+    now: job.updatedAt,
+  });
+  return {
+    ...fresh,
+    status: "idle",
+    ...(job.direction?.length ? { direction: job.direction } : {}),
+    ...(job.productIds ? { productIds: job.productIds } : {}),
+    rev: (job.rev ?? 0) + 1,
+    oldFiles: true,
+  };
+}
+
+function migratedVersion(saved: SavedJob): VideoJob {
+  if (saved.version === JOB_VERSION) return saved as VideoJob;
+  const job = saved.version === 2 ? saved : fromVersion1(saved);
+  if (job.voiceMode === "native") return nativeJob(job);
+  return job.final ? dubbedVideo(job) : freshVideo(job);
+}
+
+export const shotModel = (job: Pick<VideoJob, "models" | "dubbed">): string | undefined =>
+  job.dubbed ? undefined : modelsOf(job).video;
+
+function withMishapsOfOldJobs(job: VideoJob): VideoJob {
+  const at = job.updatedAt;
+  return {
+    ...job,
+    frames: job.frames.map((f) =>
+      withMishapsFromCounters(f, (x) => frameMishapsFromCounters(x, at, modelsOf(job).image)),
+    ),
+    shots: job.shots.map((s) =>
+      withMishapsFromCounters(s, (x) => shotMishapsFromCounters(x, at, shotModel(job))),
+    ),
+    ...(job.segments
+      ? {
+          segments: job.segments.map((s) =>
+            withMishapsFromCounters(s, (x) => segmentMishapsFromCounters(x, at)),
+          ),
+        }
+      : {}),
+  };
+}
+
+export const migrateJob = (raw: unknown): VideoJob =>
+  withMishapsOfOldJobs(migratedVersion(raw as SavedJob));
+
 export function stopJob(job: VideoJob, now: string): VideoJob {
   if (job.status !== "running" && job.status !== "waiting") return job;
   return {
@@ -667,12 +777,15 @@ export function resumeJob(job: VideoJob, now: string): VideoJob {
     ...(job.segments
       ? {
           segments: job.segments.map((s) =>
-            s.state === "stopped" || s.state === "failed"
-              ? { ...s, state: "queued" as const, retried: false, error: undefined }
-              : s,
+            s.state === "failed"
+              ? segmentTriedAfresh(s)
+              : s.state === "stopped"
+                ? { ...s, state: "queued" as const, retried: false, error: undefined }
+                : s,
           ),
         }
       : {}),
+    ...(job.voices ? { voices: job.voices.map(voiceRetried) } : {}),
   };
 }
 
@@ -689,9 +802,9 @@ export function segmentHeard(
 ): VideoJob {
   const sent = job.segments?.find((s) => s.id === id);
   if (sent?.state !== "rendering" || sent.resultUrl !== resultUrl) return job;
-  const next: JobSegment = heard.cutOff
-    ? segmentCutOff(sent, levelSpeech(job))
-    : { ...sent, state: "done", clip: heard.clip, clipSec: heard.clipSec, speech: heard.speech };
+  const next = cutOffAskedAgainLonger(sent, heard.cutOff)
+    ? segmentCutOff(sent, videoModelOf(job))
+    : segmentKept(sent, heard);
   return { ...job, segments: job.segments?.map((s) => (s.id === id ? next : s)) };
 }
 
@@ -711,7 +824,7 @@ export function retryShot(job: VideoJob, index: number, now: string): VideoJob {
     ...job,
     shots,
     ...(segment
-      ? { segments: job.segments?.map((s) => (s.id === segment.id ? { ...s, ...again } : s)) }
+      ? { segments: job.segments?.map((s) => (s.id === segment.id ? segmentTriedAfresh(s) : s)) }
       : {}),
     status: active ? job.status : "waiting",
     error: undefined,
@@ -744,18 +857,27 @@ export function shotAttemptFailed(
   return { ...next, state: "queued", fallback: true, retried: false, error: undefined };
 }
 
-export const hasInput = (s: JobShot) =>
-  s.end !== undefined && (!madeByProvider(s) || Boolean(s.audio));
+function shotFailedWithMishap(
+  job: VideoJob,
+  shot: JobShot,
+  message: string,
+  kind: MishapKind,
+  at: string,
+): JobShot {
+  const next = shotAttemptFailed(job, shot, message);
+  const kinds: MishapKind[] = next.fallback && !shot.fallback ? [kind, "still-instead"] : [kind];
+  return withMishaps(next, kinds, at, shotModel(job));
+}
+
+export const hasInput = (s: JobShot) => s.end !== undefined;
 
 export interface ShotInput {
   start: number;
   end: number;
-  audio?: string;
-  audioSec?: number;
   cutFrom?: number;
 }
 
-export function withShotAudio(job: VideoJob, inputs: ShotInput[]): VideoJob {
+export function withShotTimes(job: VideoJob, inputs: ShotInput[]): VideoJob {
   return {
     ...job,
     shots: job.shots.map((s, i) => {
@@ -769,7 +891,7 @@ export function withShotAudio(job: VideoJob, inputs: ShotInput[]): VideoJob {
 
 export type JobAction =
   | { kind: "plan" }
-  | { kind: "voice" }
+  | { kind: "timeline" }
   | { kind: "frame"; frame: string }
   | { kind: "poll-frame"; frame: string }
   | { kind: "submit-shot"; index: number }
@@ -778,6 +900,9 @@ export type JobAction =
   | { kind: "poll-sound"; sound: string }
   | { kind: "submit-segment"; segment: string }
   | { kind: "poll-segment"; segment: string }
+  | { kind: "voices" }
+  | { kind: "submit-voice"; voice: string }
+  | { kind: "poll-voice"; voice: string }
   | { kind: "assemble" };
 
 export const actionKey = (a: JobAction) =>
@@ -789,7 +914,9 @@ export const actionKey = (a: JobAction) =>
         ? `sound:${a.sound}`
         : a.kind === "submit-segment" || a.kind === "poll-segment"
           ? `segment:${a.segment}`
-          : a.kind;
+          : a.kind === "submit-voice" || a.kind === "poll-voice"
+            ? `voice:${a.voice}`
+            : a.kind;
 
 const paidRequestsInFlight = (job: VideoJob): JobAction[] => [
   ...job.frames
@@ -804,6 +931,9 @@ const paidRequestsInFlight = (job: VideoJob): JobAction[] => [
   ...(job.segments ?? [])
     .filter((s) => s.state === "rendering" && s.requestId)
     .map((s): JobAction => ({ kind: "poll-segment", segment: s.id })),
+  ...(job.voices ?? [])
+    .filter(voiceInFlight)
+    .map((v): JobAction => ({ kind: "poll-voice", voice: v.characterId })),
 ];
 
 const keyframeSourcesMade = (job: VideoJob, f: JobFrame) =>
@@ -862,15 +992,28 @@ const segmentsToSubmit = (job: VideoJob): JobAction[] =>
     : (job.segments ?? [])
         .filter((s) => s.state === "queued" && !s.requestId)
         .filter((s) => Boolean(job.frames.find((f) => f.id === s.frame)?.file))
+        .filter((s) => voiceReady(job, s.characterId))
         .map((s): JobAction => ({ kind: "submit-segment", segment: s.id }));
+
+const voicesToMake = (job: VideoJob): JobAction[] =>
+  voicesToRecord(job)
+    ? [{ kind: "voices" }]
+    : (job.voices ?? [])
+        .filter(voiceToSend)
+        .map((v): JobAction => ({ kind: "submit-voice", voice: v.characterId }));
 
 function stepsForPhase(job: VideoJob, busy: ReadonlySet<string>): JobAction[] {
   const phase = jobPhase(job);
   if (phase === "plan") return job.planning ? [] : [{ kind: "plan" }];
-  if (phase === "voice") return [{ kind: "voice" }];
-  if (phase === "speech") return segmentsToSubmit(job);
+  if (phase === "voice") return [{ kind: "timeline" }];
+  if (phase === "speech") return [...voicesToMake(job), ...segmentsToSubmit(job)];
   if (phase === "frames")
-    return [...framesToStart(job), ...segmentsToSubmit(job), ...soundsToSubmit(job)];
+    return [
+      ...framesToStart(job),
+      ...voicesToMake(job),
+      ...segmentsToSubmit(job),
+      ...soundsToSubmit(job),
+    ];
   if (phase === "shots") return [...shotsToSubmit(job, busy), ...soundsToSubmit(job)];
   if (phase === "assemble") {
     return soundsSettled(job.sounds) ? [{ kind: "assemble" }] : soundsToSubmit(job);
@@ -886,11 +1029,7 @@ export function nextActions(job: VideoJob, busy: ReadonlySet<string>): JobAction
 }
 
 const testVideoReachedItsPause = (job: VideoJob) =>
-  job.pause === true &&
-  !job.reviewed &&
-  (isNative(job)
-    ? jobPhase(job) === "speech" && !(job.segments ?? []).some(segmentSent)
-    : jobPhase(job) === "shots" && job.shots.every((s) => s.state === "queued"));
+  job.pause === true && !job.reviewed && jobPhase(job) === "speech" && !speechSent(job);
 
 export function settle(job: VideoJob): VideoJob {
   if (job.final && job.status !== "done")
@@ -899,6 +1038,8 @@ export function settle(job: VideoJob): VideoJob {
   if (testVideoReachedItsPause(job)) return { ...job, status: "review" };
   const failedFrame = job.frames.find((f) => !f.file && !f.requestId && f.error);
   if (failedFrame) return { ...job, status: "failed", error: failedFrame.error };
+  const failedVoice = job.voices?.find(voiceFailed);
+  if (failedVoice) return { ...job, status: "failed", error: failedVoice.error };
   const failed = job.shots.filter((s) => s.state === "failed");
   const failedSpeech = (job.segments ?? []).filter((s) => s.state === "failed");
   const open =
@@ -913,7 +1054,8 @@ export const resumesOnStart = (job: VideoJob) =>
   job.status === "waiting" ||
   job.shots.some((s) => s.state === "rendering" && s.requestId) ||
   job.frames.some((f) => !f.file && f.requestId) ||
-  (job.segments ?? []).some((s) => s.state === "rendering" && s.requestId);
+  (job.segments ?? []).some((s) => s.state === "rendering" && s.requestId) ||
+  (job.voices ?? []).some(voiceInFlight);
 
 export function wentOffline(job: VideoJob, message: string, nowMs: number): VideoJob {
   const failedInTheSameRoundAsAnotherStep = waitingForNetwork(job, nowMs);
@@ -930,8 +1072,13 @@ export function wentOffline(job: VideoJob, message: string, nowMs: number): Vide
   };
 }
 
-export const stillToDrawAgain = (frame: JobFrame, problem: string): JobFrame => ({
-  ...frame,
+export const stillToDrawAgain = (
+  frame: JobFrame,
+  problem: string,
+  model?: string,
+  at = new Date().toISOString(),
+): JobFrame => ({
+  ...withMishaps(frame, stillProblemMishaps(problem), at, model),
   redone: true,
   check: problem,
   requestId: undefined,
@@ -964,18 +1111,45 @@ function frameAttemptFailed(
   return { ...reset, error: message };
 }
 
+function frameFailedWithMishap(
+  job: VideoJob,
+  frame: JobFrame,
+  message: string,
+  kind: MishapKind,
+  at: string,
+): JobFrame {
+  const next = frameAttemptFailed(job, frame, message);
+  const kinds: MishapKind[] = next.fallback && !frame.fallback ? [kind, "simpler"] : [kind];
+  return withMishaps(next, kinds, at, modelsOf(job).image);
+}
+
 export type JobStep =
   | { frame: string }
   | { shot: number }
   | { sound: string }
-  | { segment: string };
+  | { segment: string }
+  | { voice: string };
 
-export function stepReportedFailure(job: VideoJob, step: JobStep, message: string): VideoJob {
+const withVoice = (job: VideoJob, id: string, change: (v: JobVoice) => JobVoice): VideoJob => ({
+  ...job,
+  voices: job.voices?.map((v) => (v.characterId === id ? change(v) : v)),
+});
+
+export function stepReportedFailure(
+  job: VideoJob,
+  step: JobStep,
+  message: string,
+  kind: MishapKind = mishapOfMessage(message),
+  at = new Date().toISOString(),
+): VideoJob {
+  if ("voice" in step) return withVoice(job, step.voice, (v) => voiceAttemptFailed(v, message));
   if ("segment" in step) {
     return {
       ...job,
       segments: job.segments?.map((s) =>
-        s.id === step.segment ? segmentAttemptFailed(s, message) : s,
+        s.id === step.segment
+          ? withMishaps(segmentAttemptFailed(s, message), [kind], at, s.model)
+          : s,
       ),
     };
   }
@@ -991,13 +1165,15 @@ export function stepReportedFailure(job: VideoJob, step: JobStep, message: strin
     return {
       ...job,
       frames: job.frames.map((f) =>
-        f.id === step.frame ? frameAttemptFailed(job, f, message) : f,
+        f.id === step.frame ? frameFailedWithMishap(job, f, message, kind, at) : f,
       ),
     };
   }
   return {
     ...job,
-    shots: job.shots.map((s) => (s.index === step.shot ? shotAttemptFailed(job, s, message) : s)),
+    shots: job.shots.map((s) =>
+      s.index === step.shot ? shotFailedWithMishap(job, s, message, kind, at) : s,
+    ),
   };
 }
 
@@ -1015,6 +1191,9 @@ const notSent = {
 
 export function requestWithdrawn(job: VideoJob, step: JobStep, requestId: string): VideoJob {
   const state = job.status === "running" || job.status === "waiting" ? "queued" : "stopped";
+  if ("voice" in step) {
+    return withVoice(job, step.voice, (v) => (stillAwaits(v, requestId) ? voiceWithdrawn(v) : v));
+  }
   if ("segment" in step) {
     return {
       ...job,
@@ -1049,40 +1228,46 @@ export function requestWithdrawn(job: VideoJob, step: JobStep, requestId: string
 
 export function stepThrew(job: VideoJob, step: JobStep, error: unknown, nowMs: number): VideoJob {
   const message = error instanceof Error ? error.message : String(error);
-  if ("sound" in step) return stepReportedFailure(job, step, message);
+  const failed = () =>
+    stepReportedFailure(job, step, message, mishapOfError(error), new Date(nowMs).toISOString());
+  if ("sound" in step) return failed();
   if (providerBusy(error)) {
     const answers = busyAnswersOf(job, step) + 1;
-    if (answers >= MAX_BUSY_ANSWERS) return stepReportedFailure(job, step, message);
+    if (answers >= MAX_BUSY_ANSWERS) return failed();
     return wentOffline(withBusyAnswers(job, step, answers), message, nowMs);
   }
   if (isNetworkError(error)) return wentOffline(job, message, nowMs);
-  return stepReportedFailure(job, step, message);
+  return failed();
 }
 
 type PaidStep = Exclude<JobStep, { sound: string }>;
 
 const busyAnswersOf = (job: VideoJob, step: PaidStep) =>
-  ("segment" in step
-    ? job.segments?.find((s) => s.id === step.segment)?.busyAnswers
-    : "frame" in step
-      ? job.frames.find((f) => f.id === step.frame)?.busyAnswers
-      : job.shots.find((s) => s.index === step.shot)?.busyAnswers) ?? 0;
+  ("voice" in step
+    ? job.voices?.find((v) => v.characterId === step.voice)?.busyAnswers
+    : "segment" in step
+      ? job.segments?.find((s) => s.id === step.segment)?.busyAnswers
+      : "frame" in step
+        ? job.frames.find((f) => f.id === step.frame)?.busyAnswers
+        : job.shots.find((s) => s.index === step.shot)?.busyAnswers) ?? 0;
 
 const withBusyAnswers = (job: VideoJob, step: PaidStep, busyAnswers: number): VideoJob =>
-  "segment" in step
-    ? {
-        ...job,
-        segments: job.segments?.map((s) => (s.id === step.segment ? { ...s, busyAnswers } : s)),
-      }
-    : "frame" in step
+  "voice" in step
+    ? withVoice(job, step.voice, (v) => ({ ...v, busyAnswers }))
+    : "segment" in step
       ? {
           ...job,
-          frames: job.frames.map((f) => (f.id === step.frame ? { ...f, busyAnswers } : f)),
+          segments: job.segments?.map((s) => (s.id === step.segment ? { ...s, busyAnswers } : s)),
         }
-      : {
-          ...job,
-          shots: job.shots.map((s) => (s.index === step.shot ? { ...s, busyAnswers } : s)),
-        };
+      : "frame" in step
+        ? {
+            ...job,
+            frames: job.frames.map((f) => (f.id === step.frame ? { ...f, busyAnswers } : f)),
+          }
+        : {
+            ...job,
+            shots: job.shots.map((s) => (s.index === step.shot ? { ...s, busyAnswers } : s)),
+          };
 
 export function backOnline(job: VideoJob): VideoJob {
   if (!job.offline) return job;
@@ -1109,7 +1294,6 @@ export function pickNext(jobs: VideoJob[]): VideoJob | null {
 
 export interface StepAverages {
   plan: number;
-  voice: number;
   frame: number;
   shot: number;
   assemble: number;
@@ -1124,9 +1308,7 @@ export function remainingSec(job: VideoJob, avg: StepAverages, nowMs: number): n
   const notDone = job.shots.filter((s) => s.state !== "done");
   const oneRoundForAllShots = (n: number) => (n > 0 ? avg.shot : 0);
   const wideStillThenTheRestTogether = 2 * avg.frame;
-  const native = isNative(job);
-  const voice = native ? 0 : avg.voice;
-  const speechRound = native && !speechMade(job) ? avg.shot : 0;
+  const speechRound = speechMade(job) ? 0 : avg.shot;
   const longestOf = (sent: { submittedAt?: string }[]) =>
     sent.length
       ? Math.max(
@@ -1139,13 +1321,10 @@ export function remainingSec(job: VideoJob, avg: StepAverages, nowMs: number): n
   if (phase === "plan") {
     left += Math.max(0, avg.plan - since(job.phaseStartedAt));
     left +=
-      voice +
       speechRound +
       (framesToMake(job).length || job.useEnvironment ? wideStillThenTheRestTogether : 0);
     left += oneRoundForAllShots(Math.max(notDone.length, job.lines.length));
   } else if (phase === "voice") {
-    left += Math.max(0, voice - since(job.phaseStartedAt));
-    left += framesToMake(job).length ? wideStillThenTheRestTogether : 0;
     left += oneRoundForAllShots(notDone.length);
   } else if (phase === "frames") {
     left += Math.max(0, avg.frame - since(job.phaseStartedAt)) + speechRound;
@@ -1174,19 +1353,3 @@ export function remainingSec(job: VideoJob, avg: StepAverages, nowMs: number): n
 
 export const nextAverage = (current: number, measured: number) =>
   current + (measured - current) / MEASUREMENTS_IN_RUNNING_AVERAGE;
-
-export function lineSpans(
-  segments: { dialogueInputIndex: number; startTimeSeconds: number; endTimeSeconds: number }[],
-  lineCount: number,
-): { start: number; end: number }[] | null {
-  const spans: { start: number; end: number }[] = [];
-  for (let i = 0; i < lineCount; i++) {
-    const mine = segments.filter((s) => s.dialogueInputIndex === i);
-    if (!mine.length) return null;
-    spans.push({
-      start: Math.min(...mine.map((s) => s.startTimeSeconds)),
-      end: Math.max(...mine.map((s) => s.endTimeSeconds)),
-    });
-  }
-  return spans;
-}

@@ -2,9 +2,9 @@ import type { JobCut, VideoJob } from "../video-job";
 import type { PaidItem } from "./charges";
 import type { StepEstimate } from "./estimate";
 import { speechCost } from "./speech-cost";
+import { voiceCost } from "./voice-cost";
 
 export interface CostPart {
-  replacesVoiceTrack: (job: Pick<VideoJob, "voiceMode">) => boolean;
   inUse: (cut: JobCut) => PaidItem[];
   steps: (job: VideoJob) => StepEstimate[];
   toMakeUsd: (job: VideoJob) => number;
@@ -12,4 +12,4 @@ export interface CostPart {
   stepLabel: (step: string) => string | null;
 }
 
-export const COST_PARTS: readonly CostPart[] = [speechCost];
+export const COST_PARTS: readonly CostPart[] = [voiceCost, speechCost];

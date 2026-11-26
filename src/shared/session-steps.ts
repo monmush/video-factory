@@ -3,10 +3,9 @@ import type { Script, Session } from "./ipc";
 import { committedIds, finishedScripts } from "./ready-check";
 import { needsStaging, stageable, stagingStatus } from "./staging-status";
 import type { VideoJob } from "./video-job";
-import { chosenView } from "./video-takes";
 
 export const hasVideo = (job: VideoJob | null | undefined) =>
-  Boolean(job && (job.status === "done" || chosenView(job).final));
+  Boolean(job && (job.status === "done" || job.final));
 
 export function jobNeedsYou(job: VideoJob | null | undefined): boolean {
   if (!job) return true;
@@ -32,7 +31,6 @@ export function sessionSteps(
   session: Session,
   scripts: Script[],
   jobs: ReadonlyMap<string, VideoJob> | null,
-  levelOf: (scriptId: string) => string,
 ): SessionSteps {
   const committed = committedIds(session, scripts);
   const finished = finishedScripts(scripts);
@@ -42,7 +40,7 @@ export function sessionSteps(
   const waiting = sentJobs.filter((j) => !hasVideo(j) && jobNeedsYou(j)).length;
   const onBoard = boardOrder(scripts).filter((s) => s.status !== "failed");
   const statuses = jobs
-    ? finished.filter(stageable).map((s) => stagingStatus(jobs.get(s.id), s, levelOf(s.id)))
+    ? finished.filter(stageable).map((s) => stagingStatus(jobs.get(s.id), s))
     : [];
   const unstarted = statuses.filter((status) => status !== "started");
   const toStage = unstarted.filter(needsStaging).length;

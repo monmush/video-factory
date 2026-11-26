@@ -1,4 +1,4 @@
-import { MAX_HOLDS_SEC, SPEECH_RATE, syllables } from "./board";
+import { MAX_HOLDS_SEC, syllables } from "./board";
 import { withoutCues } from "./cues";
 import type { ScriptLine } from "./ipc";
 import { cleanSoundText } from "./sound";
@@ -512,28 +512,6 @@ export const heldSpans = <T extends { start: number; end: number } | undefined>(
       : span,
   );
 
-export function heldTiming(
-  timing: { alignment: Alignment; lineChars: LineChars[] },
-  offsets: number[],
-): { alignment: Alignment; lineChars: LineChars[] } {
-  const shift = timing.alignment.characters.map(() => 0);
-  timing.lineChars.forEach((chars, line) => {
-    for (let c = chars.start; c < chars.end; c++) shift[c] = offsets[line] ?? 0;
-  });
-  return {
-    lineChars: timing.lineChars,
-    alignment: {
-      characters: timing.alignment.characters,
-      characterStartTimesSeconds: timing.alignment.characterStartTimesSeconds.map(
-        (t, c) => t + (shift[c] ?? 0),
-      ),
-      characterEndTimesSeconds: timing.alignment.characterEndTimesSeconds.map(
-        (t, c) => t + (shift[c] ?? 0),
-      ),
-    },
-  };
-}
-
-export const estimatePartSec = (text: string) => syllables([{ text }]) / SPEECH_RATE;
+export const estimatePartSec = (text: string, pace: number) => syllables([{ text }]) / pace;
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;

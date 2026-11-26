@@ -31,7 +31,7 @@ export function toLimits(
 
 const run = promisify(execFile);
 
-const APP_KEYS_CLAUDE_NEVER_NEEDS = ["FAL_KEY", "FAL_BILLING_KEY", "ELEVENLABS_API_KEY"];
+const APP_KEYS_CLAUDE_NEVER_NEEDS = ["FAL_KEY", "FAL_BILLING_KEY"];
 
 const ANSWER_ONLY_NO_TOOLS_MCP_OR_SETTINGS = [
   "--tools",

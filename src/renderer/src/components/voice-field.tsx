@@ -1,125 +1,252 @@
-import { ACCENTS, VOICES, type VoiceId, voiceById } from "@shared/voices";
-import { ChevronDown, Play, Square } from "lucide-react";
-import { useVoiceSample } from "@/lib/voice-samples";
+import { VOICE_SAMPLE_USD } from "@shared/cost/rates";
+import { estimateText } from "@shared/cost/table";
+import type { VoiceSuggestion } from "@shared/ipc";
+import { cleanVoiceText, guessVoiceTraits, MAX_VOICE_CHARS, spokenTraits } from "@shared/voices";
+import { LoaderCircle, Play, Square } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
 import { Button } from "./ui/button";
-import {
-  Menu,
-  MenuGroup,
-  MenuGroupLabel,
-  MenuPopup,
-  MenuRadioGroup,
-  MenuRadioItem,
-  MenuTrigger,
-} from "./ui/menu";
+import { ButtonPrice, HoldButton } from "./ui/hold-button";
+import { Textarea } from "./ui/textarea";
 
-const GROUPS = [
-  { label: "Nam", voices: VOICES.filter((v) => v.gender === "male") },
-  { label: "Nữ", voices: VOICES.filter((v) => v.gender === "female") },
-];
-
-const AVAILABLE_ACCENT = "north";
+const SUGGEST_AFTER_MS = 1000;
+const SAMPLE_CHECK_AFTER_MS = 250;
 
 export function VoiceField({
   value,
-  onChange,
+  shown,
+  fallback,
+  name,
+  description,
   disabled,
+  onChange,
 }: {
-  value: VoiceId;
-  onChange: (id: VoiceId) => void;
+  value: string;
+  shown: string;
+  fallback: string;
+  name: string;
+  description: string;
   disabled?: boolean;
+  onChange: (typed: string | null) => void;
 }) {
-  const voice = voiceById(value) ?? VOICES[0];
-  const sample = useVoiceSample();
-  if (!voice) return null;
-
-  const pick = (id: VoiceId) => {
-    if (sample.playing && sample.playing !== id) sample.stop();
-    onChange(id);
-  };
-
-  const playButton = (id: VoiceId, name: string, size: "icon" | "icon-xs") => {
-    const playing = sample.playing === id;
-    return (
-      <Button
-        variant={size === "icon" ? "outline" : "ghost-muted"}
-        size={size}
-        aria-label={playing ? `Dừng giọng ${name}` : `Nghe giọng ${name}`}
-        title={playing ? "Dừng" : "Nghe thử"}
-        onClick={() => sample.toggle(id)}
-      >
-        {playing ? <Square className="fill-current" /> : <Play />}
-      </Button>
-    );
-  };
-
+  const suggestions = useVoiceSuggestions(name, description);
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">Giọng nói</span>
-        <div
-          role="radiogroup"
-          aria-label="Vùng miền"
-          className="flex rounded-[var(--control-radius)] border p-0.5"
-        >
-          {ACCENTS.map((accent) => {
-            const available = accent.id === AVAILABLE_ACCENT;
-            return (
-              <span key={accent.id} title={available ? undefined : "Sắp có"}>
-                <Button
-                  size="xs"
-                  variant={available ? "secondary" : "ghost-muted"}
-                  role="radio"
-                  aria-checked={available}
-                  disabled={!available}
-                  className="h-5"
-                >
-                  {accent.label}
-                </Button>
-              </span>
-            );
-          })}
-        </div>
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <label htmlFor="character-voice" className="font-medium">
+          Giọng nói
+        </label>
+        <ListenControl text={value} name={name} description={description} />
       </div>
-
-      <div className="flex items-center gap-2">
-        {playButton(voice.id, voice.name, "icon")}
-        <Menu>
-          <MenuTrigger
-            disabled={disabled}
-            render={<Button variant="outline" className="min-w-0 flex-1 justify-start" />}
-          >
-            <span className="flex min-w-0 flex-1 items-baseline gap-2">
-              <span className="shrink-0">{voice.name}</span>
-              <span className="min-w-0 truncate font-normal text-muted-foreground">
-                {voice.label}
-              </span>
-            </span>
-            <ChevronDown />
-          </MenuTrigger>
-          <MenuPopup align="start" className="w-(--anchor-width)">
-            <MenuRadioGroup value={voice.id} onValueChange={pick}>
-              {GROUPS.map((group) => (
-                <MenuGroup key={group.label}>
-                  <MenuGroupLabel>{group.label}</MenuGroupLabel>
-                  {group.voices.map((v) => (
-                    <div key={v.id} className="flex items-center gap-1">
-                      <MenuRadioItem value={v.id} closeOnClick className="flex-1">
-                        <span className="flex min-w-0 items-baseline gap-2">
-                          <span className="shrink-0">{v.name}</span>
-                          <span className="min-w-0 truncate text-muted-foreground text-xs">
-                            {v.label}
-                          </span>
-                        </span>
-                      </MenuRadioItem>
-                      {playButton(v.id, v.name, "icon-xs")}
-                    </div>
-                  ))}
-                </MenuGroup>
-              ))}
-            </MenuRadioGroup>
-          </MenuPopup>
-        </Menu>
-      </div>
+      <Textarea
+        id="character-voice"
+        rows={2}
+        maxLength={MAX_VOICE_CHARS}
+        value={shown}
+        placeholder={fallback}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value.trim() ? e.target.value : "")}
+        onBlur={(e) => {
+          if (!e.target.value.trim()) onChange(null);
+        }}
+      />
+      {suggestions.waiting ? (
+        <span className="shimmer-text text-xs">Đang gợi ý giọng…</span>
+      ) : (
+        suggestions.list.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {suggestions.list.map((s) => (
+              <Button
+                key={s.text}
+                variant="outline"
+                size="xs"
+                disabled={disabled}
+                title={s.text}
+                onClick={() => onChange(s.text)}
+              >
+                {s.label}
+              </Button>
+            ))}
+          </div>
+        )
+      )}
     </div>
   );
+}
+
+function useVoiceSuggestions(name: string, description: string) {
+  const [list, setList] = useState<VoiceSuggestion[]>([]);
+  const [waiting, setWaiting] = useState(false);
+  const latest = useRef({ name, description });
+  latest.current = { name, description };
+  const asked = useRef<string | null>(null);
+  const opened = useRef(true);
+
+  useEffect(() => {
+    const wanted = description.trim();
+    const first = opened.current;
+    opened.current = false;
+    if (!wanted) return;
+    const ask = () => {
+      if (asked.current === wanted) return;
+      asked.current = wanted;
+      setWaiting(true);
+      api
+        .invoke("voices:suggest", { name: latest.current.name, description: wanted })
+        .then((found) => {
+          if (asked.current === wanted) setList(found);
+        })
+        .catch(() => {
+          if (asked.current === wanted) setList([]);
+        })
+        .finally(() => {
+          if (asked.current === wanted) setWaiting(false);
+        });
+    };
+    if (first) {
+      ask();
+      return;
+    }
+    const timer = window.setTimeout(ask, SUGGEST_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [description]);
+
+  return { list, waiting };
+}
+
+function sampleKey(text: string, name: string, description: string): string {
+  const clean = cleanVoiceText(text);
+  if (!clean) return "";
+  const { gender, age } = spokenTraits(clean, guessVoiceTraits(name, description));
+  return JSON.stringify([clean, gender, age ?? null]);
+}
+
+function ListenControl({
+  text,
+  name,
+  description,
+}: {
+  text: string;
+  name: string;
+  description: string;
+}) {
+  const [known, setKnown] = useState<{ key: string; url: string | null } | null>(null);
+  const [making, setMaking] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const player = usePlayer();
+  const key = sampleKey(text, name, description);
+  const latestKey = useRef(key);
+  latestKey.current = key;
+
+  useEffect(() => {
+    if (!key) return;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      api
+        .invoke("voices:sample", { text, name, description })
+        .then((r) => live && setKnown({ key, url: r.url }))
+        .catch(() => live && setKnown({ key, url: null }));
+    }, SAMPLE_CHECK_AFTER_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [key, text, name, description]);
+
+  const { stop } = player;
+  useEffect(() => {
+    if (key) stop();
+  }, [key, stop]);
+
+  if (!key) return null;
+  if (making === key) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <LoaderCircle className="size-3.5 animate-spin" />
+        Đang tạo giọng…
+      </span>
+    );
+  }
+  const url = known?.key === key ? known.url : undefined;
+  if (url === undefined) return null;
+
+  const make = async (channel: "voices:make" | "voices:remake") => {
+    const madeKey = key;
+    player.stop();
+    setFailed(null);
+    setMaking(madeKey);
+    try {
+      const made = await api.invoke(channel, { text, name, description });
+      setKnown({ key: madeKey, url: made.url });
+      if (latestKey.current === madeKey) player.toggle(made.url);
+    } catch {
+      setFailed(madeKey);
+    } finally {
+      setMaking((current) => (current === madeKey ? null : current));
+    }
+  };
+
+  const price = <ButtonPrice>{estimateText(VOICE_SAMPLE_USD)}</ButtonPrice>;
+  const playing = url !== null && player.playing === url;
+
+  return (
+    <span className="flex items-center gap-2">
+      {failed === key && (
+        <span className="text-xs text-destructive-foreground">Không tạo được giọng</span>
+      )}
+      {url ? (
+        <>
+          <HoldButton tone="outline" size="xs" onHold={() => make("voices:remake")}>
+            Tạo lại
+            {price}
+          </HoldButton>
+          <Button variant="outline" size="xs" onClick={() => player.toggle(url)}>
+            {playing ? <Square className="fill-current" /> : <Play />}
+            {playing ? "Dừng" : "Nghe thử"}
+          </Button>
+        </>
+      ) : (
+        <HoldButton tone="outline" size="xs" onHold={() => make("voices:make")}>
+          Giữ để nghe
+          {price}
+        </HoldButton>
+      )}
+    </span>
+  );
+}
+
+function usePlayer() {
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const current = useRef<string | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
+
+  const stop = useCallback(() => {
+    audio.current?.pause();
+    audio.current = null;
+    current.current = null;
+    setPlaying(null);
+  }, []);
+
+  const toggle = useCallback(
+    (url: string) => {
+      const wasPlaying = current.current === url;
+      stop();
+      if (wasPlaying) return;
+      const clip = new Audio(url);
+      clip.onended = () => {
+        if (audio.current === clip) stop();
+      };
+      audio.current = clip;
+      current.current = url;
+      setPlaying(url);
+      clip.play().catch(() => {
+        if (audio.current === clip) stop();
+      });
+    },
+    [stop],
+  );
+
+  useEffect(() => () => audio.current?.pause(), []);
+
+  return { playing, toggle, stop };
 }

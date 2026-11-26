@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ScriptLine } from "./ipc";
+import { AUTO_MODELS } from "./models";
 import {
   openCutout,
   openRequests,
@@ -29,6 +30,7 @@ function job(): VideoJob {
       title: "T",
       lines: LINES,
       useEnvironment: true,
+      models: AUTO_MODELS,
       now: NOW,
     }),
     rulesPlan({
@@ -98,15 +100,20 @@ describe("reconcile on start", () => {
     expect(attached).toHaveLength(1);
   });
 
-  it("attaches a fixed shot with the model it went to", () => {
+  it("attaches a shot with the endpoint it went to, so it is polled there", () => {
     const marked = withSending(job(), { shot: 1 }, "m2");
     const { job: next } = reconcileJob(marked, [
-      rec({ purpose: "video-shot", shot: 1, attempt: "m2", model: "kling-avatar-v2-standard" }),
+      rec({
+        purpose: "video-shot",
+        shot: 1,
+        attempt: "m2",
+        endpoint: "alibaba/wan-3.0/image-to-video",
+      }),
     ]);
     expect(next.shots[1]).toMatchObject({
       state: "rendering",
       requestId: "r1",
-      model: "kling-avatar-v2-standard",
+      endpoint: "alibaba/wan-3.0/image-to-video",
     });
     expect(next.shots[1]?.sending).toBeUndefined();
   });

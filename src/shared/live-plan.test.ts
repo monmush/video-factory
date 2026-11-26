@@ -11,10 +11,10 @@ import {
   unitsFor,
   unknownPriceWarnings,
 } from "./live-plan";
-import { mediaLevel } from "./media-level";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 
-const level = mediaLevel("balanced");
 const ctx: LiveContext = {
+  pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
   lines: [
     { characterId: "a", speaker: "An", text: "Chào ông, hôm nay trời đẹp quá ạ." },
     { characterId: "b", speaker: "Ba", text: "Ừ, ngồi xuống uống chén trà đã cháu." },
@@ -26,7 +26,6 @@ const ctx: LiveContext = {
   products: [{ id: "p", name: "Trà Sen Tây Hồ" }],
   hasPlace: true,
   refs: ["place-1", "cast1-1", "cast2-1"],
-  level,
 };
 
 const IMAGE = "img/edit";
@@ -216,14 +215,16 @@ describe("checking a live plan", () => {
 
   it("refuses an endpoint whose schema was not read, and unknown or missing fields", () => {
     const answer = goodAnswer();
-    const first = answer.shots?.[0] as Record<string, unknown>;
-    first.endpoint = "never/read";
-    const second = answer.shots?.[1] as Record<string, unknown>;
-    second.input = { image_url: "{{keyframe}}", audio: "{{audio}}" };
+    const keyframes = answer.keyframes ?? [];
+    (keyframes[1] as { endpoint?: string }).endpoint = "never/read";
+    (keyframes[2] as { input?: Record<string, unknown> }).input = {
+      image_urls: ["{{cast2-1}}"],
+      colour: "warm",
+    };
     const { errors } = readLivePlan(answer, ctx, session());
     expect(errors.join("\n")).toMatch(/schema of "never\/read"/);
-    expect(errors.join("\n")).toMatch(/no field "audio"/);
-    expect(errors.join("\n")).toMatch(/requires "audio_url"/);
+    expect(errors.join("\n")).toMatch(/no field "colour"/);
+    expect(errors.join("\n")).toMatch(/requires "prompt"/);
   });
 
   it("refuses unresolvable placeholders and keyframes that use later ones", () => {
@@ -282,9 +283,8 @@ describe("pricing a live plan", () => {
     const record = session();
     const { plan } = readLivePlan(goodAnswer(), ctx, record);
     delete record.prices[IMAGE];
-    const table = priceLivePlan(plan, record, ctx.lines);
+    const table = priceLivePlan(plan, record, PACE_OF_VIDEOS_MADE_BEFORE_PACES);
     expect(table.rows.map((r) => r.step)).toEqual([
-      "Giọng đọc",
       "Khung hình master",
       "Khung hình an",
       "Khung hình ba",
@@ -292,12 +292,7 @@ describe("pricing a live plan", () => {
       "Cảnh 2 · Nói",
     ]);
     expect(table.unknownSteps).toBe(3);
-    const lips = table.rows.slice(4);
-    for (const row of lips) {
-      const billed = (row.usd as number) / 0.1;
-      expect(billed).toBeGreaterThanOrEqual(2);
-      expect(Number.parseFloat(row.quantity)).toBeCloseTo(billed, 1);
-    }
+    expect(table.rows.slice(3).map((r) => r.usd)).toEqual([0, 0]);
     expect(unknownPriceWarnings(table)).toContain("3 step(s) have no recorded price.");
   });
 
@@ -306,8 +301,8 @@ describe("pricing a live plan", () => {
     record.prices[IMAGE] = { usd: 1, unit: "units" };
     record.estimates.push({ endpoint: IMAGE, usd: 0.15, unit: "units" });
     const { plan } = readLivePlan(goodAnswer(), ctx, record);
-    const table = priceLivePlan(plan, record, ctx.lines);
-    expect(table.rows[1]?.usd).toBe(0.15);
+    const table = priceLivePlan(plan, record, PACE_OF_VIDEOS_MADE_BEFORE_PACES);
+    expect(table.rows[0]?.usd).toBe(0.15);
     expect(table.unknownSteps).toBe(0);
   });
 
@@ -334,34 +329,35 @@ describe("billing rules from the tools", () => {
   };
   const billed = (billing: Record<string, unknown>) => {
     const answer = goodAnswer();
-    (answer.models ?? [])[1] = { endpoint: LIPS, role: "lip-sync", why: "pick", billing };
+    (answer.models ?? [])[0] = { endpoint: IMAGE, role: "keyframes", why: "pick", billing };
     return answer;
   };
 
-  it("raises the price and bills the minimum when the tools state them", () => {
-    const record = withGuide("Lip Sync: $0.16/s at 1080P; clips bill a minimum of 5 s.");
+  it("raises the price when the tools state it", () => {
+    const record = withGuide("Image Edit: $0.12 per image at 2K.");
     const { plan, errors } = readLivePlan(
-      billed({ unit_price: 0.16, unit: "seconds", min_seconds: 5, source: "guide" }),
+      billed({ unit_price: 0.12, unit: "images", source: "guide" }),
       ctx,
       record,
     );
     expect(errors).toEqual([]);
-    const table = priceLivePlan(plan, record, ctx.lines);
-    expect(table.rows[4]).toMatchObject({ quantity: "5 giây" });
-    expect(table.rows[4]?.usd).toBeCloseTo(0.8);
+    expect(priceLivePlan(plan, record, PACE_OF_VIDEOS_MADE_BEFORE_PACES).rows[0]?.usd).toBeCloseTo(
+      0.12,
+    );
   });
 
   it("refuses numbers no tool returned, and never lowers a recorded price", () => {
-    const record = withGuide("Lip Sync: $0.02/s on a promotion.");
+    const record = withGuide("Image Edit: $0.01 per image on a promotion.");
     const refused = readLivePlan(
-      billed({ unit_price: 0.3, unit: "seconds", min_seconds: 4 }),
+      billed({ unit_price: 0.3, unit: "images", min_seconds: 4 }),
       ctx,
       record,
     );
-    expect(refused.errors.join("\n")).toMatch(/0.3 per seconds is not in any guide/);
+    expect(refused.errors.join("\n")).toMatch(/0.3 per images is not in any guide/);
     expect(refused.errors.join("\n")).toMatch(/4-second minimum/);
-    const { plan } = readLivePlan(billed({ unit_price: 0.02, unit: "seconds" }), ctx, record);
-    const table = priceLivePlan(plan, record, ctx.lines);
-    expect((table.rows[4]?.usd as number) / 0.1).toBeGreaterThanOrEqual(2);
+    const { plan } = readLivePlan(billed({ unit_price: 0.01, unit: "images" }), ctx, record);
+    expect(priceLivePlan(plan, record, PACE_OF_VIDEOS_MADE_BEFORE_PACES).rows[0]?.usd).toBeCloseTo(
+      0.04,
+    );
   });
 });

@@ -1,4 +1,5 @@
 import type { Series, Session } from "@shared/ipc";
+import { directionText } from "@shared/series-guide";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   Ellipsis,
@@ -229,11 +230,14 @@ function SeriesFolder({ series, sessions }: { series: Series; sessions: Session[
 }
 
 function SeriesCard({ series, sessionCount }: { series: Series; sessionCount: number }) {
+  const direction = directionText(series);
   return (
     <TooltipPopup className="flex w-72 flex-col gap-1.5">
       <div className="font-medium [overflow-wrap:anywhere]">{series.name}</div>
-      {series.guidance && (
-        <p className="line-clamp-4 leading-relaxed text-muted-foreground">{series.guidance}</p>
+      {direction && (
+        <p className="line-clamp-4 leading-relaxed whitespace-pre-line text-muted-foreground">
+          {direction}
+        </p>
       )}
       <div className="flex items-center gap-1.5 pt-0.5 text-xs text-muted-foreground">
         <Folder className="size-3.5" />

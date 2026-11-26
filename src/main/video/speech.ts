@@ -2,23 +2,24 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { app } from "electron";
-import { outputSize } from "../../shared/batch-settings";
 import { calculated } from "../../shared/cost/rates";
 import { splitTrailingCue } from "../../shared/cues";
-import type { Asset } from "../../shared/ipc";
 import { readMediaUrl } from "../../shared/live-plan";
+import { OUTPUT_SIZE } from "../../shared/output-size";
 import { plannedMotion, speechPrompt } from "../../shared/prompt-text";
 import {
+  endingBeforeTrailingQuiet,
   type JobSegment,
   SILENCE_MIN_SEC,
-  SILENCE_NOISE_DB,
   type SpeechBounds,
+  silenceThresholdDb,
   speakingSec,
   speechBounds,
+  trailingQuietSec,
 } from "../../shared/speech";
-import { type SpeechModel, speechModel, speechUsd } from "../../shared/speech-models";
 import { segmentAnchor, type VideoJob } from "../../shared/video-job";
-import { guessVoiceTraits, voiceDescription } from "../../shared/voices";
+import { speechUsd, type VideoModel, videoModel } from "../../shared/video-models";
+import { voiceOf } from "../../shared/voice-step";
 import {
   type Canceller,
   type CancelOutcome,
@@ -27,9 +28,9 @@ import {
   falPoll,
   falSubmit,
 } from "../fal";
-import { uploadImages } from "../fal-upload";
+import { uploadFile, uploadImages } from "../fal-upload";
 import { falClient, providerMode } from "../providers";
-import { fixtureSpeechClip, silenceLog } from "./ffmpeg";
+import { fixtureSpeechClip, frameRmsLevelsDb, silenceLog } from "./ffmpeg";
 import { fixtureNetwork, fixtureTimesForShot } from "./fixture-net";
 import type { StepPoll } from "./steps";
 
@@ -45,13 +46,13 @@ function fal(): Promise<Fal> {
   return falPromise;
 }
 
-export function segmentPrompt(job: VideoJob, segment: JobSegment, character?: Asset): string {
+export function segmentPrompt(job: VideoJob, segment: JobSegment): string {
   const ambient = job.plan?.seats.find((s) => s.characterId === segment.characterId)?.ambient;
   const shot = segment.speakerShot === null ? undefined : job.shots[segment.speakerShot];
   const route = shot && job.live?.plan.routes[shot.index];
   const motion = shot
     ? route
-      ? plannedMotion(route.input?.prompt, false, ambient)
+      ? (route.motion ?? plannedMotion(route.input?.prompt, false, ambient))
       : shot.visual
     : "";
   const { words, cue } = splitTrailingCue(segment.text);
@@ -59,20 +60,20 @@ export function segmentPrompt(job: VideoJob, segment: JobSegment, character?: As
     people: job.frames.find((f) => f.id === segment.frame)?.people ?? 1,
     words,
     cue,
-    voice: voiceDescription(
-      character ? guessVoiceTraits(character.name, character.description) : {},
-    ),
+    voice: voiceOf(job, segment.characterId)?.text ?? "",
     motion,
     ambient,
+    pace: segment.pace,
   });
 }
 
 export async function submitSegment(input: {
   job: VideoJob;
   segment: JobSegment;
-  model: SpeechModel;
+  model: VideoModel;
   seconds: number;
   stillPath: string;
+  voicePath: string;
   prompt: string;
 }): Promise<string> {
   const { job, segment, model, seconds } = input;
@@ -81,11 +82,14 @@ export async function submitSegment(input: {
     return `fixture-${randomUUID()}`;
   }
   const client = await fal();
-  const [imageUrl] = await uploadImages(client, [input.stillPath]);
+  const [[imageUrl], voiceUrl] = await Promise.all([
+    uploadImages(client, [input.stillPath]),
+    uploadFile(client, input.voicePath, "audio/mpeg"),
+  ]);
   return falSubmit(
     client,
-    model.endpoint,
-    model.input({ prompt: input.prompt, imageUrl: imageUrl as string, seconds }),
+    model.speechEndpoint,
+    model.speech({ prompt: input.prompt, imageUrl: imageUrl as string, voiceUrl, seconds }),
     {
       purpose: "video-speech",
       model: model.id,
@@ -101,7 +105,7 @@ export async function submitSegment(input: {
 const FIXTURE_SPEECH_MS = 6000;
 
 export async function pollSegment(job: VideoJob, segment: JobSegment): Promise<StepPoll> {
-  const model = speechModel(segment.model);
+  const model = videoModel(segment.model);
   const usd = speechUsd(model, segment.seconds ?? 0);
   if (isFixture()) {
     fixtureNetwork();
@@ -113,14 +117,19 @@ export async function pollSegment(job: VideoJob, segment: JobSegment): Promise<S
     if (elapsed < FIXTURE_SPEECH_MS) return { state: "pending" };
     return { state: "done", url: "fixture:speech", cost: calculated(usd) };
   }
-  const result = await falPoll<unknown>(await fal(), model.endpoint, segment.requestId as string, {
-    purpose: "video-speech",
-    model: model.id,
-    cost: () => usd,
-    sessionId: job.sessionId,
-    scriptId: job.scriptId,
-    segment: segment.id,
-  });
+  const result = await falPoll<unknown>(
+    await fal(),
+    model.speechEndpoint,
+    segment.requestId as string,
+    {
+      purpose: "video-speech",
+      model: model.id,
+      cost: () => usd,
+      sessionId: job.sessionId,
+      scriptId: job.scriptId,
+      segment: segment.id,
+    },
+  );
   if (result.state === "pending") return { state: "pending" };
   if (result.state === "failed") return result;
   const url = readMediaUrl(result.data, "video");
@@ -133,7 +142,7 @@ export async function cancelSegment(
   cancel: Canceller = falCancel,
 ): Promise<CancelOutcome> {
   if (isFixture() || !segment.requestId) return "removed";
-  return cancel(speechModel(segment.model).endpoint, segment.requestId);
+  return cancel(videoModel(segment.model).speechEndpoint, segment.requestId);
 }
 
 const FIXTURE_SPEECH_STARTS_SEC = 0.4;
@@ -141,7 +150,7 @@ const FIXTURE_SPEECH_STARTS_SEC = 0.4;
 function fixtureSpeech(segment: JobSegment, seconds: number): SpeechBounds {
   const cutOff =
     (segment.cutOffs ?? 0) < fixtureTimesForShot("HYAN_FIXTURE_CUTOFF", segmentAnchor(segment) + 1);
-  const end = FIXTURE_SPEECH_STARTS_SEC + speakingSec(segment.text);
+  const end = FIXTURE_SPEECH_STARTS_SEC + speakingSec(segment);
   return { start: FIXTURE_SPEECH_STARTS_SEC, end: cutOff ? seconds : Math.min(end, seconds) };
 }
 
@@ -155,14 +164,14 @@ export async function downloadSegment(input: {
   const { url, segment } = input;
   if (url === "fixture:speech") {
     fixtureNetwork();
-    const seconds = (segment.seconds ?? 0) + (speechModel(segment.model).runsLongerSec ?? 0);
+    const seconds = (segment.seconds ?? 0) + (videoModel(segment.model).runsLongerSec ?? 0);
     await fixtureSpeechClip({
       still: input.stillPath,
       voice: fixtureVoice(),
       seconds,
       speech: fixtureSpeech(segment, seconds),
       out: input.out,
-      size: outputSize(input.job.resolution),
+      size: OUTPUT_SIZE,
     });
     return;
   }
@@ -176,5 +185,9 @@ export async function downloadSegment(input: {
 }
 
 export async function heardSpeech(clipPath: string, clipSec: number): Promise<SpeechBounds | null> {
-  return speechBounds(await silenceLog(clipPath, SILENCE_NOISE_DB, SILENCE_MIN_SEC), clipSec);
+  const levels = await frameRmsLevelsDb(clipPath);
+  const threshold = silenceThresholdDb(levels);
+  const bounds = speechBounds(await silenceLog(clipPath, threshold, SILENCE_MIN_SEC), clipSec);
+  if (!bounds) return null;
+  return endingBeforeTrailingQuiet(bounds, trailingQuietSec(levels, threshold, clipSec), clipSec);
 }

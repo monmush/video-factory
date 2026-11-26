@@ -86,32 +86,9 @@ export async function probeSeconds(path: string): Promise<number> {
   return seconds;
 }
 
-export async function cutLine(
-  source: string,
-  cut: { start: number; end: number },
-  out: string,
-  minSec: number,
-): Promise<void> {
-  await ffmpeg([
-    "-i",
-    source,
-    "-af",
-    `atrim=start=${cut.start}:end=${cut.end},asetpts=PTS-STARTPTS,apad=whole_dur=${minSec}`,
-    "-ac",
-    "1",
-    "-ar",
-    "44100",
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    "128k",
-    out,
-  ]);
-}
-
 export async function fixtureClip(
   video: string,
-  audio: string,
+  seconds: number,
   out: string,
   { width, height }: Size,
 ): Promise<void> {
@@ -120,39 +97,17 @@ export async function fixtureClip(
     "-1",
     "-i",
     video,
-    "-i",
-    audio,
-    "-map",
-    "0:v",
-    "-map",
-    "1:a",
+    "-t",
+    seconds.toFixed(3),
     "-vf",
     `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`,
-    "-shortest",
+    "-an",
     "-c:v",
     "libx264",
     "-preset",
     "veryfast",
     "-pix_fmt",
     "yuv420p",
-    "-c:a",
-    "aac",
-    out,
-  ]);
-}
-
-export async function loopAudio(source: string, seconds: number, out: string): Promise<void> {
-  await ffmpeg([
-    "-stream_loop",
-    "-1",
-    "-i",
-    source,
-    "-t",
-    seconds.toFixed(3),
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    "128k",
     out,
   ]);
 }
@@ -163,24 +118,6 @@ export type Size = { width: number; height: number };
 
 export const frameCount = (start: number, end: number, fps = OUTPUT.fps) =>
   Math.max(1, Math.round(end * fps) - Math.round(start * fps));
-
-export async function padAudio(source: string, minSec: number, out: string): Promise<void> {
-  await ffmpeg([
-    "-i",
-    source,
-    "-af",
-    `apad=whole_dur=${minSec}`,
-    "-ac",
-    "1",
-    "-ar",
-    "44100",
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    "128k",
-    out,
-  ]);
-}
 
 export async function insertSilence(
   source: string,
@@ -228,34 +165,6 @@ export async function insertSilence(
     "libmp3lame",
     "-b:a",
     "160k",
-    out,
-  ]);
-}
-
-export async function silence(seconds: number, out: string): Promise<void> {
-  await ffmpeg([
-    "-f",
-    "lavfi",
-    "-i",
-    `anullsrc=r=44100:cl=mono`,
-    "-t",
-    seconds.toFixed(3),
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    "128k",
-    out,
-  ]);
-}
-
-export async function cropCloser(image: string, out: string): Promise<void> {
-  await ffmpeg([
-    "-i",
-    image,
-    "-vf",
-    "crop=trunc(iw*0.74/2)*2:trunc(ih*0.74/2)*2:(iw-ow)/2:ih*0.04",
-    "-frames:v",
-    "1",
     out,
   ]);
 }
@@ -667,6 +576,31 @@ async function normaliseLoudness(source: string, out: string): Promise<void> {
   ]);
 }
 
+export const VOICE_SAMPLE = { maxSec: 12, lufs: -18, truePeak: -1.5, lra: 11 } as const;
+
+export async function voiceSample(source: string, out: string): Promise<void> {
+  const trim = `atrim=0:${VOICE_SAMPLE.maxSec},asetpts=PTS-STARTPTS,aformat=channel_layouts=mono`;
+  const target = `I=${VOICE_SAMPLE.lufs}:TP=${VOICE_SAMPLE.truePeak}:LRA=${VOICE_SAMPLE.lra}`;
+  const measured = await loudnessOf(["-i", source], `${trim},loudnorm=${target}:print_format=json`);
+  const level = measured
+    ? `loudnorm=${target}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`
+    : `loudnorm=${target}`;
+  await ffmpeg([
+    "-i",
+    source,
+    "-vn",
+    "-af",
+    `${trim},${level},aresample=${OUTPUT.sampleRate}`,
+    "-ac",
+    "1",
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "128k",
+    out,
+  ]);
+}
+
 export async function silenceLog(path: string, noiseDb: number, minSec: number): Promise<string> {
   let log = "";
   await run(
@@ -689,6 +623,24 @@ export async function silenceLog(path: string, noiseDb: number, minSec: number):
     },
   );
   return log;
+}
+
+const FRAME_RMS = "lavfi.astats.Overall.RMS_level";
+
+export async function frameRmsLevelsDb(path: string): Promise<number[]> {
+  const out = await run(await find("ffmpeg"), [
+    "-hide_banner",
+    "-nostats",
+    "-i",
+    path,
+    "-vn",
+    "-af",
+    `astats=metadata=1:reset=1,ametadata=print:key=${FRAME_RMS}:file=-`,
+    "-f",
+    "null",
+    "-",
+  ]);
+  return [...out.matchAll(/RMS_level=(\S+)/g)].map((m) => Number.parseFloat(m[1] as string));
 }
 
 export async function joinSpeech(

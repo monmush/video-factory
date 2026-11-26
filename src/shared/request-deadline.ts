@@ -2,14 +2,16 @@ export const STILL_DEADLINE_MS = 30 * 60_000;
 export const CLIP_DEADLINE_MS = 90 * 60_000;
 export const CUTOUT_DEADLINE_MS = 20 * 60_000;
 export const SOUND_DEADLINE_MS = 10 * 60_000;
+export const VOICE_DEADLINE_MS = 10 * 60_000;
 
-export type RequestKind = "still" | "clip" | "cutout" | "sound";
+export type RequestKind = "still" | "clip" | "cutout" | "sound" | "voice";
 
 const DEADLINES: Record<RequestKind, number> = {
   still: STILL_DEADLINE_MS,
   clip: CLIP_DEADLINE_MS,
   cutout: CUTOUT_DEADLINE_MS,
   sound: SOUND_DEADLINE_MS,
+  voice: VOICE_DEADLINE_MS,
 };
 
 export function requestOverdue(

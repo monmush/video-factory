@@ -9,8 +9,8 @@ export function useCreateActions() {
   const createSeries = useCallback(() => navigate({ to: "/series/new" }), [navigate]);
 
   const createSession = useCallback(
-    async (seriesId: string, request?: string, mediaLevel?: string) => {
-      const session = await api.invoke("session:create", { seriesId, request, mediaLevel });
+    async (seriesId: string, request?: string) => {
+      const session = await api.invoke("session:create", { seriesId, request });
       await refreshWorkspace();
       await navigate({ to: "/sessions/$sessionId/scripts", params: { sessionId: session.id } });
     },

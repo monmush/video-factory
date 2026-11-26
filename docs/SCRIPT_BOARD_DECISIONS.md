@@ -18,7 +18,9 @@ A content staffer at the pilot client whose main work is the human channel. On t
 - Shows title, hook, dialogue as speaker turns, the product featured and the estimated length (`43 giây`, neutral, never coloured, no "~"). Staging and camera notes sit behind a toggle.
 - Title: the main idea, at most 8 words. Hook: the opening question or surprise, at most 14 words, never a story summary (the first live run produced 4-line summaries that made cards too tall). Both are clamped to two lines as a guard.
 - No warnings or status on the card. The owner rejected flags such as "Dài hơn 45 giây". The writer checks and corrects its own output before a card appears: length near the target, product claims limited to the product description, and stories that are too alike. If length correction still misses, the honest length estimate is the only signal.
-- Length: about 45 seconds unless the request names one ("30 giây", "1 phút"). Variants keep their source's length; an edit that names a length changes it.
+- Length: the series' length (45 seconds unless its description or "Sửa series" says otherwise, since 25 November 2026; see [direction](SERIES_SETUP_DECISIONS.md#direction-định-hướng--25-november-2026)) unless the request names one ("30 giây", "1 phút"). Variants keep their source's length; an edit that names a length changes it.
+- **Length is the contract, pace follows (26 November 2026; built, not yet heard in a live video).** The length shown is words ÷ pace + pauses, where the pace is "a bit fast" (4 syllables a second) and rises to at most 5 when a script has more words than fit its length, so the video still lands on the series' length. Only past that does the shown length grow. A script with fewer words is a shorter video; speech is never slowed. One window everywhere a length is judged: 0.85 to 1.2 of the target (30 seconds means 26 to 36). Both pace numbers are guesses until a paid listening test (`src/shared/pace.ts`). The old estimate divided by 3.7, a rate from the separate voice; real videos measured 2.2, so "46 giây" came out at 1:12.
+- **Edits keep the words (26 November 2026).** Only a newly written script, or a request that names a length, is fitted to a syllable budget. An edit, a variant with a request and a product change never shorten or pad. The chat copies a script (`copy_script`), changes single lines (`edit_lines`, untouched lines kept by code) and changes a script's length without touching its words (`set_length`); when the words do not fit even at the fastest pace it says the length and asks before cutting.
 - Actions: Tạo biến thể (instant) and Tùy chỉnh (instruction field), on full and compact cards alike; pin; delete (with undo).
 
 ## Density follows the count
@@ -26,6 +28,7 @@ A content staffer at the pilot client whose main work is the human channel. On t
 - Up to six scripts: full cards side by side, at least 400 px wide, aligned left (no centred column). A 45-second script is roughly ten lines.
 - More than six: the board opens in the list/detail reader (supersedes "compact cards, click opens the reader"). The toggle still offers compact cards (title, hook, length).
 - The threshold of six is a starting value to adjust in use.
+- **The view choice is remembered** (25 November 2026): picking Thẻ or Danh sách in the toolbar is kept across sessions and restarts (`preferLayout` in `src/renderer/src/lib/board.ts`, stored in the app's local storage) and replaces the count rule from then on. The Dàn dựng step has the same toggle and shares the choice: Thẻ is the open grid, Danh sách the folded single column.
 - The chat panel's left edge drags (280–560 px, remembered); dragging well past the minimum closes it, and it reopens at its last width.
 
 ## Referencing scripts in chat

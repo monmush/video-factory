@@ -1,14 +1,7 @@
-import { liveAvoidingRejectedSpeakers, speakerToTry } from "./speaker-switch";
+import { withMishaps } from "./mishaps";
 import { type JobSegment, wantedSec } from "./speech";
-import { speechModelToTry } from "./speech-models";
-import {
-  billedSeconds,
-  type JobShot,
-  levelSpeech,
-  madeByProvider,
-  type VideoJob,
-} from "./video-job";
-import { modelForClip, videoModel } from "./video-models";
+import { type JobShot, shotModel, type VideoJob, videoModelOf } from "./video-job";
+import { speechModelToTry } from "./video-models";
 
 export const MAX_AUTO_REDOS_PER_SHOT = 2;
 export const MAX_AUTO_REDOS_PER_VIDEO = 4;
@@ -46,72 +39,17 @@ const mayRedoAutomatically = (job: VideoJob, shot: JobShot) =>
 
 const stillMaking = (job: VideoJob) => job.status === "running" || job.status === "waiting";
 
-const onPlannedRoute = (job: VideoJob, shot: JobShot) =>
-  Boolean(job.live && shot.route && !shot.fallback);
-
-function plannedSpeaker(job: VideoJob, shot: JobShot): string | null {
-  if (!madeByProvider(shot)) return null;
-  if (!onPlannedRoute(job, shot)) return modelForClip(job.model, billedSeconds(shot)).endpoint;
-  const route = job.live?.plan.routes[shot.index];
-  return route?.route === "lip-sync" ? route.endpoint : null;
-}
-
-function speakerUsed(job: VideoJob, shot: JobShot): string | null {
-  const planned = plannedSpeaker(job, shot);
-  if (!planned) return null;
-  if (onPlannedRoute(job, shot)) return shot.endpoint ?? planned;
-  return shot.model ? videoModel(shot.model).endpoint : planned;
-}
-
-export function speakerForNextClip(job: VideoJob, shot: JobShot): string | null {
-  const planned = plannedSpeaker(job, shot);
-  return planned && speakerToTry(planned, shot.rejectedSpeakers ?? [], billedSeconds(shot));
-}
-
-const speakerLeftToTry = (job: VideoJob, shot: JobShot) =>
-  !plannedSpeaker(job, shot) || speakerForNextClip(job, shot) !== null;
-
-function withSpeakerRejected(job: VideoJob, index: number, speaker: string): VideoJob {
-  const shots = job.shots.map((s) =>
-    s.index === index
-      ? { ...s, rejectedSpeakers: [...new Set([...(s.rejectedSpeakers ?? []), speaker])] }
-      : s,
-  );
-  const next = { ...job, shots };
-  const shot = shots.find((s) => s.index === index);
-  if (!next.live || !shot || !onPlannedRoute(next, shot)) return next;
-  return {
-    ...next,
-    live: liveAvoidingRejectedSpeakers(next.live, index, {
-      kind: shot.kind,
-      ambient: job.plan?.seats.find((s) => s.characterId === shot.characterId)?.ambient,
-      rejectedSpeakers: shot.rejectedSpeakers,
-      seconds: billedSeconds(shot),
-    }),
-  };
-}
-
-export function withUnrecordedSpeakerRejections(job: VideoJob): VideoJob {
-  return job.shots.reduce((j, shot) => {
-    const rejectedBeforeSpeakersWereRecorded =
-      !shot.rejectedSpeakers &&
-      (shot.rejectedClips ?? 0) > 0 &&
-      shot.state === "failed" &&
-      shot.error === CLIP_NOT_USABLE;
-    const speaker = rejectedBeforeSpeakersWereRecorded ? speakerUsed(j, shot) : null;
-    return speaker ? withSpeakerRejected(j, shot.index, speaker) : j;
-  }, job);
-}
-
-export function rejectClip(job: VideoJob, index: number, resultUrl: string): VideoJob {
+export function rejectClip(
+  job: VideoJob,
+  index: number,
+  resultUrl: string,
+  at = new Date().toISOString(),
+): VideoJob {
   const sent = job.shots.find((s) => s.index === index);
   if (sent?.state !== "rendering" || sent.resultUrl !== resultUrl) return job;
-  const speaker = speakerUsed(job, sent);
-  const judged = speaker ? withSpeakerRejected(job, index, speaker) : job;
-  const shot = judged.shots.find((s) => s.index === index) as JobShot;
-  const redo = mayRedoAutomatically(job, sent) && speakerLeftToTry(judged, shot);
+  const redo = mayRedoAutomatically(job, sent);
   const discarded: JobShot = {
-    ...shot,
+    ...withMishaps(sent, ["lettering"], at, shotModel(job)),
     requestId: undefined,
     submittedAt: undefined,
     sending: undefined,
@@ -120,19 +58,19 @@ export function rejectClip(job: VideoJob, index: number, resultUrl: string): Vid
     endpoint: undefined,
     costUsd: undefined,
     costBilled: undefined,
-    rejectedClips: (shot.rejectedClips ?? 0) + 1,
+    rejectedClips: (sent.rejectedClips ?? 0) + 1,
   };
   const next: JobShot = redo
     ? {
         ...discarded,
         state: stillMaking(job) ? "queued" : "stopped",
-        autoRedos: (shot.autoRedos ?? 0) + 1,
+        autoRedos: (sent.autoRedos ?? 0) + 1,
         error: undefined,
       }
     : { ...discarded, state: "failed", error: CLIP_NOT_USABLE };
   return {
-    ...judged,
-    shots: judged.shots.map((s) => (s.index === index ? next : s)),
+    ...job,
+    shots: job.shots.map((s) => (s.index === index ? next : s)),
     ...(redo ? { autoRedos: (job.autoRedos ?? 0) + 1 } : {}),
   };
 }
@@ -140,14 +78,23 @@ export function rejectClip(job: VideoJob, index: number, resultUrl: string): Vid
 const mayRedoSegment = (job: VideoJob, seg: JobSegment) =>
   (seg.autoRedos ?? 0) < MAX_AUTO_REDOS_PER_SHOT && (job.autoRedos ?? 0) < MAX_AUTO_REDOS_PER_VIDEO;
 
-export function rejectSegmentClip(job: VideoJob, id: string, resultUrl: string): VideoJob {
+export function rejectSegmentClip(
+  job: VideoJob,
+  id: string,
+  resultUrl: string,
+  at = new Date().toISOString(),
+): VideoJob {
   const sent = job.segments?.find((s) => s.id === id);
   if (sent?.state !== "rendering" || sent.resultUrl !== resultUrl) return job;
   const rejectedModels = [
     ...new Set([...(sent.rejectedModels ?? []), ...(sent.model ? [sent.model] : [])]),
   ];
-  const judged: JobSegment = { ...sent, rejectedModels };
-  const modelLeft = speechModelToTry(levelSpeech(job), rejectedModels, wantedSec(judged)) !== null;
+  const judged: JobSegment = {
+    ...withMishaps(sent, ["lettering"], at, sent.model),
+    rejectedModels,
+  };
+  const modelLeft =
+    speechModelToTry(videoModelOf(job).id, rejectedModels, wantedSec(judged)) !== null;
   const redo = mayRedoSegment(job, sent) && modelLeft;
   const discarded: JobSegment = {
     ...judged,

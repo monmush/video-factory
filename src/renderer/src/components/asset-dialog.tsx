@@ -16,11 +16,11 @@ import {
 } from "@shared/ipc";
 import { findingLabel, findingReason, isAccepted, isFlagged } from "@shared/place-check";
 import {
-  guessVoiceTraits,
-  suggestVoice,
-  takenVoiceIds,
-  type VoiceId,
-  voiceById,
+  characterVoiceTraits,
+  cleanVoiceText,
+  defaultVoiceText,
+  takenVoiceTexts,
+  voiceKey,
 } from "@shared/voices";
 import { ImagePlus, LoaderCircle, Sparkles, Star, TriangleAlert, Upload, X } from "lucide-react";
 import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
@@ -216,15 +216,16 @@ function CharacterForm({
   const memberOf = character
     ? workspace.assets.find((a) => a.contains?.includes(character.id))
     : undefined;
-  const [pickedVoice, setPickedVoice] = useState<VoiceId | null>(
-    voiceById(character?.voiceId)?.id ?? null,
+  const defaultVoice = defaultVoiceText(
+    characterVoiceTraits(name, description),
+    takenVoiceTexts(workspace.assets, character?.id),
   );
-  const voiceId =
-    pickedVoice ??
-    suggestVoice(
-      guessVoiceTraits(name, description),
-      takenVoiceIds(workspace.assets, character?.id),
-    );
+  const [typedVoice, setTypedVoice] = useState<string | null>(() =>
+    character?.voice && voiceKey(character.voice) !== voiceKey(defaultVoice)
+      ? character.voice
+      : null,
+  );
+  const voice = cleanVoiceText(typedVoice ?? "") || defaultVoice;
 
   const generating = pendingAngles.length > 0;
   const inFlight = describing || generating || saving || cleaning.size > 0;
@@ -550,7 +551,7 @@ function CharacterForm({
       description,
       images: images.map(toRef),
       contains: kind === "product" ? contains : undefined,
-      voiceId: kind === "character" ? voiceId : undefined,
+      voice: kind === "character" ? voice : undefined,
     };
     try {
       const id = character?.id ?? createdId.current;
@@ -1038,7 +1039,15 @@ function CharacterForm({
           </Field>
 
           {kind === "character" && (
-            <VoiceField value={voiceId} onChange={setPickedVoice} disabled={saving} />
+            <VoiceField
+              value={voice}
+              shown={typedVoice ?? defaultVoice}
+              fallback={defaultVoice}
+              name={name}
+              description={description}
+              disabled={saving}
+              onChange={setTypedVoice}
+            />
           )}
 
           {kind === "product" && (members.length > 0 || memberOf) && (

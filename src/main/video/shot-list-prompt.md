@@ -4,7 +4,7 @@ Besides the shot plan above, you list the pictures the video needs and say, for 
 
 ### This video
 
-- Quality level: **{{level_label}}**. {{level_preference}}
+- Shots that do not speak really move: people, light and camera.
 - Refer to every person by their name exactly as in the cast, in every description.
 
 ### The operator's direction

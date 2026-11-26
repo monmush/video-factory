@@ -1,13 +1,21 @@
-import { DEFAULT_TARGET_SEC, estimateSeconds, syllableBudget } from "../shared/board";
-import { CUES, cleanCues } from "../shared/cues";
+import { clampTarget, statedLength } from "../shared/board";
+import { cleanCues } from "../shared/cues";
 import type { Asset, Script, ScriptLine } from "../shared/ipc";
 import { type Note, type NoteArea, notesBlock, WRITER_AREAS } from "../shared/notes";
+import { estimateSeconds, lengthFit, syllableBudget } from "../shared/pace";
+import type { ProductMention } from "../shared/series-guide";
+import { accentOfVoice, characterVoice } from "../shared/voices";
+import { productRuleFor, writingRules } from "../shared/writing-rules";
 import { FIXTURE_STORIES } from "./script-fixtures";
 import { askText, parseJsonObject, textAiMode } from "./text-ai";
 
 export interface WriterContext {
   sessionId: string;
-  guidance: string;
+  direction: string;
+  targetSec: number;
+  productMention: ProductMention;
+  storyOrToneStated: boolean;
+  closingStated: boolean;
   notes: { every: Note[]; series: Note[] };
   characters: Asset[];
   products: Asset[];
@@ -38,26 +46,23 @@ export type Route =
 export const DEFAULT_COUNT = 5;
 export const MAX_COUNT = 30;
 
-const MIN_TARGET_SEC = 10;
-const MAX_TARGET_SEC = 180;
-
-export function clampTarget(value: unknown): number | null {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.min(MAX_TARGET_SEC, Math.max(MIN_TARGET_SEC, Math.round(n)));
-}
-
-function assetList(assets: Asset[], empty: string) {
+function assetList(assets: Asset[], empty: string, tag: (asset: Asset) => string = () => "") {
   if (assets.length === 0) return empty;
   return assets
-    .map((a) => `- ${a.name} (@${a.handle})${a.description ? `: ${a.description}` : ""}`)
+    .map((a) => `- ${a.name} (@${a.handle})${tag(a)}${a.description ? `: ${a.description}` : ""}`)
     .join("\n");
 }
+
+const voiceTag = (cast: readonly Asset[]) => (character: Asset) =>
+  `, giọng: "${characterVoice(character, cast)}"`;
+
+const castAccents = (cast: readonly Asset[]) =>
+  cast.flatMap((c) => accentOfVoice(characterVoice(c, cast)) ?? []);
 
 export function seriesBlock(ctx: WriterContext, areas: NoteArea[] = WRITER_AREAS) {
   const notes = notesBlock(ctx.notes.every, ctx.notes.series, areas);
   return `## Định hướng series
-${ctx.guidance || "(Chưa có định hướng.)"}
+${ctx.direction || "(Chưa có định hướng.)"}
 ${
   notes
     ? `
@@ -67,7 +72,11 @@ ${notes}
     : ""
 }
 ## Nhân vật
-${assetList(ctx.characters, "(Chưa chọn nhân vật. Dùng tối đa hai nhân vật hợp với định hướng.)")}
+${assetList(
+  ctx.characters,
+  "(Chưa chọn nhân vật. Dùng tối đa hai nhân vật hợp với định hướng.)",
+  voiceTag(ctx.characters),
+)}
 
 ## Sản phẩm
 ${assetList(ctx.products, "(Không có sản phẩm. Không nhắc đến thương hiệu.)")}
@@ -76,22 +85,15 @@ ${assetList(ctx.products, "(Không có sản phẩm. Không nhắc đến thươ
 ${assetList(ctx.environments, "(Chưa chọn bối cảnh. Chọn một bối cảnh hợp với định hướng.)")}`;
 }
 
-export const writingRules = (targetSec: number) => `## Quy tắc viết
-- Video dọc dài khoảng ${targetSec} giây. Mỗi kịch bản là một câu chuyện độc lập, không nhắc đến kịch bản khác.
-- Chỉ dùng nhân vật trong danh sách. Không thêm người, giọng nói hay con vật khác.
-- Lời thoại là tiếng Việt nói tự nhiên: câu ngắn, dễ nói nhanh, không văn viết.
-- Câu thoại đầu tiên nêu ngay câu hỏi, vấn đề hoặc điều bất ngờ, tối đa 14 âm tiết.
-- Tổng lời thoại khoảng ${syllableBudget(targetSec)} âm tiết, lệch không quá 10% (mỗi chữ cách nhau bởi dấu cách là một âm tiết). Mỗi lượt thoại tối đa 25 âm tiết.
-- Một ý sâu sắc và một tiếng cười rõ ràng. Dùng dấu "…" để ngắt nhịp câu đùa.
-- Thành ngữ, tục ngữ phải có thật, trích đúng và hợp nghĩa.
-- Nhắc sản phẩm tự nhiên trong lời thoại một lần (nhiều nhất hai), dùng đúng tên sản phẩm, và để sản phẩm xuất hiện trong khung hình.
-- Chỉ nói về sản phẩm những điều có trong mô tả sản phẩm. Không bịa nguồn gốc, công dụng, sức khỏe, hương vị, giải thưởng hay giá. Cần thì nói cảm nhận ("con thích vị này").
-- Khi câu chuyện cần (ví dụ người nói cười sau câu đùa của mình), một lượt thoại được kết thúc bằng đúng một tiếng không lời trong ngoặc vuông: ${Object.keys(
-  CUES,
-)
-  .map((c) => `[${c}]`)
-  .join(", ")}. Tiếng này nghe được nhưng không có phụ đề. Nhiều nhất hai lần mỗi kịch bản.
-- Ngoài tiếng đó, không lời thoại trong ngoặc, không chỉ dẫn diễn xuất trong lời thoại.`;
+export function rulesFor(ctx: WriterContext, targetSec: number | null, hasProduct: boolean) {
+  return writingRules({
+    targetSec,
+    product: productRuleFor(ctx.productMention, hasProduct),
+    storyOrToneStated: ctx.storyOrToneStated,
+    closingStated: ctx.closingStated,
+    accents: castAccents(ctx.characters),
+  });
+}
 
 export const TITLE_RULE = "ý chính của video, tối đa 8 chữ";
 export const HOOK_RULE =
@@ -99,12 +101,12 @@ export const HOOK_RULE =
 
 const SCRIPT_SHAPE = `{"title":"${TITLE_RULE}","hook":"${HOOK_RULE}","lines":[{"speaker":"@handle nhân vật","text":"lời thoại"}],"products":["@handle sản phẩm"],"staging":"1–2 câu tiếng Việt: bối cảnh, vị trí nhân vật, sản phẩm đặt ở đâu"}`;
 
-function writerSystem(ctx: WriterContext, targetSec: number) {
+function writerSystem(ctx: WriterContext, targetSec: number | null, hasProduct: boolean) {
   return `Bạn là biên kịch cho một series video ngắn dọc trên TikTok của một thương hiệu.
 
 ${seriesBlock(ctx)}
 
-${writingRules(targetSec)}
+${rulesFor(ctx, targetSec, hasProduct)}
 
 Trước khi trả lời, tự kiểm tra từng quy tắc và sửa nếu sai.
 Chỉ trả về một đối tượng JSON hợp lệ, không markdown, đúng dạng:
@@ -131,17 +133,24 @@ export interface RawScript {
   staging?: string;
 }
 
+export function speakerOf(
+  ctx: WriterContext,
+  ref: string,
+): Pick<ScriptLine, "characterId" | "speaker"> {
+  const speaker = ref.trim();
+  const character = findAsset(ctx.characters, speaker);
+  return {
+    characterId: character?.id ?? null,
+    speaker: character?.name ?? speaker.replace(/^@/, ""),
+  };
+}
+
 export function normalise(ctx: WriterContext, raw: RawScript): WrittenScript {
   const lines = (raw.lines ?? [])
-    .map((line) => {
-      const speaker = String(line.speaker ?? "").trim();
-      const character = findAsset(ctx.characters, speaker);
-      return {
-        characterId: character?.id ?? null,
-        speaker: character?.name ?? speaker.replace(/^@/, ""),
-        text: cleanCues(String(line.text ?? "")),
-      };
-    })
+    .map((line) => ({
+      ...speakerOf(ctx, String(line.speaker ?? "")),
+      text: cleanCues(String(line.text ?? "")),
+    }))
     .filter((line) => line.text);
   if (lines.length === 0) throw new Error("AI không trả về lời thoại");
   const productIds = [
@@ -173,18 +182,20 @@ export function asJson(
   });
 }
 
+const KEEP_WHILE_RESIZING = "Giữ câu chuyện, điểm nhấn chính, câu kết và lần nhắc sản phẩm nếu có.";
+
 async function withinLength(
   ctx: WriterContext,
   script: WrittenScript,
   targetSec: number,
 ): Promise<WrittenScript> {
-  const seconds = estimateSeconds(script.lines);
+  const fit = lengthFit(estimateSeconds(script.lines, targetSec), targetSec);
   const budget = syllableBudget(targetSec);
   let instruction: string | null = null;
-  if (seconds > targetSec * 1.12) {
-    instruction = `Rút gọn lời thoại còn khoảng ${budget} âm tiết. Giữ câu chuyện, câu đùa chính và lần nhắc sản phẩm.`;
-  } else if (seconds < targetSec * 0.75) {
-    instruction = `Viết thêm cho lời thoại đủ khoảng ${budget} âm tiết. Giữ câu chuyện, câu đùa chính và lần nhắc sản phẩm.`;
+  if (fit === "long") {
+    instruction = `Rút gọn lời thoại còn khoảng ${budget} âm tiết. ${KEEP_WHILE_RESIZING}`;
+  } else if (fit === "short") {
+    instruction = `Viết thêm cho lời thoại đủ khoảng ${budget} âm tiết. ${KEEP_WHILE_RESIZING}`;
   }
   if (!instruction) return script;
   const fixed = await revise(ctx, script, instruction, targetSec, false);
@@ -271,11 +282,11 @@ export async function writeTopic(
   ctx: WriterContext,
   topic: Topic,
   direction?: string,
-  targetSec = DEFAULT_TARGET_SEC,
+  targetSec = ctx.targetSec,
 ): Promise<WrittenScript> {
   if (textAiMode() === "fixture") return fixtureWrite(ctx, topic);
   const answer = await askText({
-    system: writerSystem(ctx, targetSec),
+    system: writerSystem(ctx, targetSec, ctx.products.length > 0),
     prompt: `Viết kịch bản cho đề tài sau.
 Tiêu đề: ${topic.title}
 Hook: ${topic.hook}${direction ? `\nYêu cầu chung: ${direction}` : ""}${avoidBlock(ctx)}`,
@@ -288,39 +299,47 @@ Hook: ${topic.hook}${direction ? `\nYêu cầu chung: ${direction}` : ""}${avoid
   return withinLength(ctx, { ...written, title: written.title || topic.title }, targetSec);
 }
 
+const variantTask = (direction?: string) =>
+  direction
+    ? `Viết một bản mới của kịch bản dưới đây theo yêu cầu. Yêu cầu quyết định bản mới khác bản gốc ở đâu và nhiều hay ít: giữ nguyên từng chữ mọi phần mà yêu cầu không nhắc tới, kể cả tình huống, tiêu đề và lời thoại.\nYêu cầu: ${direction}`
+    : "Viết một kịch bản mới, độc lập, là một cách kể khác cho cùng ý tưởng với kịch bản dưới đây: đổi tình huống, câu mở đầu và điểm nhấn; không chép lời thoại.";
+
+export const variantLength = (direction: string | undefined, targetSec: number) =>
+  direction?.trim() ? (statedLength(direction)?.seconds ?? null) : targetSec;
+
 export async function writeVariant(
   ctx: WriterContext,
   source: Script,
   direction?: string,
-  targetSec = DEFAULT_TARGET_SEC,
+  targetSec = ctx.targetSec,
 ): Promise<WrittenScript> {
   if (textAiMode() === "fixture") return fixtureVariant(ctx);
+  const length = variantLength(direction, targetSec);
   const answer = await askText({
-    system: writerSystem(ctx, targetSec),
-    prompt: `Viết một kịch bản mới, độc lập, là một cách kể khác cho cùng ý tưởng với kịch bản dưới đây: đổi tình huống, câu mở đầu và câu đùa; không chép lời thoại.${
-      direction ? `\nHướng của biến thể: ${direction}` : ""
-    }
+    system: writerSystem(ctx, length, ctx.products.length > 0),
+    prompt: `${variantTask(direction)}
 
 Kịch bản gốc:
-${asJson(ctx, source)}${avoidBlock(ctx)}`,
+${asJson(ctx, source)}${direction ? "" : avoidBlock(ctx)}`,
     purpose: "variant-script",
     sessionId: ctx.sessionId,
     model: ctx.model,
     effort: ctx.effort,
   });
-  return withinLength(ctx, normalise(ctx, parseJsonObject(answer)), targetSec);
+  const written = normalise(ctx, parseJsonObject(answer));
+  return length === null ? written : withinLength(ctx, written, length);
 }
 
 export async function revise(
   ctx: WriterContext,
   script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
   instruction: string,
-  targetSec = DEFAULT_TARGET_SEC,
+  namedSec: number | null,
   checkLength = true,
 ): Promise<WrittenScript | null> {
   if (textAiMode() === "fixture") return fixtureRevise(script, instruction);
   const answer = await askText({
-    system: `${writerSystem(ctx, targetSec)}
+    system: `${writerSystem(ctx, namedSec, script.productIds.length > 0)}
 
 Nếu yêu cầu sửa không áp dụng cho kịch bản này, chỉ trả về {"unchanged":true}.`,
     prompt: `Sửa kịch bản dưới đây theo yêu cầu. Giữ nguyên những gì yêu cầu không nhắc tới.
@@ -337,7 +356,7 @@ ${asJson(ctx, script)}`,
   const raw = parseJsonObject<RawScript>(answer);
   if (raw.unchanged) return null;
   const written = normalise(ctx, raw);
-  return checkLength ? withinLength(ctx, written, targetSec) : written;
+  return checkLength && namedSec !== null ? withinLength(ctx, written, namedSec) : written;
 }
 
 export function withProduct(
@@ -362,13 +381,12 @@ export async function reviseProduct(
   script: Pick<Script, "title" | "hook" | "lines" | "productIds" | "staging">,
   from: Asset | null,
   to: Asset | null,
-  targetSec = DEFAULT_TARGET_SEC,
 ): Promise<WrittenScript> {
   const target = { ...ctx, products: to ? [to] : [] };
   if (textAiMode() === "fixture") return fixtureProductSwap(script, from, to);
   const both = { ...ctx, products: [from, to].filter((a): a is Asset => Boolean(a)) };
   const answer = await askText({
-    system: writerSystem(target, targetSec),
+    system: writerSystem(target, null, to !== null),
     prompt: `Đổi sản phẩm của kịch bản dưới đây ${from ? `từ ${from.name}` : "(chưa có sản phẩm)"} sang ${
       to ? `${to.name} (@${to.handle})` : "không có sản phẩm"
     }. Đây là sửa hẹp:
@@ -414,11 +432,9 @@ export function fixtureRoute(
   text: string,
   refs: string[],
 ): Route {
-  const length = text.match(/(\d+)\s*(giây|s\b|phút)/i);
-  const targetSec = length
-    ? clampTarget(Number(length[1]) * (length[2]?.toLowerCase() === "phút" ? 60 : 1))
-    : null;
-  const rest = length ? text.replace(length[0], "") : text;
+  const length = statedLength(text);
+  const targetSec = length?.seconds ?? null;
+  const rest = length ? text.replace(length.phrase, "") : text;
   const numbers = [...text.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
   const wantsMore = /\b(tạo|thêm|viết)\b/i.test(text) && !refs.length && !numbers.length;
   if (board.length && !wantsMore) {

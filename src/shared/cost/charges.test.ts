@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildDirection } from "../build-direction";
-import { mediaLevel } from "../media-level";
+import { AUTO_MODELS } from "../models";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "../pace";
 import { builtinRecipe } from "../recipe";
 import { readShotList } from "../shot-list";
 import { answer, CTX, LINES } from "../shot-list.fixture";
@@ -13,19 +14,17 @@ import { costPanel, moneyText, paidSoFar } from "./table";
 const NOW = "2026-11-20T10:00:00.000Z";
 
 function staged(): VideoJob {
-  const level = mediaLevel("fast");
   const { list, errors } = readShotList(answer(), CTX, { motion: false, sound: false });
   expect(errors).toEqual([]);
   const live = buildDirection({
     list,
-    recipe: builtinRecipe(level),
-    lines: LINES,
-    level,
+    recipe: builtinRecipe(AUTO_MODELS),
     cast: [
       { id: "a", name: "An", photos: 3 },
       { id: "b", name: "Ba", photos: 2 },
     ],
     placePhotos: 3,
+    pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
   });
   const job = newJob({
     sessionId: "s",
@@ -34,9 +33,10 @@ function staged(): VideoJob {
     title: "t",
     lines: LINES,
     useEnvironment: true,
+    models: AUTO_MODELS,
     now: NOW,
   });
-  return { ...applyLivePlan({ ...job, status: "running" }, live), level: level.id };
+  return { ...applyLivePlan({ ...job, status: "running" }, live) };
 }
 
 describe("what a finished request cost", () => {
@@ -102,11 +102,11 @@ describe("a job saved before charges were kept", () => {
       pastCostUsd: 1.2,
     };
     const shownVoiceStillClipAndEarlierRedos = 0.05 + 0.12 + 0.4 + 1.2;
-    const loaded = withRecordedCharges(legacy, "fast");
+    const loaded = withRecordedCharges(legacy);
     expect(spentUsd(loaded)).toBeCloseTo(shownVoiceStillClipAndEarlierRedos);
     expect(loaded.pastCostUsd).toBeUndefined();
-    expect(loaded.charges?.every((c) => !c.billed && c.version === "fast")).toBe(true);
+    expect(loaded.charges?.every((c) => !c.billed)).toBe(true);
     expect(redoneCharges(loaded).map((c) => c.usd)).toEqual([1.2]);
-    expect(withRecordedCharges(loaded, "fast")).toBe(loaded);
+    expect(withRecordedCharges(loaded)).toBe(loaded);
   });
 });

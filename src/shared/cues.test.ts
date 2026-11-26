@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { estimateSeconds, syllables } from "./board";
-import { cleanCues, voiceText } from "./cues";
+import { syllables } from "./board";
+import { cleanCues } from "./cues";
+import { estimateSeconds } from "./pace";
 import { lineWords } from "./subtitles";
 
 describe("sounds without words", () => {
@@ -14,13 +15,11 @@ describe("sounds without words", () => {
     expect(cleanCues("[cười]")).toBe("");
   });
 
-  it("is voiced as the voice model's own tag, never subtitled or counted as a word", () => {
-    expect(voiceText("Đùa thôi. [cười]")).toBe("Đùa thôi. [laughs]");
-    expect(voiceText("[speaks quickly] Thôi.")).toBe("[speaks quickly] Thôi.");
+  it("is never subtitled or counted as a word", () => {
     expect(lineWords("Đùa thôi. [cười]")).toEqual(["Đùa", "thôi."]);
     expect(syllables([{ text: "Đùa thôi. [cười khẽ]" }])).toBe(2);
-    expect(estimateSeconds([{ text: "Đùa thôi. [cười]" }])).toBe(
-      estimateSeconds([{ text: "Đùa thôi." }]),
+    expect(estimateSeconds([{ text: "Đùa thôi. [cười]" }], 45)).toBe(
+      estimateSeconds([{ text: "Đùa thôi." }], 45),
     );
   });
 });

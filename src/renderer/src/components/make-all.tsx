@@ -7,11 +7,9 @@ import {
 } from "@shared/cost/estimate";
 import { estimateText } from "@shared/cost/table";
 import type { Script } from "@shared/ipc";
-import { mediaLevel } from "@shared/media-level";
 import { committedIds, finishedScripts } from "@shared/ready-check";
 import { readyToMake } from "@shared/staging-status";
-import { stopsForPreview, type VideoJob } from "@shared/video-job";
-import { planAtLevel } from "@shared/video-takes";
+import { followSeriesModels, stopsForPreview, type VideoJob } from "@shared/video-job";
 import { api } from "@/lib/api";
 import { useBoard } from "@/lib/board";
 import { stagingOf } from "@/lib/staging";
@@ -48,16 +46,13 @@ export function useBatch(sessionId: string) {
   const committed = committedIds(session, board.scripts);
   const finished = finishedScripts(board.scripts);
   const sent = finished.filter((s) => committed.includes(s.id));
-  const jobOf = (scriptId: string) => state.jobs.get(scriptId);
-  const atLevel = (scriptId: string): VideoJob | undefined => {
-    const job = jobOf(scriptId);
-    if (!job?.plan || job.planning || job.status !== "idle") return job;
-    const level = make.levelOf(scriptId);
-    return level === mediaLevel(job.level).id ? job : (planAtLevel(job, level) ?? job);
+  const jobOf = (scriptId: string) => {
+    const job = state.jobs.get(scriptId);
+    return job && followSeriesModels(job, make.models);
   };
-  const staged = (s: Script) => readyToMake(jobOf(s.id), s, make.levelOf(s.id));
-  const stagingOfScript = (s: Script) => stagingOf(jobOf(s.id), s, make.levelOf(s.id));
-  const sum = (list: Script[]) => batchToMake(list.map((s) => atLevel(s.id))).usd;
+  const staged = (s: Script) => readyToMake(jobOf(s.id), s);
+  const stagingOfScript = (s: Script) => stagingOf(jobOf(s.id), s);
+  const sum = (list: Script[]) => batchToMake(list.map((s) => jobOf(s.id))).usd;
   const stalled = sentVideosBatchAlsoFinishes(sent, state.jobs);
   return {
     session,

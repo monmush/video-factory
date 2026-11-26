@@ -4,125 +4,16 @@ export type VoiceGender = "female" | "male";
 export type VoiceAge = "young" | "middle" | "old";
 export type VoiceAccent = "north" | "central" | "south";
 
-export type VoiceId =
-  | "mai"
-  | "nhu"
-  | "hanh"
-  | "hien"
-  | "trang"
-  | "ninh"
-  | "son"
-  | "tuan-anh"
-  | "lam"
-  | "luong";
+export const MAX_VOICE_CHARS = 200;
 
-export interface Voice {
-  id: VoiceId;
-  name: string;
-  gender: VoiceGender;
-  ages: VoiceAge[];
-  accent: VoiceAccent;
-  label: string;
-}
-
-export const VOICES: readonly Voice[] = [
-  {
-    id: "mai",
-    name: "Mai",
-    gender: "female",
-    ages: ["young"],
-    accent: "north",
-    label: "tươi sáng, tự nhiên",
-  },
-  {
-    id: "nhu",
-    name: "Như",
-    gender: "female",
-    ages: ["young"],
-    accent: "north",
-    label: "điềm tĩnh, tự tin",
-  },
-  {
-    id: "hanh",
-    name: "Hạnh",
-    gender: "female",
-    ages: ["young"],
-    accent: "north",
-    label: "mượt, rõ ràng",
-  },
-  {
-    id: "hien",
-    name: "Hiền",
-    gender: "female",
-    ages: ["middle", "old"],
-    accent: "north",
-    label: "ấm, trầm",
-  },
-  {
-    id: "trang",
-    name: "Trang",
-    gender: "female",
-    ages: ["middle", "old"],
-    accent: "north",
-    label: "ấm áp, đáng tin",
-  },
-  {
-    id: "ninh",
-    name: "Ninh",
-    gender: "male",
-    ages: ["young"],
-    accent: "north",
-    label: "trầm ấm, gần gũi",
-  },
-  {
-    id: "son",
-    name: "Sơn",
-    gender: "male",
-    ages: ["young"],
-    accent: "north",
-    label: "rõ ràng, điềm đạm",
-  },
-  {
-    id: "tuan-anh",
-    name: "Tuấn Anh",
-    gender: "male",
-    ages: ["old", "middle"],
-    accent: "north",
-    label: "trầm ấm, kể chuyện",
-  },
-  {
-    id: "lam",
-    name: "Lâm",
-    gender: "male",
-    ages: ["middle"],
-    accent: "north",
-    label: "ấm, trò chuyện",
-  },
-  {
-    id: "luong",
-    name: "Lượng",
-    gender: "male",
-    ages: ["middle"],
-    accent: "north",
-    label: "điềm tĩnh, rõ ràng",
-  },
-];
-
-const EAR_APPROVED_VOICE_PER_GENDER: Record<VoiceGender, VoiceId> = {
-  female: "mai",
-  male: "tuan-anh",
+export const ACCENT_WRITING_RULE: Record<VoiceAccent, string> = {
+  north:
+    'Giọng miền Bắc: không dùng từ địa phương miền khác như "vô", "nha", "hổng", "hông", "trời má", "bự".',
+  central:
+    'Giọng miền Trung: không dùng từ riêng của miền Bắc như "thế nhỉ", "đấy" hay của miền Nam như "hổng", "hông", "trời má".',
+  south:
+    'Giọng miền Nam: không dùng từ riêng của miền Bắc như "thế", "nhỉ", "đấy", "vâng", "ốm" (nghĩa là bệnh).',
 };
-const VOICE_WHEN_GENDER_UNKNOWN: VoiceId = "mai";
-
-export const ACCENTS: { id: VoiceAccent; label: string }[] = [
-  { id: "north", label: "Bắc" },
-  { id: "central", label: "Trung" },
-  { id: "south", label: "Nam" },
-];
-
-export function voiceById(id: string | undefined): Voice | undefined {
-  return id ? VOICES.find((v) => v.id === id) : undefined;
-}
 
 export interface VoiceTraits {
   gender?: VoiceGender;
@@ -209,7 +100,12 @@ const ROUGH_HINT = 1;
 
 type Found = { clue: Clue; strength: number };
 
-function cluesIn(raw: string): Found[] {
+type Reading = "character" | "voice";
+
+const saysAMaleVoice = (t: Token, before: Token | undefined, reading: Reading) =>
+  reading === "voice" && t.word === "nam" && !t.upper && t.joined && before?.word === "giọng";
+
+function cluesIn(raw: string, reading: Reading = "character"): Found[] {
   const text = raw.normalize("NFC");
   const tokens = tokenize(text);
   const found: Found[] = [];
@@ -232,7 +128,8 @@ function cluesIn(raw: string): Found[] {
     }
     const exclude = SAME_WORD_WITH_ANOTHER_MEANING[t.word];
     const before = tokens[i - 1];
-    if (exclude?.before?.includes(before?.word ?? "") && t.joined) continue;
+    const maleVoice = saysAMaleVoice(t, before, reading);
+    if (!maleVoice && exclude?.before?.includes(before?.word ?? "") && t.joined) continue;
     if (exclude?.after?.includes(next?.word ?? "") && next?.joined) continue;
     const noLongerYoung =
       t.word === "trẻ" && before?.word === "còn" && tokens[i - 2]?.word === "không";
@@ -253,8 +150,7 @@ function cluesIn(raw: string): Found[] {
   return found;
 }
 
-export function guessVoiceTraits(name: string, description: string): VoiceTraits {
-  const found = [...cluesIn(name), ...cluesIn(description)];
+function strongestTraits(found: Found[]): VoiceTraits {
   const pick = <K extends keyof Clue>(key: K): Clue[K] => {
     let best: Found | undefined;
     for (const f of found) {
@@ -270,69 +166,255 @@ export function guessVoiceTraits(name: string, description: string): VoiceTraits
   return traits;
 }
 
-const OUTSIDE_THE_VOICES_OWN_AGES = 10;
-const AGE_ORDER: VoiceAge[] = ["young", "middle", "old"];
+export const guessVoiceTraits = (name: string, description: string): VoiceTraits =>
+  strongestTraits([...cluesIn(name), ...cluesIn(description)]);
 
-function ageDistance(voice: Voice, age: VoiceAge): number {
-  const fit = voice.ages.indexOf(age);
-  if (fit >= 0) return fit;
-  const target = AGE_ORDER.indexOf(age);
-  return (
-    OUTSIDE_THE_VOICES_OWN_AGES +
-    Math.min(...voice.ages.map((a) => Math.abs(AGE_ORDER.indexOf(a) - target)))
-  );
+export const voiceKey = (text: string) =>
+  text.normalize("NFC").trim().toLocaleLowerCase("vi").replace(/\s+/g, " ");
+
+export const cleanVoiceText = (text: string | undefined) =>
+  (text ?? "").normalize("NFC").replace(/\s+/g, " ").trim().slice(0, MAX_VOICE_CHARS).trim();
+
+interface Region {
+  accent: VoiceAccent;
+  label: string;
+  places: string[];
 }
 
-export function suggestVoice(traits: VoiceTraits, takenIds: Iterable<string> = []): VoiceId {
-  const taken = new Set(takenIds);
-  const gender = traits.gender ?? (voiceById(VOICE_WHEN_GENDER_UNKNOWN) as Voice).gender;
-  const fallback = traits.gender
-    ? EAR_APPROVED_VOICE_PER_GENDER[gender]
-    : VOICE_WHEN_GENDER_UNKNOWN;
-  const pool = VOICES.map((voice, order) => ({ voice, order })).filter(
-    (v) => v.voice.gender === gender,
-  );
-  const rank = ({ voice, order }: (typeof pool)[number]) =>
-    traits.age
-      ? ageDistance(voice, traits.age) * 100 + order
-      : (voice.id === fallback ? -1 : 0) * 100 + order;
-  const ranked = pool.sort((a, b) => rank(a) - rank(b)).map((v) => v.voice.id);
-  return ranked.find((id) => !taken.has(id)) ?? ranked[0] ?? fallback;
+const REGIONS: Region[] = [
+  {
+    accent: "north",
+    label: "miền Bắc",
+    places: ["miền bắc", "bắc bộ", "giọng bắc", "người bắc", "hà nội", "hải phòng", "nam định"],
+  },
+  {
+    accent: "central",
+    label: "miền Trung",
+    places: [
+      "miền trung",
+      "trung bộ",
+      "huế",
+      "đà nẵng",
+      "xứ nghệ",
+      "nghệ an",
+      "giọng nghệ",
+      "hà tĩnh",
+      "quảng bình",
+      "quảng trị",
+      "quảng nam",
+      "quảng ngãi",
+      "bình định",
+      "phú yên",
+      "nha trang",
+      "khánh hòa",
+    ],
+  },
+  {
+    accent: "south",
+    label: "miền Nam",
+    places: [
+      "miền nam",
+      "nam bộ",
+      "sài gòn",
+      "hồ chí minh",
+      "tp.hcm",
+      "miền tây",
+      "cần thơ",
+      "bến tre",
+      "an giang",
+      "đồng tháp",
+      "vĩnh long",
+      "cà mau",
+      "tiền giang",
+      "sóc trăng",
+      "bạc liêu",
+      "kiên giang",
+      "long an",
+      "bình dương",
+      "đồng nai",
+      "vũng tàu",
+    ],
+  },
+];
+
+const COUNTRIES: Record<string, string> = {
+  "Hàn Quốc": "Hàn Quốc",
+  Hàn: "Hàn Quốc",
+  "Nhật Bản": "Nhật Bản",
+  Nhật: "Nhật Bản",
+  "Trung Quốc": "Trung Quốc",
+  "Đài Loan": "Đài Loan",
+  "Hồng Kông": "Hồng Kông",
+  "Thái Lan": "Thái Lan",
+  Thái: "Thái Lan",
+  Lào: "Lào",
+  Campuchia: "Campuchia",
+  Mỹ: "Mỹ",
+  Anh: "Anh",
+  Pháp: "Pháp",
+  Đức: "Đức",
+  Nga: "Nga",
+  Úc: "Úc",
+  "Ấn Độ": "Ấn Độ",
+  Philippines: "Philippines",
+  Singapore: "Singapore",
+  Indonesia: "Indonesia",
+  Malaysia: "Malaysia",
+  Canada: "Canada",
+  Ý: "Ý",
+  "Tây Ban Nha": "Tây Ban Nha",
+  "Hà Lan": "Hà Lan",
+  Tây: "phương Tây",
+};
+
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const asWord = (text: string) => `(?<![\\p{L}\\p{N}])${escaped(text)}(?![\\p{L}\\p{N}])`;
+
+const FOREIGN = new RegExp(
+  `(?:[Nn]gười|[Qq]uốc tịch|[Đđ]ến từ|[Gg]ốc)\\s+(${Object.keys(COUNTRIES)
+    .sort((a, b) => b.length - a.length)
+    .map(escaped)
+    .join("|")})(?![\\p{L}\\p{N}])`,
+  "u",
+);
+
+const firstAt = (text: string, pattern: RegExp) => text.search(pattern);
+
+function placeOf(text: string): { at: number; region: Region } | null {
+  const lower = text.normalize("NFC").toLocaleLowerCase("vi");
+  let found: { at: number; region: Region } | null = null;
+  for (const region of REGIONS) {
+    for (const place of region.places) {
+      const at = firstAt(lower, new RegExp(asWord(place), "u"));
+      if (at >= 0 && (!found || at < found.at)) found = { at, region };
+    }
+  }
+  return found;
 }
 
-export function resolveVoice(
-  asset: Pick<Asset, "name" | "description" | "voiceId">,
-  takenIds: Iterable<string> = [],
-): VoiceId {
-  return (
-    voiceById(asset.voiceId)?.id ??
-    suggestVoice(guessVoiceTraits(asset.name, asset.description), takenIds)
-  );
+export const accentOfVoice = (voice: string): VoiceAccent | undefined =>
+  placeOf(voice)?.region.accent;
+
+const DEFAULT_REGION = "miền Bắc";
+
+export function voiceRegion(text: string): string {
+  const normal = text.normalize("NFC");
+  const foreign = FOREIGN.exec(normal);
+  const place = placeOf(normal);
+  if (foreign && (!place || foreign.index < place.at)) {
+    return `người ${COUNTRIES[foreign[1] as string]} nói tiếng Việt`;
+  }
+  return place?.region.label ?? DEFAULT_REGION;
 }
 
-export function takenVoiceIds(assets: readonly Asset[], exceptId?: string): VoiceId[] {
-  return assets.flatMap((a) => {
-    const voice = a.kind === "character" && a.id !== exceptId ? voiceById(a.voiceId) : undefined;
-    return voice ? [voice.id] : [];
-  });
+export interface CharacterVoiceTraits extends VoiceTraits {
+  region: string;
 }
 
-const SPOKEN_VOICES: Record<VoiceGender, Record<VoiceAge, string>> = {
+export const characterVoiceTraits = (name: string, description: string): CharacterVoiceTraits => ({
+  ...guessVoiceTraits(name, description),
+  region: voiceRegion(`${name}. ${description}`),
+});
+
+const GENDER_WORD: Record<VoiceGender, string> = { female: "nữ", male: "nam" };
+const AGE_WORD: Record<VoiceAge, string> = {
+  young: "trẻ",
+  middle: "trung niên",
+  old: "lớn tuổi",
+};
+
+const VARIANTS: Record<VoiceGender, Record<VoiceAge, readonly string[]>> = {
   female: {
-    young: "A young Vietnamese woman in her twenties with a bright, natural voice",
-    middle: "A Vietnamese woman in her forties with a warm, steady voice",
-    old: "An elderly Vietnamese woman with a warm, slightly soft voice",
+    young: ["tươi sáng, nói nhanh", "trong trẻo, nhẹ nhàng", "hơi khàn, tự tin"],
+    middle: ["ấm, rõ ràng", "trầm, điềm tĩnh", "sáng, nói nhanh"],
+    old: ["ấm, chậm rãi", "hơi khàn, hiền từ", "trong, thong thả"],
   },
   male: {
-    young: "A young Vietnamese man in his twenties with a clear, friendly voice",
-    middle: "A Vietnamese man in his forties with a warm, conversational voice",
-    old: "An elderly Vietnamese man with a deep, warm, unhurried voice",
+    young: ["sáng, nói nhanh", "trầm ấm, gần gũi", "khỏe, rõ ràng"],
+    middle: ["ấm, trò chuyện", "trầm, điềm đạm", "vang, nói nhanh"],
+    old: ["trầm ấm, chậm rãi", "hơi khàn, hiền hậu", "vang, thong thả"],
   },
 };
 
-const ACCENT_SPOKEN = "speaking with a standard Northern Vietnamese (Hanoi) accent";
+const GENDER_WHEN_UNKNOWN: VoiceGender = "female";
+const AGE_WHEN_UNKNOWN: VoiceAge = "middle";
 
-export function voiceDescription(traits: VoiceTraits): string {
-  const voice = SPOKEN_VOICES[traits.gender ?? "female"][traits.age ?? "middle"];
-  return `${voice}, ${ACCENT_SPOKEN}.`;
+export const voiceTextTraits = (text: string): VoiceTraits =>
+  strongestTraits(cluesIn(text, "voice"));
+
+export function spokenTraits(
+  text: string,
+  character: VoiceTraits,
+): VoiceTraits & { gender: VoiceGender } {
+  const stated = voiceTextTraits(text);
+  const age = stated.age ?? character.age;
+  return {
+    gender: stated.gender ?? character.gender ?? GENDER_WHEN_UNKNOWN,
+    ...(age ? { age } : {}),
+  };
+}
+
+export function defaultVoiceText(
+  traits: CharacterVoiceTraits,
+  takenTexts: Iterable<string> = [],
+): string {
+  const gender = traits.gender ?? GENDER_WHEN_UNKNOWN;
+  const age = traits.age ?? AGE_WHEN_UNKNOWN;
+  const taken = new Set([...takenTexts].map(voiceKey));
+  const options = VARIANTS[gender][age].map(
+    (variant) => `Giọng ${GENDER_WORD[gender]} ${AGE_WORD[age]}, ${traits.region}, ${variant}`,
+  );
+  return options.find((o) => !taken.has(voiceKey(o))) ?? (options[0] as string);
+}
+
+const otherCharacters = (assets: readonly Asset[], exceptId?: string) =>
+  assets.filter((a) => a.kind === "character" && a.id !== exceptId);
+
+export const takenVoiceTexts = (assets: readonly Asset[], exceptId?: string): string[] =>
+  otherCharacters(assets, exceptId).flatMap((a) => (a.voice ? [a.voice] : []));
+
+export const defaultVoiceFor = (
+  character: Pick<Asset, "id" | "name" | "description">,
+  assets: readonly Asset[],
+) =>
+  defaultVoiceText(
+    characterVoiceTraits(character.name, character.description),
+    takenVoiceTexts(assets, character.id),
+  );
+
+export const characterVoice = (
+  character: Pick<Asset, "id" | "name" | "description" | "voice">,
+  assets: readonly Asset[],
+) => cleanVoiceText(character.voice) || defaultVoiceFor(character, assets);
+
+const VOICE_TEXT_OF_A_CATALOGUE_VOICE: Record<string, string> = {
+  mai: "Giọng nữ trẻ, miền Bắc, tươi sáng, tự nhiên",
+  nhu: "Giọng nữ trẻ, miền Bắc, điềm tĩnh, tự tin",
+  hanh: "Giọng nữ trẻ, miền Bắc, mượt, rõ ràng",
+  hien: "Giọng nữ trung niên, miền Bắc, ấm, trầm",
+  trang: "Giọng nữ trung niên, miền Bắc, ấm áp, đáng tin",
+  ninh: "Giọng nam trẻ, miền Bắc, trầm ấm, gần gũi",
+  son: "Giọng nam trẻ, miền Bắc, rõ ràng, điềm đạm",
+  "tuan-anh": "Giọng nam lớn tuổi, miền Bắc, trầm ấm, kể chuyện",
+  lam: "Giọng nam trung niên, miền Bắc, ấm, trò chuyện",
+  luong: "Giọng nam trung niên, miền Bắc, điềm tĩnh, rõ ràng",
+};
+
+export type SavedAsset = Asset & { voiceId?: string };
+
+export function withVoiceTexts(saved: readonly SavedAsset[]): Asset[] {
+  const named = saved.map(({ voiceId, ...asset }): Asset => {
+    if (asset.kind !== "character") return asset;
+    const voice =
+      cleanVoiceText(asset.voice) || VOICE_TEXT_OF_A_CATALOGUE_VOICE[voiceId ?? ""] || "";
+    return voice ? { ...asset, voice } : asset;
+  });
+  const done: Asset[] = [];
+  for (const asset of named) {
+    const needsDefault = asset.kind === "character" && !asset.voice;
+    done.push(
+      needsDefault ? { ...asset, voice: defaultVoiceFor(asset, [...done, ...named]) } : asset,
+    );
+  }
+  return done;
 }

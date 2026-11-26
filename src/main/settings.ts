@@ -10,7 +10,6 @@ interface Settings {
   chatModel: string;
   chatEffort: ChatEffort | null;
   onboarded: boolean;
-  nativeVoice: boolean;
 }
 
 const FILE = "settings.json";
@@ -23,7 +22,6 @@ const defaultSettings = (): Settings => ({
   chatModel: "opus",
   chatEffort: "medium",
   onboarded: false,
-  nativeVoice: false,
 });
 
 function storedSettings(): Settings {
@@ -44,5 +42,3 @@ export function readSettings(): Settings {
 export async function writeSettings(patch: Partial<Settings>): Promise<void> {
   await writeJsonAtomic(dataFile(FILE), { ...storedSettings(), ...patch });
 }
-
-export const nativeVoiceOn = () => devFeatures() && readSettings().nativeVoice === true;

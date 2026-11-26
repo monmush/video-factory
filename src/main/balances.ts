@@ -39,41 +39,7 @@ async function falBalance(): Promise<Balances["fal"]> {
   return denied ? { status: "no-permission" } : { status: "no-key" };
 }
 
-async function elevenLabsBalance(): Promise<Balances["elevenlabs"]> {
-  const key = await getKey("elevenlabs");
-  if (!key) return { status: "no-key" };
-  try {
-    const res = await fetch("https://api.elevenlabs.io/v1/user/subscription", {
-      headers: { "xi-api-key": key },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (res.status === 401 || res.status === 403) return { status: "no-permission" };
-    if (!res.ok) return { status: "error", message: `ElevenLabs trả về lỗi ${res.status}` };
-    const data = (await res.json()) as {
-      tier?: string;
-      character_count?: number;
-      character_limit?: number;
-      next_character_count_reset_unix?: number;
-    };
-    return {
-      status: "ok",
-      used: data.character_count ?? 0,
-      limit: data.character_limit ?? 0,
-      resetsAt: data.next_character_count_reset_unix
-        ? new Date(data.next_character_count_reset_unix * 1000).toISOString()
-        : null,
-      plan: data.tier ?? "",
-    };
-  } catch (error) {
-    return { status: "error", message: (error as Error).message };
-  }
-}
-
 export async function balances(): Promise<Balances> {
-  const [fal, elevenlabs, claude] = await Promise.all([
-    falBalance(),
-    elevenLabsBalance(),
-    readClaudeLimits(),
-  ]);
-  return { fal, elevenlabs, claude, checkedAt: new Date().toISOString() };
+  const [fal, claude] = await Promise.all([falBalance(), readClaudeLimits()]);
+  return { fal, claude, checkedAt: new Date().toISOString() };
 }

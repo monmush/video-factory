@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildDirection } from "../build-direction";
 import { rejectClip } from "../clip-check";
-import { requestCost } from "../live-plan";
-import { mediaLevel } from "../media-level";
-import { builtinRecipe } from "../recipe";
-import { readShotList, type ShotListAnswer } from "../shot-list";
-import { answer, CTX, LINES } from "../shot-list.fixture";
-import { applyLivePlan, newJob, type VideoJob, withShotAudio } from "../video-job";
+import { plannedJob } from "../job.fixture";
+import { AUTO_MODELS } from "../models";
+import type { ShotListAnswer } from "../shot-list";
+import { answer, LINES } from "../shot-list.fixture";
+import { newJob, type VideoJob, withShotTimes } from "../video-job";
 import { STEP } from "./charges";
 import { withInUsePaid } from "./charges.fixture";
 import {
@@ -14,14 +12,11 @@ import {
   costToFinishUsd,
   costToPreviewUsd,
   stepEstimates,
-  withCurrentRates,
   withFirstPass,
 } from "./estimate";
-import { MOTION_RATE } from "./rates";
 import { costPanel } from "./table";
 
 const NOW = "2026-11-20T10:00:00.000Z";
-const WAN_PRIME_UNIT_USD = 0.045;
 const WIDE = 1;
 
 function moving(): ShotListAnswer {
@@ -40,53 +35,11 @@ const fresh = () =>
     title: "t",
     lines: LINES,
     useEnvironment: true,
+    models: AUTO_MODELS,
     now: NOW,
   });
 
-function staged(levelId = "balanced"): VideoJob {
-  const level = mediaLevel(levelId);
-  const { list, errors } = readShotList(moving(), CTX, { motion: level.motion, sound: false });
-  expect(errors).toEqual([]);
-  const live = buildDirection({
-    list,
-    recipe: builtinRecipe(level),
-    lines: LINES,
-    level,
-    cast: [
-      { id: "a", name: "An", photos: 3 },
-      { id: "b", name: "Ba", photos: 2 },
-    ],
-    placePhotos: 3,
-  });
-  return { ...applyLivePlan({ ...fresh(), status: "idle" }, live), level: level.id };
-}
-
-describe("measured rates", () => {
-  it("prices a moving shot at the 5.6 units a second billed for Wan 3.0 Prime at 1080p without sound", () => {
-    const motion = builtinRecipe(mediaLevel("balanced")).motion;
-    if (!motion) throw new Error("no motion role");
-    const priced = (seconds: number) =>
-      requestCost(motion.rate, motion.schema, motion.input, "motion", seconds).usd;
-    expect(priced(7)).toBeCloseTo(39.2 * WAN_PRIME_UNIT_USD);
-    expect(priced(3)).toBeCloseTo(16.8 * WAN_PRIME_UNIT_USD);
-  });
-
-  it("a staging saved with the old rates is priced at today's rates until it spends", () => {
-    const job = staged();
-    const live = job.live as NonNullable<VideoJob["live"]>;
-    const endpoint = Object.keys(live.rates).find((e) => e.includes("wan-3.0-prime")) as string;
-    const saved: VideoJob = {
-      ...job,
-      live: { ...live, rates: { ...live.rates, [endpoint]: { ...MOTION_RATE, usd: 0.045 } } },
-    };
-    const refreshed = withCurrentRates(saved);
-    expect(refreshed.live?.rates[endpoint]).toEqual(MOTION_RATE);
-    expect(costToFinishUsd(refreshed)).toBeCloseTo(costToFinishUsd(job) ?? Number.NaN);
-    expect(costToFinishUsd(refreshed)).toBeGreaterThan(costToFinishUsd(saved) ?? Number.NaN);
-    const spent = withInUsePaid({ ...saved, voiceCostUsd: 0.01, dialogue: "d.mp3" });
-    expect(withCurrentRates(spent)).toBe(spent);
-  });
-});
+const staged = (): VideoJob => plannedJob(AUTO_MODELS, moving());
 
 describe("a price needs a staging", () => {
   it("a video without staging has no price, and a batch counts only staged videos", () => {
@@ -106,8 +59,8 @@ describe("the frozen estimate", () => {
   it("does not move when clip lengths become known or a clip is redone", () => {
     const started = withFirstPass({ ...staged(), status: "waiting" }, NOW);
     const frozen = costPanel(started)?.groups.map((g) => [g.label, g.estimateUsd]);
-    const timed = withShotAudio(
-      { ...started, dialogue: "d.mp3", voiceCostUsd: 0.01 },
+    const timed = withShotTimes(
+      { ...started, dialogue: "d.mp3" },
       started.shots.map((_, i) => ({
         start: i * 9,
         end: i * 9 + 9,

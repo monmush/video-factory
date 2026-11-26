@@ -1,6 +1,3 @@
-import { estimateVoiceUsd } from "./board";
-import type { ScriptLine } from "./ipc";
-import type { MediaLevel, MediaLevelId } from "./media-level";
 import {
   type DirectorAnswer,
   estimatePartSec,
@@ -12,12 +9,10 @@ import {
 
 export type Route = "lip-sync" | "motion" | "still-move" | "product";
 const ROUTES: Route[] = ["lip-sync", "motion", "still-move", "product"];
-export const PAID_ROUTES: readonly Route[] = ["lip-sync", "motion"];
+export const PAID_ROUTES: readonly Route[] = ["motion"];
 
 export type KeyframeKind = "master" | "character" | "action" | "plate";
 const KEYFRAME_KINDS: KeyframeKind[] = ["master", "character", "action", "plate"];
-
-export const SHORTEST_AUDIO_A_SPEAKING_SHOT_IS_GIVEN_SEC = 2;
 
 export interface SchemaParam {
   name: string;
@@ -299,6 +294,7 @@ export interface PlannedRoute {
   keyframe: string | null;
   endpoint: string | null;
   input: Input | null;
+  motion?: string;
 }
 
 export interface LivePlan {
@@ -313,13 +309,12 @@ export interface LivePlan {
     decisionId: string | null;
     billing?: Billing;
   }[];
-  level: MediaLevelId;
   guidanceNote: string;
 }
 
 export interface LiveContext extends PlanContext {
   refs: string[];
-  level: MediaLevel;
+  pace: number;
 }
 
 const PLACEHOLDER = /^\{\{\s*([^{}]+?)\s*\}\}$/;
@@ -466,8 +461,8 @@ function readBilling(
   };
 }
 
-export const plannedShotSec = (shot: { text: string; hold?: number }) =>
-  estimatePartSec(shot.text) + (shot.hold ?? 0);
+export const plannedShotSec = (shot: { text: string; hold?: number }, pace: number) =>
+  estimatePartSec(shot.text, pace) + (shot.hold ?? 0);
 
 export function readLivePlan(
   answer: LiveAnswer,
@@ -562,23 +557,19 @@ export function readLivePlan(
       if (!endpoint || !input) {
         errors.push(`${where}: the ${route} route needs an endpoint and its exact input.`);
       } else {
-        const seconds = shot ? plannedShotSec(shot) : undefined;
+        const seconds = shot ? plannedShotSec(shot, ctx.pace) : undefined;
         errors.push(
           ...inputErrors(where, endpoint, input, record, route === "motion" ? seconds : undefined),
         );
         const used = placeholdersIn(input);
-        const allowed = route === "lip-sync" ? ["keyframe", "audio"] : ["keyframe"];
         for (const p of used) {
           const other = /^keyframe:(.+)$/.exec(p)?.[1];
-          if (other ? !ids.has(other) : !allowed.includes(p)) {
+          if (other ? !ids.has(other) : p !== "keyframe") {
             errors.push(`${where}: "{{${p}}}" cannot be resolved here.`);
           }
         }
         if (!used.includes("keyframe"))
           errors.push(`${where}: pass the keyframe as "{{keyframe}}".`);
-        if (route === "lip-sync" && !used.includes("audio")) {
-          errors.push(`${where}: pass the shot's audio as "{{audio}}".`);
-        }
         const named = textsIn(input)
           .map((t) => productText(norm(t)))
           .find(Boolean);
@@ -619,7 +610,6 @@ export function readLivePlan(
       keyframes,
       routes,
       models,
-      level: ctx.level.id,
       guidanceNote: norm(answer.guidance_note),
     },
     errors: [...new Set(errors)],
@@ -746,9 +736,6 @@ export function fitDuration(
   return { input: { ...input, [param.name]: want }, seconds: want };
 }
 
-const lipSyncSeconds = (rate: Rate | undefined, audioSec: number) =>
-  Math.max(SHORTEST_AUDIO_A_SPEAKING_SHOT_IS_GIVEN_SEC, audioSec, rate?.minSeconds ?? 0);
-
 export function requestCost(
   rate: Rate | undefined,
   schema: ModelSchema | undefined,
@@ -758,7 +745,6 @@ export function requestCost(
 ): { usd: number | null; quantity: string } {
   let billed = seconds;
   let body = input;
-  if (route === "lip-sync") billed = lipSyncSeconds(rate, seconds);
   if (route === "motion") {
     const fitted = fitDuration(schema, input, seconds);
     body = fitted.input;
@@ -823,7 +809,7 @@ export interface PricedStep {
   step: string;
   endpoint: string | null;
   input: Input | null;
-  route: Route | "keyframe" | "voice" | "local";
+  route: Route | "keyframe" | "local";
   seconds: number;
   usd?: number;
 }
@@ -860,17 +846,8 @@ export function costTable(
   };
 }
 
-export function planSteps(plan: LivePlan, lines: Pick<ScriptLine, "text">[]): PricedStep[] {
-  const steps: PricedStep[] = [
-    {
-      step: "Giọng đọc",
-      endpoint: null,
-      input: null,
-      route: "voice",
-      seconds: 0,
-      usd: estimateVoiceUsd(lines),
-    },
-  ];
+export function planSteps(plan: LivePlan, pace: number): PricedStep[] {
+  const steps: PricedStep[] = [];
   for (const k of plan.keyframes) {
     steps.push({
       step: `Khung hình ${k.id}`,
@@ -889,19 +866,15 @@ export function planSteps(plan: LivePlan, lines: Pick<ScriptLine, "text">[]): Pr
       endpoint: paid ? route.endpoint : null,
       input: paid ? route.input : null,
       route: paid ? route.route : "local",
-      seconds: plannedShotSec(shot),
+      seconds: plannedShotSec(shot, pace),
     });
   });
   return steps;
 }
 
-export function priceLivePlan(
-  plan: LivePlan,
-  record: ToolRecord,
-  lines: Pick<ScriptLine, "text">[],
-): CostTable {
+export function priceLivePlan(plan: LivePlan, record: ToolRecord, pace: number): CostTable {
   const { rates, schemas } = planRates(plan, record);
-  const steps = planSteps(plan, lines);
+  const steps = planSteps(plan, pace);
   return costTable(
     steps,
     rates,
@@ -910,21 +883,15 @@ export function priceLivePlan(
   );
 }
 
-const ROUTE_OPERATIONS: Record<"lip-sync" | "motion", string[]> = {
-  "lip-sync": ["lip-sync", "talking-avatar"],
-  motion: ["image-to-video"],
-};
+const MOTION_OPERATIONS = ["image-to-video"];
 
-function takesRoute(schema: ModelSchema, route: "lip-sync" | "motion") {
-  const names = schema.params.map((p) => p.name);
-  const image = names.some((n) => /image/i.test(n) && !/end|last|tail/i.test(n));
-  return route === "lip-sync" ? image && names.some((n) => /audio/i.test(n)) : image;
-}
+const takesAnImage = (schema: ModelSchema) =>
+  schema.params.some((p) => /image/i.test(p.name) && !/end|last|tail/i.test(p.name));
 
-export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[] {
+export function cheaperAlternatives(plan: LivePlan, record: ToolRecord, pace: number): string[] {
   const { rates, schemas } = planRates(plan, record);
   const warnings: string[] = [];
-  for (const route of ["lip-sync", "motion"] as const) {
+  for (const route of ["motion"] as const) {
     const shots = plan.shots.shots
       .map((shot, i) => ({ shot, r: plan.routes[i] }))
       .filter(({ r }) => r?.route === route && r.endpoint && r.input);
@@ -935,21 +902,22 @@ export function cheaperAlternatives(plan: LivePlan, record: ToolRecord): string[
         schemas[r?.endpoint as string],
         r?.input as Input,
         route,
-        plannedShotSec(shot),
+        plannedShotSec(shot, pace),
       ).usd;
       return cost === null ? Number.NaN : n + cost;
     }, 0);
     if (!Number.isFinite(chosen)) continue;
     const used = new Set(shots.map(({ r }) => r?.endpoint));
-    const candidates = ROUTE_OPERATIONS[route].flatMap((op) => record.candidates?.[op] ?? []);
+    const candidates = MOTION_OPERATIONS.flatMap((op) => record.candidates?.[op] ?? []);
     let best: { endpoint: string; usd: number } | null = null;
     for (const endpoint of new Set(candidates)) {
       const schema = record.schemas[endpoint];
-      if (used.has(endpoint) || !schema || !takesRoute(schema, route)) continue;
+      if (used.has(endpoint) || !schema || !takesAnImage(schema)) continue;
       const rate = rateOf(record, endpoint);
       if (rate.usd === null || !/second|minute/i.test(rate.unit)) continue;
       const usd = shots.reduce(
-        (n, { shot }) => n + (requestCost(rate, schema, {}, route, plannedShotSec(shot)).usd ?? 0),
+        (n, { shot }) =>
+          n + (requestCost(rate, schema, {}, route, plannedShotSec(shot, pace)).usd ?? 0),
         0,
       );
       if (!best || usd < best.usd) best = { endpoint, usd };
@@ -983,14 +951,14 @@ export interface LiveDirection {
 export function liveDirection(
   plan: LivePlan,
   record: ToolRecord,
-  lines: Pick<ScriptLine, "text">[],
   run: { connection: LiveDirection["connection"]; model: string | null; ms: number },
+  pace: number,
 ): LiveDirection {
-  const costs = priceLivePlan(plan, record, lines);
+  const costs = priceLivePlan(plan, record, pace);
   return {
     plan,
     costs,
-    warnings: [...unknownPriceWarnings(costs), ...cheaperAlternatives(plan, record)],
+    warnings: [...unknownPriceWarnings(costs), ...cheaperAlternatives(plan, record, pace)],
     ...planRates(plan, record),
     connection: run.connection,
     tools: record.calls.map((c) => c.tool),

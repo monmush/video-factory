@@ -6,7 +6,6 @@ import { dataFile, writeJsonAtomic } from "./paths";
 const ENV_NAMES: Record<ProviderId, string> = {
   fal: "FAL_KEY",
   "fal-billing": "FAL_BILLING_KEY",
-  elevenlabs: "ELEVENLABS_API_KEY",
 };
 const PROVIDERS = Object.keys(ENV_NAMES) as ProviderId[];
 const SECRETS_FILE = "secrets.json";
@@ -96,12 +95,4 @@ export async function falClient() {
   if (!credentials) throw new Error("Chưa có khóa fal. Thêm khóa trong Cài đặt.");
   const { createFalClient } = await import("@fal-ai/client");
   return createFalClient({ credentials });
-}
-
-export async function elevenLabsClient() {
-  refuseClientInFixtureMode("ElevenLabs");
-  const apiKey = await getKey("elevenlabs");
-  if (!apiKey) throw new Error("Chưa có khóa ElevenLabs. Thêm khóa trong Cài đặt.");
-  const { ElevenLabsClient } = await import("@elevenlabs/elevenlabs-js");
-  return new ElevenLabsClient({ apiKey });
 }

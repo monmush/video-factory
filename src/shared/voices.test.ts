@@ -1,20 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { Asset } from "./ipc";
 import {
+  accentOfVoice,
   ageBand,
+  characterVoiceTraits,
+  defaultVoiceText,
   guessVoiceTraits,
-  resolveVoice,
-  suggestVoice,
-  takenVoiceIds,
-  VOICES,
+  type SavedAsset,
+  voiceRegion,
+  withVoiceTexts,
 } from "./voices";
-
-describe("voice catalogue", () => {
-  it("has voices with unique ids, all Northern", () => {
-    expect(new Set(VOICES.map((v) => v.id)).size).toBe(VOICES.length);
-    expect(VOICES.every((v) => v.accent === "north")).toBe(true);
-  });
-});
 
 describe("guessVoiceTraits", () => {
   it("reads forms of address in the name", () => {
@@ -79,59 +73,86 @@ describe("guessVoiceTraits", () => {
   });
 });
 
-describe("suggestVoice", () => {
-  it("gives the approved pair to an elderly man and a young woman", () => {
-    expect(suggestVoice({ gender: "male", age: "old" })).toBe("tuan-anh");
-    expect(suggestVoice({ gender: "female", age: "young" })).toBe("mai");
+describe("a character's default voice", () => {
+  const oldMan = characterVoiceTraits("Ông Ba", "Ông cụ khoảng 70 tuổi");
+
+  it("says gender, age band and region, and is the same every time", () => {
+    expect(defaultVoiceText(oldMan)).toBe("Giọng nam lớn tuổi, miền Bắc, trầm ấm, chậm rãi");
+    expect(defaultVoiceText(oldMan)).toBe(defaultVoiceText(oldMan));
   });
 
-  it("matches age within the gender", () => {
-    expect(suggestVoice({ gender: "male", age: "young" })).toBe("ninh");
-    expect(suggestVoice({ gender: "male", age: "middle" })).toBe("lam");
-    expect(suggestVoice({ gender: "female", age: "middle" })).toBe("hien");
+  it("never gives a second character a voice another one already has", () => {
+    const first = defaultVoiceText(oldMan);
+    const second = defaultVoiceText(oldMan, [` ${first.toUpperCase()} `]);
+    expect(second).not.toBe(first);
+    expect(defaultVoiceText(oldMan, [first, second])).not.toBe(second);
   });
 
-  it("gives an old woman a middle-aged female voice", () => {
-    expect(suggestVoice({ gender: "female", age: "old" })).toBe("hien");
-  });
-
-  it("falls back to the gender default, then the overall default", () => {
-    expect(suggestVoice({ gender: "male" })).toBe("tuan-anh");
-    expect(suggestVoice({ gender: "female" })).toBe("mai");
-    expect(suggestVoice({})).toBe("mai");
-  });
-
-  it("skips voices other characters use while the gender has a free one", () => {
-    expect(suggestVoice({ gender: "male", age: "old" }, ["tuan-anh"])).toBe("lam");
-    expect(suggestVoice({ gender: "female" }, ["mai"])).toBe("nhu");
-  });
-
-  it("reuses the best match when every voice of the gender is taken", () => {
-    const females = VOICES.filter((v) => v.gender === "female").map((v) => v.id);
-    expect(suggestVoice({ gender: "female", age: "young" }, females)).toBe("mai");
+  it("reuses the first variant once all three are taken", () => {
+    const taken: string[] = [];
+    for (let i = 0; i < 3; i++) taken.push(defaultVoiceText(oldMan, taken));
+    expect(new Set(taken).size).toBe(3);
+    expect(defaultVoiceText(oldMan, taken)).toBe(taken[0]);
   });
 });
 
-describe("resolveVoice", () => {
-  const character = (voiceId?: string, id = "c1") =>
-    ({ id, kind: "character", name: "Ông lão", description: "", voiceId }) as Asset;
-
-  it("keeps a saved voice", () => {
-    expect(resolveVoice(character("lam"))).toBe("lam");
+describe("the region of a voice", () => {
+  it("is Northern unless the description names another region or a country", () => {
+    expect(voiceRegion("Cô gái bán trà")).toBe("miền Bắc");
+    expect(voiceRegion("Bà cụ sống ở Huế")).toBe("miền Trung");
+    expect(voiceRegion("Anh shipper người Sài Gòn")).toBe("miền Nam");
+    expect(voiceRegion("Cô gái người Hàn Quốc đi du lịch Hà Nội")).toBe(
+      "người Hàn Quốc nói tiếng Việt",
+    );
   });
 
-  it("suggests when the saved voice is missing or unknown", () => {
-    expect(resolveVoice(character())).toBe("tuan-anh");
-    expect(resolveVoice(character("gone"), ["tuan-anh"])).toBe("lam");
+  it("takes the first place named", () => {
+    expect(voiceRegion("Người Hà Nội, mới vào Sài Gòn làm việc")).toBe("miền Bắc");
   });
 
-  it("lists voices saved on other characters", () => {
-    const assets = [
-      character("mai", "a"),
-      character("gone", "b"),
-      character("lam", "c"),
-      { ...character("son", "d"), kind: "product" } as Asset,
-    ];
-    expect(takenVoiceIds(assets, "c")).toEqual(["mai"]);
+  it("gives the writing rules an accent only when the voice text names a region", () => {
+    expect(accentOfVoice("Giọng nam trẻ, miền Bắc, sáng")).toBe("north");
+    expect(accentOfVoice("Giọng nữ, giọng Huế nhẹ nhàng")).toBe("central");
+    expect(accentOfVoice("Giọng nam trung niên, miền Tây, chậm")).toBe("south");
+    expect(accentOfVoice("Giọng nam trẻ, sáng")).toBeUndefined();
+    expect(accentOfVoice("Giọng nam trung niên, người Nhật nói tiếng Việt")).toBeUndefined();
+  });
+});
+
+describe("saved characters from before voices were texts", () => {
+  const character = (id: string, fields: Partial<SavedAsset> = {}): SavedAsset => ({
+    id,
+    kind: "character",
+    name: "Ông lão",
+    handle: id,
+    description: "",
+    images: [],
+    createdAt: "",
+    updatedAt: "",
+    ...fields,
+  });
+
+  it("turns a catalogue voice into its text and drops the old id", () => {
+    const [mai, tuanAnh] = withVoiceTexts([
+      character("a", { voiceId: "mai" }),
+      character("b", { voiceId: "tuan-anh" }),
+    ]);
+    expect(mai?.voice).toBe("Giọng nữ trẻ, miền Bắc, tươi sáng, tự nhiên");
+    expect(tuanAnh?.voice).toBe("Giọng nam lớn tuổi, miền Bắc, trầm ấm, kể chuyện");
+    expect(mai).not.toHaveProperty("voiceId");
+  });
+
+  it("gives every other character a default no one else has, and leaves other kinds alone", () => {
+    const taken = defaultVoiceText(characterVoiceTraits("Ông lão", ""));
+    const [kept, unknown, none, product] = withVoiceTexts([
+      character("a", { voice: taken }),
+      character("b", { voiceId: "gone" }),
+      character("c"),
+      character("p", { kind: "product" }),
+    ]);
+    expect(kept?.voice).toBe(taken);
+    expect(unknown?.voice).toMatch(/^Giọng nam lớn tuổi, miền Bắc/);
+    expect(new Set([taken, unknown?.voice, none?.voice]).size).toBe(3);
+    expect(product).not.toHaveProperty("voice");
   });
 });

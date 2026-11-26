@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { buildDirection } from "./build-direction";
 import { costPanel } from "./cost/table";
 import type { ScriptLine } from "./ipc";
-import { mediaLevel } from "./media-level";
+import { AUTO_MODELS } from "./models";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 import { followProduct, type NamedProduct, swapName } from "./product-follow";
 import { builtinRecipe } from "./recipe";
 import { readShotList } from "./shot-list";
 import { answer, CTX, LINES } from "./shot-list.fixture";
 import { applyLivePlan, applyPlan, newJob, type VideoJob } from "./video-job";
 
-const level = mediaLevel("balanced");
 const OLD: NamedProduct = { id: "p", name: "Bạch Trà Shan Tuyết" };
 const NEW: NamedProduct = { id: "q", name: "Trà Ô Long" };
 const products = new Map([OLD, NEW].map((p) => [p.id, p]));
@@ -26,14 +26,13 @@ function plannedJob(named = false): VideoJob {
   expect(errors).toEqual([]);
   const live = buildDirection({
     list,
-    recipe: builtinRecipe(level),
-    lines,
-    level,
+    recipe: builtinRecipe(AUTO_MODELS),
     cast: [
       { id: "a", name: "An", photos: 3 },
       { id: "b", name: "Ba", photos: 2 },
     ],
     placePhotos: 3,
+    pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
   });
   const job = newJob({
     sessionId: "s",
@@ -42,10 +41,11 @@ function plannedJob(named = false): VideoJob {
     title: "T",
     lines,
     useEnvironment: true,
+    models: AUTO_MODELS,
     now: "2026-11-19T10:00:00.000Z",
   });
   return {
-    ...applyLivePlan({ ...job, status: "idle", productIds: ["p"], level: level.id }, live),
+    ...applyLivePlan({ ...job, status: "idle", productIds: ["p"] }, live),
     frames: applyLivePlan(job, live).frames.map((f) =>
       f.kind === "product" ? { ...f, cutouts: 2 } : f,
     ),
@@ -133,6 +133,7 @@ describe("followProduct", () => {
       title: "T",
       lines: LINES,
       useEnvironment: false,
+      models: AUTO_MODELS,
       now: "2026-11-19T10:00:00.000Z",
     });
     const planned = applyPlan(job, {

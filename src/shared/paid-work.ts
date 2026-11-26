@@ -1,8 +1,10 @@
 import { frameUsd, inFlightUsd, shotEstimateUsd } from "./cost/estimate";
+import { VOICE_SAMPLE_USD } from "./cost/rates";
 import { formatCost } from "./credits";
 import { asksUsd, soundInFlight } from "./sound";
 import { segmentEstimateUsd } from "./speech";
-import { actionKey, type JobStep, jobSoundSource, levelSpeech, type VideoJob } from "./video-job";
+import { actionKey, type JobStep, jobSoundSource, type VideoJob, videoModelOf } from "./video-job";
+import { voiceInFlight } from "./voice-step";
 
 export interface PaidWork {
   videos: number;
@@ -37,7 +39,7 @@ export const sentRequests = (job: VideoJob): SentRequest[] => [
   ...sent(
     job.frames.filter((f) => !f.file),
     (f) => ({ frame: f.id }),
-    (f) => frameUsd(job, f),
+    () => frameUsd(job),
   ),
   ...sent(
     job.shots.filter((s) => s.state === "rendering"),
@@ -47,12 +49,17 @@ export const sentRequests = (job: VideoJob): SentRequest[] => [
   ...sent(
     (job.segments ?? []).filter((s) => s.state === "rendering"),
     (s) => ({ segment: s.id }),
-    (s) => segmentEstimateUsd(levelSpeech(job), s),
+    (s) => segmentEstimateUsd(videoModelOf(job), s),
   ),
   ...sent(
     (job.sounds ?? []).filter(soundInFlight),
     (s) => ({ sound: s.id }),
     (s) => asksUsd(jobSoundSource(job), [s]),
+  ),
+  ...sent(
+    (job.voices ?? []).filter(voiceInFlight),
+    (v) => ({ voice: v.characterId }),
+    () => VOICE_SAMPLE_USD,
   ),
 ];
 
@@ -64,7 +71,9 @@ export const stepKey = (step: JobStep) =>
         ? { kind: "poll-shot", index: step.shot }
         : "segment" in step
           ? { kind: "poll-segment", segment: step.segment }
-          : { kind: "poll-sound", sound: step.sound },
+          : "voice" in step
+            ? { kind: "poll-voice", voice: step.voice }
+            : { kind: "poll-sound", sound: step.sound },
   );
 
 const beingSent = <T extends { sending?: string }>(
@@ -79,6 +88,7 @@ export function stepsOut(job: VideoJob): JobStep[] {
     ...beingSent(job.shots, (s) => ({ shot: s.index })),
     ...beingSent(job.segments ?? [], (s) => ({ segment: s.id })),
     ...beingSent(job.sounds ?? [], (s) => ({ sound: s.id })),
+    ...beingSent(job.voices ?? [], (v) => ({ voice: v.characterId })),
   ];
   return [...new Map(steps.map((step) => [stepKey(step), step])).values()];
 }

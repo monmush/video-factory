@@ -1,40 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { access, copyFile, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { copyFile, writeFile } from "node:fs/promises";
+import { extname, join } from "node:path";
 import { app } from "electron";
-import { outputResolution, outputSize } from "../../shared/batch-settings";
-import { syllables } from "../../shared/board";
 import { frameUsd, shotEstimateUsd } from "../../shared/cost/estimate";
-import {
-  calculated,
-  type ResultCost,
-  STILL_USD,
-  VOICE_USD_PER_CHAR,
-} from "../../shared/cost/rates";
-import { voiceText } from "../../shared/cues";
+import { calculated, type ResultCost } from "../../shared/cost/rates";
+import { imageModel } from "../../shared/image-models";
 import type { Asset } from "../../shared/ipc";
-import { fitDuration, placeholderOf, placeholdersIn, readMediaUrl } from "../../shared/live-plan";
-import { speakPrompt, withCleanFrame } from "../../shared/prompt-text";
+import { placeholderOf, placeholdersIn, readMediaUrl } from "../../shared/live-plan";
+import { OUTPUT_SIZE } from "../../shared/output-size";
+import { MOTION_OF_A_STILL_MOMENT, withCleanFrame } from "../../shared/prompt-text";
 import {
-  type Alignment,
   type Gaze,
-  type LineChars,
   productFreeProps,
   type ShotPlan,
   withoutProducts,
 } from "../../shared/shot-plan";
 import {
-  billedSeconds,
   type JobFrame,
   type JobShot,
-  lineSpans,
   liveSeconds,
-  shotModel,
+  modelsOf,
   type VideoJob,
+  videoModelOf,
 } from "../../shared/video-job";
-import { clipUsd, type VideoModel } from "../../shared/video-models";
-import { resolveVoice, takenVoiceIds } from "../../shared/voices";
-import { DEFAULT_IMAGE_MODEL, MODELS } from "../angles";
+import { motionSec } from "../../shared/video-models";
 import {
   type Canceller,
   type CancelOutcome,
@@ -43,21 +32,14 @@ import {
   falPoll,
   falSubmit,
 } from "../fal";
-import { uploadFile, uploadImages } from "../fal-upload";
+import { uploadImages } from "../fal-upload";
 import { assetDir } from "../media";
-import { duringBlockingPaidCall } from "../paid-calls";
-import { elevenLabsClient, falClient, providerMode } from "../providers";
-import { logUsage } from "../usage";
-import { PROVIDER_VOICES, VOICE_DIRECTION } from "../voices";
-import { fixtureClip, loopAudio, padAudio, probeSeconds, type Size } from "./ffmpeg";
+import { falClient, providerMode } from "../providers";
+import { fixtureClip } from "./ffmpeg";
 import { fixtureNetwork, fixtureTimesForShot } from "./fixture-net";
-import { shotEndpoint } from "./shot-models";
-
-const VOICE_MODEL = "eleven_v4";
 
 const isFixture = () => providerMode() === "fixture";
 const fixtureMedia = (file: string) => join(app.getAppPath(), "resources/fixtures/video", file);
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let falPromise: Promise<Fal> | null = null;
 function fal(): Promise<Fal> {
@@ -66,161 +48,6 @@ function fal(): Promise<Fal> {
     throw error;
   });
   return falPromise;
-}
-
-export interface VoiceResult {
-  seconds: number;
-  spans: { start: number; end: number }[];
-  costUsd: number;
-  chars: number;
-  requestId?: string;
-  timing?: { alignment: Alignment; lineChars: LineChars[] };
-}
-
-export async function generateVoice(
-  job: VideoJob,
-  assets: readonly Asset[],
-  out: string,
-): Promise<VoiceResult> {
-  const inputs = job.lines.map((line) => {
-    const character = assets.find((a) => a.id === line.characterId && a.kind === "character");
-    if (!character) throw new Error(`Không tìm thấy nhân vật ${line.speaker}`);
-    const voice = resolveVoice(character, takenVoiceIds(assets, character.id));
-    return {
-      text: `${VOICE_DIRECTION} ${voiceText(line.text)}`,
-      voiceId: PROVIDER_VOICES[voice].voiceId,
-    };
-  });
-  const chars = inputs.reduce((n, i) => n + i.text.length, 0);
-
-  if (isFixture()) {
-    fixtureNetwork();
-    await duringBlockingPaidCall(() => wait(3000));
-    let at = 0;
-    const spans = job.lines.map((line) => {
-      const seconds = Math.max(0.8, syllables([line]) / 3.7);
-      const span = { start: at + 0.2, end: at + 0.2 + seconds };
-      at = span.end + 0.2;
-      return span;
-    });
-    await loopAudio(fixtureMedia("dialogue.mp3"), at + 0.3, out);
-    return { seconds: at + 0.3, spans, costUsd: chars * VOICE_USD_PER_CHAR, chars };
-  }
-
-  const saved = await savedVoice(out, inputs);
-  if (saved) return finishVoice(out, saved, inputs.length);
-
-  const client = await elevenLabsClient();
-  const { data, rawResponse } = await duringBlockingPaidCall(() =>
-    client.textToDialogue
-      .convertWithTimestamps(
-        {
-          modelId: VOICE_MODEL,
-          languageCode: "vi",
-          inputs,
-          outputFormat: "mp3_44100_128",
-          audioEffects: { distance: 0, sendLevel: 0, pan: 0 },
-        },
-        { maxRetries: 0, timeoutInSeconds: 180 },
-      )
-      .withRawResponse(),
-  );
-  const bytes = Buffer.from(data.audioBase64, "base64");
-  if (!bytes.length) throw new Error("Không nhận được giọng đọc");
-  const billed = Number(rawResponse.headers.get("x-character-count")) || chars;
-  const requestId = rawResponse.headers.get("request-id") ?? undefined;
-  const record: SavedVoice = {
-    inputs,
-    billed,
-    ...(requestId ? { requestId } : {}),
-    costUsd: billed * VOICE_USD_PER_CHAR,
-    voiceSegments: data.voiceSegments ?? [],
-    alignment: data.alignment,
-    normalizedAlignment: data.normalizedAlignment,
-  };
-  await writeFile(`${out}.part`, bytes);
-  await rename(`${out}.part`, out);
-  await writeFile(`${out}.timing.json.part`, JSON.stringify(record));
-  await rename(`${out}.timing.json.part`, `${out}.timing.json`);
-  await logUsage({
-    provider: "elevenlabs",
-    purpose: "video-voice",
-    model: VOICE_MODEL,
-    requestId,
-    characters: billed,
-    cost: record.costUsd,
-    costIsEstimate: true,
-    sessionId: job.sessionId,
-    scriptId: job.scriptId,
-  });
-  return finishVoice(out, record, inputs.length);
-}
-
-interface SavedVoice {
-  inputs: { text: string; voiceId: string }[];
-  billed: number;
-  costUsd: number;
-  requestId?: string;
-  voiceSegments: {
-    dialogueInputIndex: number;
-    characterStartIndex: number;
-    characterEndIndex: number;
-    startTimeSeconds: number;
-    endTimeSeconds: number;
-  }[];
-  alignment?: Alignment | null;
-  normalizedAlignment?: unknown;
-}
-
-async function savedVoice(out: string, inputs: SavedVoice["inputs"]): Promise<SavedVoice | null> {
-  try {
-    const saved = JSON.parse(await readFile(`${out}.timing.json`, "utf8")) as SavedVoice;
-    if (JSON.stringify(saved.inputs) !== JSON.stringify(inputs)) return null;
-    await access(out);
-    return saved;
-  } catch {
-    return null;
-  }
-}
-
-async function finishVoice(
-  out: string,
-  voice: SavedVoice,
-  lineCount: number,
-): Promise<VoiceResult> {
-  const seconds = await probeSeconds(out);
-  const spans = lineSpans(voice.voiceSegments, lineCount);
-  if (!spans) throw new Error("Giọng đọc thiếu mốc thời gian từng câu");
-  return {
-    seconds,
-    spans,
-    costUsd: voice.costUsd,
-    chars: voice.billed,
-    ...(voice.requestId ? { requestId: voice.requestId } : {}),
-    timing: timingOf(voice.alignment, voice.voiceSegments, lineCount),
-  };
-}
-
-function timingOf(
-  alignment: Alignment | undefined | null,
-  segments: {
-    dialogueInputIndex: number;
-    characterStartIndex: number;
-    characterEndIndex: number;
-  }[],
-  lineCount: number,
-): VoiceResult["timing"] {
-  if (!alignment?.characters?.length) return undefined;
-  const lineChars: LineChars[] = [];
-  for (let i = 0; i < lineCount; i++) {
-    const mine = segments.filter((s) => s.dialogueInputIndex === i);
-    if (!mine.length) return undefined;
-    lineChars.push({
-      start: Math.min(...mine.map((s) => s.characterStartIndex)),
-      end: Math.max(...mine.map((s) => s.characterEndIndex)),
-    });
-  }
-  return { alignment, lineChars };
 }
 
 const assetImagePaths = (asset: Asset, max: number) =>
@@ -385,7 +212,7 @@ export async function submitFrame(
   if (frame.note) prompt.push(`Important correction, follow it exactly: ${frame.note}`);
   const client = await fal();
   const urls = await uploadImages(client, paths);
-  const model = MODELS[DEFAULT_IMAGE_MODEL];
+  const model = stillModel(job);
   return falSubmit(
     client,
     model.endpoint,
@@ -400,6 +227,8 @@ export async function submitFrame(
   );
 }
 
+const stillModel = (job: VideoJob) => imageModel(modelsOf(job).image);
+
 export type StepPoll =
   | { state: "pending" }
   | { state: "failed"; message: string }
@@ -413,17 +242,16 @@ export async function pollFrame(job: VideoJob, frame: JobFrame): Promise<StepPol
     const elapsed = Date.now() - Date.parse(frame.submittedAt ?? new Date().toISOString());
     return elapsed < FIXTURE_FRAME_MS
       ? { state: "pending" }
-      : { state: "done", url: "fixture:cover", cost: calculated(STILL_USD) };
+      : { state: "done", url: "fixture:cover", cost: calculated(frameUsd(job)) };
   }
   const client = await fal();
-  const model = MODELS[DEFAULT_IMAGE_MODEL];
   const result = await falPoll<{ images?: { url: string }[] }>(
     client,
-    model.endpoint,
+    frame.endpoint ?? stillModel(job).endpoint,
     frame.requestId as string,
     {
       purpose: "video-frame",
-      cost: () => STILL_USD,
+      cost: () => frameUsd(job),
       sessionId: job.sessionId,
       scriptId: job.scriptId,
     },
@@ -435,93 +263,20 @@ export async function pollFrame(job: VideoJob, frame: JobFrame): Promise<StepPol
   return { state: "done", url, cost: result.cost };
 }
 
-export async function submitShot(
-  job: VideoJob,
-  shot: JobShot,
-  model: VideoModel,
-  framePath: string,
-  audioPath: string,
-): Promise<string> {
-  if (isFixture()) {
-    fixtureNetwork();
-    return `fixture-${randomUUID()}`;
-  }
-  const client = await fal();
-  const [imageUrl] = await uploadImages(client, [framePath]);
-  const audioUrl = await uploadFile(client, audioPath, "audio/mpeg");
-  return falSubmit(
-    client,
-    model.endpoint,
-    shotEndpoint(model.id).input({
-      imageUrl: imageUrl as string,
-      audioUrl,
-      resolution: outputResolution(job.resolution),
-      prompt: speakPrompt(
-        shot.kind === "listener",
-        job.plan?.seats.find((s) => s.characterId === shot.characterId)?.ambient,
-        shot.visual,
-      ),
-    }),
-    {
-      purpose: "video-shot",
-      model: model.id,
-      sessionId: job.sessionId,
-      scriptId: job.scriptId,
-      shot: shot.index,
-      attempt: shot.sending,
-    },
-  );
-}
-
 const fixtureShotMs = (shot: JobShot) => 5000 + ((shot.index * 7) % 5) * 1000;
 
 const fixtureFailures = (shotNumber: number) =>
   fixtureTimesForShot("HYAN_FIXTURE_FAIL", shotNumber);
 
-export async function pollShot(job: VideoJob, shot: JobShot): Promise<StepPoll> {
-  const model = shotModel(job, shot);
-  if (isFixture()) {
-    fixtureNetwork();
-    const elapsed = Date.now() - Date.parse(shot.submittedAt ?? new Date().toISOString());
-    if (shot.failures < fixtureFailures(shot.index + 1) && elapsed > fixtureShotMs(shot) * 0.6) {
-      return { state: "failed", message: "Lỗi giả lập" };
-    }
-    if (elapsed < fixtureShotMs(shot)) return { state: "pending" };
-    const seconds = billedSeconds(shot);
-    return {
-      state: "done",
-      url: "fixture:shot",
-      cost: calculated(clipUsd(model, seconds, job.resolution)),
-      seconds,
-    };
-  }
-  const client = await fal();
-  const { read } = shotEndpoint(model.id);
-  const secondsOf = (data: unknown) => read(data).seconds ?? billedSeconds(shot);
-  const result = await falPoll<unknown>(client, model.endpoint, shot.requestId as string, {
-    purpose: "video-shot",
-    model: model.id,
-    cost: (data) => clipUsd(model, secondsOf(data), job.resolution),
-    sessionId: job.sessionId,
-    scriptId: job.scriptId,
-    shot: shot.index,
-  });
-  if (result.state === "pending") return { state: "pending" };
-  if (result.state === "failed") return result;
-  const url = read(result.data).url;
-  if (!url) return { state: "failed", message: "Không nhận được video" };
-  const seconds = secondsOf(result.data);
-  return { state: "done", url, cost: result.cost, seconds };
-}
-
 const NOTHING_BILLABLE_WAS_SENT: CancelOutcome = "removed";
 
 export async function cancelFrame(
+  job: VideoJob,
   frame: JobFrame,
   cancel: Canceller = falCancel,
 ): Promise<CancelOutcome> {
   if (isFixture() || !frame.requestId) return NOTHING_BILLABLE_WAS_SENT;
-  return cancel(frame.endpoint ?? MODELS[DEFAULT_IMAGE_MODEL].endpoint, frame.requestId);
+  return cancel(frame.endpoint ?? stillModel(job).endpoint, frame.requestId);
 }
 
 export async function cancelShot(
@@ -530,26 +285,21 @@ export async function cancelShot(
   cancel: Canceller = falCancel,
 ): Promise<CancelOutcome> {
   if (isFixture() || !shot.requestId) return NOTHING_BILLABLE_WAS_SENT;
-  return cancel(shot.endpoint ?? shotModel(job, shot).endpoint, shot.requestId);
+  return cancel(shot.endpoint ?? videoModelOf(job).motionEndpoint, shot.requestId);
 }
 
 export async function download(
   url: string,
   out: string,
-  fixture?: { framePath?: string; audioPath?: string; size?: Size },
+  fixture?: { framePath?: string; seconds?: number },
 ): Promise<void> {
   if (url.startsWith("fixture:")) fixtureNetwork();
   if (url === "fixture:cover" && fixture?.framePath) {
     await copyFile(fixture.framePath, out);
     return;
   }
-  if (url === "fixture:shot" && fixture?.audioPath) {
-    await fixtureClip(
-      fixtureMedia("shot.mp4"),
-      fixture.audioPath,
-      out,
-      fixture.size ?? outputSize(),
-    );
+  if (url === "fixture:shot" && fixture?.seconds) {
+    await fixtureClip(fixtureMedia("shot.mp4"), fixture.seconds, out, OUTPUT_SIZE);
     return;
   }
   const parsed = new URL(url);
@@ -590,16 +340,11 @@ function placeholderPath(job: VideoJob, name: string, files: LiveFiles): string 
 async function resolveInput(
   client: Fal,
   input: Record<string, unknown>,
-  paths: Map<string, { path: string; audio?: boolean }>,
+  paths: Map<string, { path: string }>,
 ): Promise<Record<string, unknown>> {
   const urls = new Map<string, string>();
-  for (const [name, { path, audio }] of paths) {
-    urls.set(
-      name,
-      audio
-        ? await uploadFile(client, path, "audio/mpeg")
-        : ((await uploadImages(client, [path], 2048))[0] as string),
-    );
+  for (const [name, { path }] of paths) {
+    urls.set(name, (await uploadImages(client, [path], 2048))[0] as string);
   }
   const walk = (v: unknown): unknown => {
     const p = placeholderOf(v);
@@ -628,6 +373,13 @@ function withCorrections(input: Record<string, unknown>, frame: JobFrame): Recor
   return { ...input, prompt: `${input.prompt} ${extra.join(" ")}` };
 }
 
+function stillRequest(job: VideoJob, keyframe: { input: Record<string, unknown> }) {
+  const model = stillModel(job);
+  const prompt = typeof keyframe.input.prompt === "string" ? keyframe.input.prompt : "";
+  const references = placeholdersIn(keyframe.input).map((name) => `{{${name}}}`);
+  return { endpoint: model.endpoint, input: model.input(prompt, references, "9:16") };
+}
+
 export async function submitLiveFrame(
   job: VideoJob,
   frame: JobFrame,
@@ -635,30 +387,28 @@ export async function submitLiveFrame(
 ): Promise<{ requestId: string; endpoint: string }> {
   const keyframe = job.live?.plan.keyframes.find((k) => k.id === frame.keyframe);
   if (!keyframe) throw new Error("Không tìm thấy khung hình trong kế hoạch");
+  const { endpoint, input: body } = stillRequest(job, keyframe);
   const paths = new Map(
-    placeholdersIn(keyframe.input).map((name) => [
-      name,
-      { path: placeholderPath(job, name, files) },
-    ]),
+    placeholdersIn(body).map((name) => [name, { path: placeholderPath(job, name, files) }]),
   );
   if (isFixture()) {
     fixtureNetwork();
-    return { requestId: `fixture-${randomUUID()}`, endpoint: keyframe.endpoint };
+    return { requestId: `fixture-${randomUUID()}`, endpoint };
   }
   const client = await fal();
-  const input = await resolveInput(client, withCorrections(keyframe.input, frame), paths);
-  const requestId = await falSubmit(client, keyframe.endpoint, input, {
+  const input = await resolveInput(client, withCorrections(body, frame), paths);
+  const requestId = await falSubmit(client, endpoint, input, {
     purpose: "video-frame",
     sessionId: job.sessionId,
     scriptId: job.scriptId,
     frame: frame.id,
     attempt: frame.sending,
   });
-  return { requestId, endpoint: keyframe.endpoint };
+  return { requestId, endpoint };
 }
 
 export async function pollLiveFrame(job: VideoJob, frame: JobFrame): Promise<StepPoll> {
-  const unit = frameUsd(job, frame);
+  const unit = frameUsd(job);
   if (isFixture()) {
     fixtureNetwork();
     const elapsed = Date.now() - Date.parse(frame.submittedAt ?? new Date().toISOString());
@@ -685,51 +435,43 @@ export async function pollLiveFrame(job: VideoJob, frame: JobFrame): Promise<Ste
   return { state: "done", url, cost: result.cost };
 }
 
-export async function submitLiveShot(
+function motionPrompt(job: VideoJob, shot: JobShot): string {
+  const planned = job.live?.plan.routes[shot.index]?.input?.prompt;
+  return typeof planned === "string" && planned.trim() ? planned : MOTION_OF_A_STILL_MOMENT;
+}
+
+export async function submitMotion(
   job: VideoJob,
   shot: JobShot,
   framePath: string,
-  audioPath: string | undefined,
-  dir: string,
 ): Promise<{ requestId: string; endpoint: string }> {
-  const live = job.live;
-  const route = live?.plan.routes[shot.index];
-  if (!live || !route?.endpoint || !route.input)
-    throw new Error("Cảnh này không có trong kế hoạch");
-  const endpoint = route.endpoint;
-  let input = withCleanFrame(route.input);
-  const paths = new Map<string, { path: string; audio?: boolean }>();
-  for (const name of placeholdersIn(input)) {
-    if (name === "keyframe") paths.set(name, { path: framePath });
-    else if (name === "audio") {
-      if (!audioPath) throw new Error("Thiếu âm thanh");
-      let path = audioPath;
-      const min = live.rates[endpoint]?.minSeconds;
-      if (min && (shot.audioSec ?? 0) < min) {
-        path = join(dir, `min${min}-${basename(audioPath)}`);
-        await padAudio(audioPath, min, path);
-      }
-      paths.set(name, { path, audio: true });
-    } else paths.set(name, { path: placeholderPath(job, name, { cast: [], dir }) });
-  }
-  if (route.route === "motion")
-    input = fitDuration(live.schemas[endpoint], input, liveSeconds(shot)).input;
+  const model = videoModelOf(job);
+  const body = withCleanFrame(
+    model.motion({
+      prompt: motionPrompt(job, shot),
+      imageUrl: "{{keyframe}}",
+      seconds: motionSec(model, liveSeconds(job, shot)),
+    }),
+  );
   if (isFixture()) {
     fixtureNetwork();
-    return { requestId: `fixture-${randomUUID()}`, endpoint };
+    return { requestId: `fixture-${randomUUID()}`, endpoint: model.motionEndpoint };
   }
   const client = await fal();
-  const requestId = await falSubmit(client, endpoint, await resolveInput(client, input, paths), {
+  const input = await resolveInput(client, body, new Map([["keyframe", { path: framePath }]]));
+  const requestId = await falSubmit(client, model.motionEndpoint, input, {
     purpose: "video-shot",
+    model: model.id,
+    seconds: motionSec(model, liveSeconds(job, shot)),
     sessionId: job.sessionId,
     scriptId: job.scriptId,
     shot: shot.index,
     attempt: shot.sending,
   });
-  return { requestId, endpoint };
+  return { requestId, endpoint: model.motionEndpoint };
 }
 
-export async function pollLiveShot(job: VideoJob, shot: JobShot): Promise<StepPoll> {
+export async function pollMotion(job: VideoJob, shot: JobShot): Promise<StepPoll> {
   const usd = shotEstimateUsd(job, shot);
   if (isFixture()) {
     fixtureNetwork();
@@ -742,11 +484,12 @@ export async function pollLiveShot(job: VideoJob, shot: JobShot): Promise<StepPo
       state: "done",
       url: "fixture:shot",
       cost: calculated(usd),
-      seconds: liveSeconds(shot),
+      seconds: liveSeconds(job, shot),
     };
   }
   const client = await fal();
-  const result = await falPoll<unknown>(client, shot.endpoint as string, shot.requestId as string, {
+  const endpoint = shot.endpoint ?? videoModelOf(job).motionEndpoint;
+  const result = await falPoll<unknown>(client, endpoint, shot.requestId as string, {
     purpose: "video-shot",
     cost: () => usd,
     sessionId: job.sessionId,

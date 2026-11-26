@@ -130,7 +130,7 @@ export function matchCharges(job: Pick<VideoJob, "charges"> & JobCut): {
 
 export const redoneCharges = (job: Pick<VideoJob, "charges"> & JobCut) => matchCharges(job).redone;
 
-export function withRecordedCharges<J extends VideoJob>(job: J, version: string): J {
+export function withRecordedCharges<J extends VideoJob>(job: J): J {
   const { pastCostUsd, ...rest } = job;
   if (job.charges) return pastCostUsd === undefined ? job : (rest as J);
   const at = job.updatedAt;
@@ -143,7 +143,6 @@ export function withRecordedCharges<J extends VideoJob>(job: J, version: string)
       usd: i.usd,
       billed: false,
       ...(i.requestId ? { requestId: i.requestId } : {}),
-      version,
     }));
   if (pastCostUsd) {
     charges.push({
@@ -152,7 +151,6 @@ export function withRecordedCharges<J extends VideoJob>(job: J, version: string)
       step: STEP.earlier,
       usd: pastCostUsd,
       billed: false,
-      version,
     });
   }
   return { ...rest, charges } as J;

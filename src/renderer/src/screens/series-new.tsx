@@ -1,5 +1,5 @@
 import type { StagedImage } from "@shared/ipc";
-import { DEFAULT_MEDIA_LEVEL, type MediaLevelId } from "@shared/media-level";
+import type { SeriesModels } from "@shared/models";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { AssetDialog } from "@/components/asset-dialog";
@@ -24,10 +24,7 @@ export function SeriesNewPage() {
     "series-new:environments",
     [],
   );
-  const [level, setLevel, clearLevel] = useDraft<MediaLevelId>(
-    "series-new:media-level",
-    DEFAULT_MEDIA_LEVEL,
-  );
+  const [models, setModels, clearModels] = useDraft<SeriesModels>("series-new:models", {});
   const [dropped, setDropped] = useState<StagedImage[] | null>(null);
 
   const dropImages = async (files: File[]) => {
@@ -53,7 +50,7 @@ export function SeriesNewPage() {
         characterIds,
         productIds,
         environmentIds,
-        mediaLevel: level,
+        models,
       });
       await refreshWorkspace();
       for (const clear of [
@@ -62,7 +59,7 @@ export function SeriesNewPage() {
         clearCharacters,
         clearProducts,
         clearEnvironments,
-        clearLevel,
+        clearModels,
       ])
         clear();
       await navigate({ to: "/series/$seriesId", params: { seriesId: series.id } });
@@ -105,7 +102,7 @@ export function SeriesNewPage() {
               setEnvironmentIds(next.environmentIds);
             }}
           />
-          <SeriesOutputFields mediaLevel={level} onMediaLevel={setLevel} />
+          <SeriesOutputFields models={models} onModels={setModels} />
         </div>
       </Composer>
       <p className="mt-3 text-center text-xs text-muted-foreground">

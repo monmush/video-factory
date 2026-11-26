@@ -7,6 +7,7 @@ import {
   plannedFrame,
   type VideoJob,
 } from "./video-job";
+import type { JobVoice } from "./voice-step";
 
 export interface RequestRecord {
   at: string;
@@ -20,6 +21,7 @@ export interface RequestRecord {
   shot?: number;
   sound?: string;
   segment?: string;
+  voice?: string;
   attempt?: string;
   model?: string;
   seconds?: number;
@@ -60,6 +62,14 @@ const latest = (records: RequestRecord[]) =>
   );
 
 export function withSending(job: VideoJob, step: JobStep, attempt: string): VideoJob {
+  if ("voice" in step) {
+    return {
+      ...job,
+      voices: job.voices?.map((v) =>
+        v.characterId === step.voice ? { ...v, sending: attempt } : v,
+      ),
+    };
+  }
   if ("segment" in step) {
     return {
       ...job,
@@ -99,6 +109,7 @@ export function reconcileJob(job: VideoJob, open: readonly RequestRecord[]): Rec
   for (const s of job.shots) if (s.requestId) known.add(s.requestId);
   for (const s of job.sounds ?? []) if (s.requestId) known.add(s.requestId);
   for (const s of job.segments ?? []) if (s.requestId) known.add(s.requestId);
+  for (const v of job.voices ?? []) if (v.requestId) known.add(v.requestId);
   const carriesAnAttemptMark = (r: RequestRecord) => Boolean(r.attempt);
   const mine = open.filter(
     (r) =>
@@ -139,17 +150,14 @@ export function reconcileJob(job: VideoJob, open: readonly RequestRecord[]): Rec
     const record = latest(
       mine.filter((r) => r.purpose === "video-shot" && r.shot === s.index && r.attempt === sending),
     );
-    if (!record) return rest;
-    const planned = Boolean(job.live && s.route && !s.fallback);
-    const pollEndpointUnknown = planned ? !record.endpoint : !record.model;
-    if (pollEndpointUnknown) return rest;
+    if (!record?.endpoint) return rest;
     attached.push(`shot ${s.index} ← ${record.requestId}`);
     return {
       ...rest,
       state: "rendering",
       requestId: record.requestId,
       submittedAt: record.at,
-      ...(planned ? { endpoint: record.endpoint } : { model: record.model }),
+      endpoint: record.endpoint,
     };
   });
 
@@ -189,6 +197,22 @@ export function reconcileJob(job: VideoJob, open: readonly RequestRecord[]): Rec
     };
   });
 
+  const voices = job.voices?.map((v): JobVoice => {
+    if (!v.sending) return v;
+    changed = true;
+    const { sending, ...rest } = v;
+    if (v.requestId || v.ready) return rest;
+    const record = latest(
+      mine.filter(
+        (r) =>
+          r.purpose === "character-voice" && r.voice === v.characterId && r.attempt === sending,
+      ),
+    );
+    if (!record) return rest;
+    attached.push(`voice ${v.characterId} ← ${record.requestId}`);
+    return { ...rest, requestId: record.requestId, submittedAt: record.at };
+  });
+
   return changed
     ? {
         job: {
@@ -197,6 +221,7 @@ export function reconcileJob(job: VideoJob, open: readonly RequestRecord[]): Rec
           shots,
           ...(sounds ? { sounds } : {}),
           ...(segments ? { segments } : {}),
+          ...(voices ? { voices } : {}),
         },
         attached,
       }

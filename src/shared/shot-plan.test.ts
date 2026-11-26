@@ -4,7 +4,6 @@ import {
   type Alignment,
   type DirectorAnswer,
   heldSpans,
-  heldTiming,
   holdErrors,
   holdInserts,
   lineOffsets,
@@ -443,22 +442,6 @@ describe("holds (C15)", () => {
     expect(
       heldSpans([{ start: 0.2, end: 3 }, undefined, { start: 3.4, end: 7 }], [0, 0, 1.5]),
     ).toEqual([{ start: 0.2, end: 3 }, undefined, { start: 4.9, end: 8.5 }]);
-    const timing = heldTiming(
-      {
-        alignment: {
-          characters: ["a", "b", "c"],
-          characterStartTimesSeconds: [0, 1, 4],
-          characterEndTimesSeconds: [0.5, 1.5, 4.5],
-        },
-        lineChars: [
-          { start: 0, end: 2 },
-          { start: 2, end: 3 },
-        ],
-      },
-      offsets,
-    );
-    expect(timing.alignment.characterStartTimesSeconds).toEqual([0, 1, 5.5]);
-    expect(timing.alignment.characterEndTimesSeconds).toEqual([0.5, 1.5, 6]);
   });
 });
 

@@ -38,13 +38,7 @@ export async function setProduct(
   try {
     const ctx = await board.writerContext(sessionId);
     const from = ws.assets.find((a) => a.id === before.productIds[0]) ?? null;
-    written = await writer.reviseProduct(
-      ctx,
-      before,
-      from,
-      product ?? null,
-      before.brief.targetSec,
-    );
+    written = await writer.reviseProduct(ctx, before, from, product ?? null);
   } finally {
     await board.finishProductChange(sessionId, targetId, written, { created, log });
   }

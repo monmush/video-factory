@@ -1,34 +1,36 @@
-import { boardOrder, estimateSeconds, formatClock, formatSeconds } from "@shared/board";
-import { spentUsd } from "@shared/cost/charges";
-import { costToFinishUsd, inFlightUsd, stillToPayUsd } from "@shared/cost/estimate";
-import { estimateText, type Money, moneyText, paidSoFar } from "@shared/cost/table";
+import { boardOrder, formatClock, formatSeconds } from "@shared/board";
+import { inFlightUsd, stillToPayUsd } from "@shared/cost/estimate";
+import { estimateText, moneyText, paidSoFar } from "@shared/cost/table";
 import { formatCost } from "@shared/credits";
 import { failedUnpaid, videoUntouched } from "@shared/edit-in-place";
 import { mediaUrl, type Script } from "@shared/ipc";
-import { type MediaLevel, type MediaLevelId, mediaLevel } from "@shared/media-level";
+import { type JobModels, modelsLabel, resolvedModels } from "@shared/models";
 import { isNetworkMessage, OFFLINE_MESSAGE } from "@shared/net-error";
+import { scriptSeconds } from "@shared/pace";
 import { stillOwedHint } from "@shared/paid-work";
 import { phaseSecNow, timed, totalSec } from "@shared/phase-clock";
 import { committedIds, finishedScripts } from "@shared/ready-check";
+import { sceneNotes } from "@shared/scene-notes";
 import { OUTDATED_TEXT, readyToMake } from "@shared/staging-status";
-import { type Tempo, tempoOf } from "@shared/tempo";
+import { finishedLength, jobTempo } from "@shared/tempo";
 import {
   canFix,
   canRestore,
   type FixChange,
   fixPriceUsd,
+  MADE_THE_OLD_WAY,
   previousIsNewer,
 } from "@shared/video-fix";
 import {
   doneShots,
   failedSegmentAt,
-  followBatch,
+  followSeriesModels,
   frameFor,
   isGenerated,
-  isNative,
   type JobShot,
   jobPhase,
   madeByProvider,
+  modelsOf,
   remainingSec,
   type StepAverages,
   segmentAnchor,
@@ -36,28 +38,12 @@ import {
   type TimedPhase,
   type VideoJob,
 } from "@shared/video-job";
-import {
-  canSwitch,
-  chosenVersion,
-  focusVersion,
-  levelsToTry,
-  planAtLevel,
-  versionCostUsd,
-  versionLabel,
-  versionPriceUsd,
-  versions,
-  versionsByLevel,
-  versionView,
-  viewVersion,
-  workingVersion,
-} from "@shared/video-takes";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Check,
   Clock,
   Ellipsis,
   History,
-  Layers,
   LoaderCircle,
   Maximize2,
   MessageSquarePlus,
@@ -65,9 +51,8 @@ import {
   Pencil,
   Play,
   RotateCw,
-  Trash2,
+  TriangleAlert,
   WandSparkles,
-  X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -83,26 +68,26 @@ import {
   useVideoJobs,
   useVideoJobsError,
 } from "@/lib/video-jobs";
-import { useWorkspace } from "@/lib/workspace";
+import { useSeriesTargetSec, useWorkspace } from "@/lib/workspace";
 import { ImageViewer, type ViewerImage } from "./image-viewer";
 import { LivePlanFold } from "./live-plan";
 import { MakeAll, priceOfThisHold, useBatch } from "./make-all";
 import { Page } from "./page";
-import { VideoQuality } from "./quality-chip";
 import { stagingText, useMakeVideos } from "./ready-check";
 import { SaveVideosButton } from "./save-videos";
 import { PlanningSteps } from "./shot-brief";
 import { TempoMenu } from "./tempo-menu";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
-import { Menu, MenuItem, MenuPopup, MenuSub, MenuSubTrigger, MenuTrigger } from "./ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { VideoLength } from "./video-length";
 
 const STOP_HOLD_MS = 1200;
 
 export function VideosList({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
-  const { sessions, series } = useWorkspace();
+  const { sessions } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   const state = useVideoJobs(sessionId);
   const make = useMakeVideos({ sessionId });
@@ -126,17 +111,6 @@ export function VideosList({ sessionId }: { sessionId: string }) {
   const finished = finishedScripts(board.scripts);
   const sent = finished.filter((s) => committed.includes(s.id));
 
-  const notStarted = finished.filter((s) => {
-    const job = state.jobs.get(s.id);
-    return !job || job.status === "idle";
-  }).length;
-  const seriesLevel = mediaLevel(series.find((x) => x.id === session.seriesId)?.mediaLevel).id;
-  const setBatchLevel = (id: MediaLevelId) =>
-    api.invoke("session:update", {
-      id: sessionId,
-      settings: { mediaLevel: id === seriesLevel ? null : id },
-    });
-
   return (
     <Page className="pt-2">
       <ul className="flex flex-col gap-4">
@@ -149,8 +123,6 @@ export function VideosList({ sessionId }: { sessionId: string }) {
             job={state.jobs.get(script.id) ?? null}
             averages={state.averages}
             make={make}
-            notStarted={notStarted}
-            onBatchLevel={setBatchLevel}
           />
         ))}
       </ul>
@@ -191,18 +163,25 @@ export function VideosToolbar({ sessionId }: { sessionId: string }) {
   );
 }
 
-function LevelLabel({ job, batchLevel }: { job: VideoJob | null; batchLevel?: string | null }) {
-  const own = job && (job.plan || job.status !== "idle") ? job.level : batchLevel;
-  const label = mediaLevel(own).label;
-  const paid = job && (job.status !== "idle" || job.dialogue || spentUsd(job) > 0);
-  if (!paid || mediaLevel(own).id === mediaLevel(batchLevel).id) return label;
+function ModelsRow({ job, series }: { job: VideoJob | null; series: JobModels }) {
+  const label = modelsLabel(job ? modelsOf(job) : series);
+  const kept = Boolean(job?.modelsKept) && modelsLabel(series) !== label;
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="cursor-default" />}>{label}</TooltipTrigger>
-      <TooltipPopup side="top" align="center" className="text-xs">
-        Video đã bắt đầu tạo nên giữ mức này
-      </TooltipPopup>
-    </Tooltip>
+    <span className="flex items-center gap-1.5">
+      <span className="text-muted-foreground">Mô hình</span>
+      {kept ? (
+        <Tooltip>
+          <TooltipTrigger render={<span className="cursor-default font-medium text-foreground" />}>
+            {label}
+          </TooltipTrigger>
+          <TooltipPopup side="top" align="center" className="text-xs">
+            Video đã bắt đầu tạo nên giữ mô hình này
+          </TooltipPopup>
+        </Tooltip>
+      ) : (
+        <span className="font-medium text-foreground">{label}</span>
+      )}
+    </span>
   );
 }
 
@@ -218,14 +197,14 @@ function stagingLine({ status, reasons }: ScriptStaging): string | null {
 
 function statusLine(
   job: VideoJob | null,
-  script: Script,
+  seconds: number,
   staging: ScriptStaging,
   averages: StepAverages,
   now: number,
 ): string | null {
   const stagingNow = stagingLine(staging);
   if (stagingNow) return stagingNow;
-  const length = formatSeconds(estimateSeconds(script.lines));
+  const length = formatSeconds(seconds);
   if (staging.canStage && staging.status === "none") {
     return `Chưa dàn dựng · ${length}`;
   }
@@ -239,7 +218,7 @@ function statusLine(
     case "done":
       return null;
     case "review":
-      return isNative(job) ? "Xem cảnh chính" : "Nghe và xem cảnh chính";
+      return "Xem cảnh chính";
     case "stopped":
       return `Đã dừng · ${done}/${total} cảnh`;
     case "failed": {
@@ -267,14 +246,12 @@ type Stage = {
 
 const PLAN_LABEL = "Lên cảnh quay";
 
-const DUBBED_ORDER = ["voice", "frames", "shots", "assemble"] as const;
-const NATIVE_ORDER = ["frames", "speech", "shots", "assemble"] as const;
+const ORDER: readonly string[] = ["frames", "speech", "shots", "assemble"];
 
 function stages(job: VideoJob): Stage[] {
   const phase = jobPhase(job);
-  const native = isNative(job);
-  const order: readonly string[] = native ? NATIVE_ORDER : DUBBED_ORDER;
-  const at = order.indexOf(native && phase === "voice" ? "speech" : phase);
+  const order = ORDER;
+  const at = order.indexOf(phase === "voice" ? "speech" : phase);
   const state = (name: string): Stage["state"] => {
     const i = order.indexOf(name);
     return phase === "done" || i < at ? "done" : i === at ? "now" : "next";
@@ -286,22 +263,23 @@ function stages(job: VideoJob): Stage[] {
   const segments = job.segments ?? [];
   const spoken = segments.filter((s) => s.state === "done").length;
   const speaking = segments.filter((s) => s.state === "rendering").length;
-  const voice: Stage = native
-    ? {
-        label: "Tạo lời nói",
-        state: state("speech"),
-        phases: ["speech", "voice"],
-        count: `${spoken}/${segments.length}${speaking && state("speech") === "now" ? ` · ${speaking} đang tạo` : ""}`,
-      }
-    : { label: "Tạo giọng đọc", state: state("voice"), phases: ["voice"] };
+  const voice: Stage = {
+    label: "Tạo lời nói",
+    state: state("speech"),
+    phases: ["speech", "voice"],
+    count: `${spoken}/${segments.length}${speaking && state("speech") === "now" ? ` · ${speaking} đang tạo` : ""}`,
+  };
   const frames: Stage = {
     label: "Vẽ khung hình",
     state: state("frames"),
     phases: ["frames"],
     ...(stills.length ? { count: `${made}/${stills.length}` } : {}),
   };
+  const voices = characterVoicesStage(job);
   const list: Stage[] = [
-    ...(native ? [frames, voice] : [voice, frames]),
+    frames,
+    ...voices,
+    voice,
     {
       label: "Quay cảnh",
       state: state("shots"),
@@ -317,7 +295,22 @@ function stages(job: VideoJob): Stage[] {
         : {}),
     },
   ];
-  return stopsAfterStills(job) ? list.slice(0, native ? 1 : 2) : list;
+  return stopsAfterStills(job) ? list.slice(0, 1 + voices.length) : list;
+}
+
+function characterVoicesStage(job: VideoJob): Stage[] {
+  const made = (job.voices ?? []).filter((v) => v.toMake);
+  if (!made.length) return [];
+  const ready = made.filter((v) => v.ready).length;
+  const making = job.status === "running" || made.some((v) => v.requestId && !v.ready);
+  return [
+    {
+      label: "Tạo giọng nhân vật",
+      state: ready === made.length ? "done" : making ? "now" : "next",
+      phases: [],
+      count: `${ready}/${made.length}`,
+    },
+  ];
 }
 
 const stopsAfterStills = (job: VideoJob) =>
@@ -410,8 +403,6 @@ function VideoCard({
   job: saved,
   averages,
   make,
-  notStarted,
-  onBatchLevel,
 }: {
   sessionId: string;
   script: Script;
@@ -419,82 +410,24 @@ function VideoCard({
   job: VideoJob | null;
   averages: StepAverages;
   make: ReturnType<typeof useMakeVideos>;
-  notStarted: number;
-  onBatchLevel: (level: MediaLevelId) => Promise<unknown>;
 }) {
   const { error, run } = useAction();
   const navigate = useNavigate();
-  const ownLevel = make.levelOf(script.id);
-  const job = saved && followBatch(saved, make.batchFor(script.id));
+  const seriesTargetSec = useSeriesTargetSec(sessionId);
+  const job = saved && followSeriesModels(saved, make.models);
   const active = job?.status === "running" || job?.status === "waiting";
   const now = useNow(job?.status === "running");
   const ids = { sessionId, scriptId: script.id };
   const stagingFailedBeforeSpending = Boolean(job && failedUnpaid(job));
-  const staging = stagingOf(job, script, ownLevel);
+  const staging = stagingOf(job, script);
   const stageThis = () =>
     run(() => api.invoke("video:stage", { sessionId, scriptIds: [script.id] }));
+  const playhead = useRef(0);
+  const oldWay = Boolean(job?.dubbed);
 
-  const [tab, setTab] = useState<string | null>(null);
-  const [trying, setTrying] = useState<MediaLevelId | null>(null);
-  const [offer, setOffer] = useState<MediaLevelId | null>(null);
-  const playheadAcrossVersions = useRef(0);
-  const all = job ? versions(job) : [];
-  const several = all.length > 1;
-  const selected = job ? (tab && all.includes(tab) ? tab : chosenVersion(job)) : null;
-  const view = job && selected ? versionView(job, selected) : job;
-  const working = Boolean(job && selected === workingVersion(job));
-  const chosen = Boolean(job && selected === chosenVersion(job));
-  const versionArg = working ? {} : { version: selected ?? undefined };
-  const switchable = Boolean(job && (working || canSwitch(job)));
-  const base = (() => {
-    if (!job || !selected || !view?.final || view.status !== "done" || !canSwitch(job)) {
-      return null;
-    }
-    try {
-      return focusVersion(job, selected, new Date().toISOString());
-    } catch {
-      return null;
-    }
-  })();
-  const toTry = base ? levelsToTry(base) : [];
-  const priceOfVersion = (level: string) => {
-    try {
-      return base ? versionPriceUsd(base, level, new Date().toISOString()) : null;
-    } catch {
-      return null;
-    }
-  };
-  const startVersionAt = async (level: MediaLevelId) => {
-    if (!working && selected) {
-      await api.invoke("video:version", { ...ids, action: "focus", version: selected });
-    }
-    await api.invoke("video:version", { ...ids, action: "start", version: level });
-    setTrying(null);
-    setTab(level);
-  };
-  const pickVersion = async (version: string) => {
-    await api.invoke("video:version", { ...ids, action: "use", version });
-    const offersLevel = job && versionsByLevel(job) && version !== make.level && notStarted > 0;
-    setOffer(offersLevel ? (version as MediaLevelId) : null);
-  };
-
-  const unstartedVideo = !job || job.status === "idle";
-  const status = statusLine(view, script, staging, averages, now);
-  const priceAt = (level: MediaLevel) => {
-    if (job?.status !== "idle" || !readyToMake(job, script, level.id)) return null;
-    const at = level.id === mediaLevel(job.level).id ? job : planAtLevel(job, level.id);
-    return at ? costToFinishUsd(at) : null;
-  };
-  const setLevel = (level: MediaLevelId) => run(() => api.invoke("video:level", { ...ids, level }));
-
-  const versionPaid = (): Money | null => {
-    if (!job || !view) return null;
-    if (!several || !selected) return paidSoFar(job);
-    const usd = versionCostUsd(job, selected);
-    return usd === null ? null : { usd, billed: paidSoFar(view).billed };
-  };
-  const shownPaid = versionPaid();
-  const shownCost = shownPaid ? moneyText(shownPaid) : null;
+  const status = statusLine(job, scriptSeconds(script, seriesTargetSec), staging, averages, now);
+  const length = job?.status === "done" && job.final ? finishedLength(job) : null;
+  const shownCost = job ? moneyText(paidSoFar(job)) : null;
 
   let cost: string | null = null;
   let action: ReactNode = null;
@@ -507,7 +440,7 @@ function VideoCard({
     );
   } else if (!job || job.status === "idle") {
     action =
-      job && readyToMake(job, script, ownLevel) ? (
+      job && readyToMake(job, script) ? (
         <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
           {stopsForPreview(job) ? "Giữ để tạo các cảnh chính" : "Giữ để tạo video"}
           <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
@@ -517,7 +450,7 @@ function VideoCard({
           {STAGE_LABEL[staging.status]}
         </Button>
       ) : null;
-  } else if (active && working) {
+  } else if (active) {
     const left = stillToPayUsd(job);
     cost =
       shownCost === null
@@ -535,27 +468,21 @@ function VideoCard({
         Dừng
       </HoldButton>
     );
-  } else if (view?.status === "review") {
-    cost = hasPlanTable(view) ? null : shownCost;
+  } else if (job.status === "review") {
+    cost = hasPlanTable(job) ? null : shownCost;
     action = (
       <HoldButton tone="outline" onHold={() => run(() => api.invoke("video:start", ids))}>
         Giữ để tạo video
         <ButtonPrice>{priceOfThisHold(job)}</ButtonPrice>
       </HoldButton>
     );
-  } else if (view?.status === "done" || active) {
+  } else if (job.status === "done") {
     cost = shownCost;
-    action =
-      chosen || !view?.final ? (
-        <Button variant="outline" onClick={() => run(() => api.invoke("video:save", ids))}>
-          Tải xuống
-        </Button>
-      ) : (
-        <Button variant="outline" onClick={() => run(() => pickVersion(selected as string))}>
-          <Check />
-          Dùng bản này
-        </Button>
-      );
+    action = (
+      <Button variant="outline" onClick={() => run(() => api.invoke("video:save", ids))}>
+        Tải xuống
+      </Button>
+    );
   } else if (stagingFailedBeforeSpending) {
     action = staging.canStage ? (
       <Button variant="outline" onClick={stageThis}>
@@ -572,12 +499,8 @@ function VideoCard({
     );
   }
 
-  const fixOrTalk = Boolean(
-    view && view.status !== "idle" && view.status !== "waiting" && switchable,
-  );
-  const restorable = Boolean(view && canRestore(view) && switchable);
-  const deletable = Boolean(job && view && !chosen && switchable && view.status !== "running");
-  const tryable = toTry.length > 0;
+  const fixOrTalk = Boolean(job && !oldWay && job.status !== "idle" && job.status !== "waiting");
+  const restorable = Boolean(job && canRestore(job));
   return (
     <li className="rounded-xl border bg-card p-4">
       <div className="flex min-h-9 items-center gap-2.5">
@@ -610,83 +533,27 @@ function VideoCard({
               <Pencil />
               Sửa kịch bản
             </MenuItem>
-            {fixOrTalk && view && (
-              <MenuItem
-                onClick={() =>
-                  run(async () => {
-                    if (!working && selected) {
-                      await api.invoke("video:version", {
-                        ...ids,
-                        action: "focus",
-                        version: selected,
-                      });
-                    }
-                    addRefs(sessionId, [script.id]);
-                    requestChatFocus(sessionId);
-                  })
-                }
-              >
-                {canFix(view) ? <WandSparkles /> : <MessageSquarePlus />}
-                {canFix(view) ? "Sửa video" : "Nhắc trong chat"}
+            {oldWay && (
+              <MenuItem onClick={() => run(() => api.invoke("video:remake", ids))}>
+                <RotateCw />
+                Tạo lại video
               </MenuItem>
             )}
-            {tryable && (
-              <MenuSub>
-                <MenuSubTrigger>
-                  <Layers />
-                  Thử chất lượng khác
-                </MenuSubTrigger>
-                <MenuPopup side="inline-end" align="start" className="min-w-44">
-                  {toTry.map((level) => {
-                    const usd = priceOfVersion(level.id);
-                    return (
-                      <MenuItem
-                        key={level.id}
-                        disabled={usd === null}
-                        onClick={() => {
-                          setOffer(null);
-                          setTrying(level.id);
-                        }}
-                      >
-                        <span className="flex-1">{level.label}</span>
-                        <span className="pl-3 text-xs text-muted-foreground tabular-nums">
-                          ~{formatCost(usd ?? 0)}
-                        </span>
-                      </MenuItem>
-                    );
-                  })}
-                </MenuPopup>
-              </MenuSub>
-            )}
-            {restorable && view && (
+            {fixOrTalk && job && (
               <MenuItem
-                onClick={() => run(() => api.invoke("video:restore", { ...ids, ...versionArg }))}
+                onClick={() => {
+                  addRefs(sessionId, [script.id]);
+                  requestChatFocus(sessionId);
+                }}
               >
+                {canFix(job) ? <WandSparkles /> : <MessageSquarePlus />}
+                {canFix(job) ? "Sửa video" : "Nhắc trong chat"}
+              </MenuItem>
+            )}
+            {restorable && job && (
+              <MenuItem onClick={() => run(() => api.invoke("video:restore", ids))}>
                 <History />
-                {previousIsNewer(view) ? "Bản sau" : "Bản trước"}
-              </MenuItem>
-            )}
-            {deletable && (
-              <MenuItem
-                destructive
-                onClick={() =>
-                  run(async () => {
-                    await api.invoke("video:version", {
-                      ...ids,
-                      action: "delete",
-                      version: selected as string,
-                    });
-                    setTab(null);
-                  })
-                }
-              >
-                <Trash2 />
-                Xóa bản này
-              </MenuItem>
-            )}
-            {several && job && (
-              <MenuItem disabled className="cursor-default tabular-nums text-muted-foreground">
-                Tổng đã chi {moneyText(paidSoFar(job))}
+                {previousIsNewer(job) ? "Bản sau" : "Bản trước"}
               </MenuItem>
             )}
           </MenuPopup>
@@ -694,45 +561,16 @@ function VideoCard({
       </div>
 
       <div className="mt-1 flex min-h-7 flex-wrap items-center gap-x-2.5 gap-y-1 pl-7.5 text-xs">
-        {(several || unstartedVideo || job?.level) && (
-          <span className="flex items-center gap-1.5">
-            <span className="text-muted-foreground">Chất lượng</span>
-            {several && job ? (
-              <span role="tablist" aria-label="Các bản" className="flex items-center gap-0.5">
-                {all.map((version) => {
-                  const v = viewVersion(job, version);
-                  const making = v.status === "running" || v.status === "waiting";
-                  return (
-                    <Button
-                      key={version}
-                      role="tab"
-                      aria-selected={version === selected}
-                      variant={version === selected ? "secondary" : "ghost-muted"}
-                      size="xs"
-                      onClick={() => setTab(version)}
-                    >
-                      {version === chosenVersion(job) && <Check aria-label="Đang dùng" />}
-                      {versionLabel(job, version)}
-                      {making && (
-                        <LoaderCircle className="size-3 animate-spin" aria-label="Đang tạo" />
-                      )}
-                    </Button>
-                  );
-                })}
-              </span>
-            ) : unstartedVideo ? (
-              <VideoQuality value={ownLevel} onChange={setLevel} price={priceAt} />
-            ) : (
-              <span className="font-medium text-foreground">
-                <LevelLabel job={job} batchLevel={make.level} />
-              </span>
-            )}
-          </span>
+        {oldWay ? (
+          <span className="text-muted-foreground">{MADE_THE_OLD_WAY}</span>
+        ) : (
+          <ModelsRow job={job} series={resolvedModels(make.models)} />
         )}
-        {view?.status === "done" && <MakingTime job={view} />}
-        {(view?.final || view?.previous?.final) && (
+        {job?.status === "done" && <MakingTime job={job} />}
+        {length && <VideoLength length={length} />}
+        {(job?.final || job?.previous?.final) && (
           <TempoMenu
-            value={view.tempo}
+            value={job.tempo}
             onChange={(tempo) => run(() => api.invoke("video:tempo", { ...ids, tempo }))}
           />
         )}
@@ -740,16 +578,16 @@ function VideoCard({
           <span
             className={cn(
               "text-muted-foreground tabular-nums",
-              view?.status === "failed" && "text-destructive-foreground",
+              job?.status === "failed" && "text-destructive-foreground",
             )}
           >
             {status}
           </span>
         )}
-        {cost && !hasPlanTable(view as VideoJob) && (
+        {cost && !hasPlanTable(job as VideoJob) && (
           <span className="text-muted-foreground tabular-nums">Đã chi {cost}</span>
         )}
-        {job?.offline && active && working && (
+        {job?.offline && active && (
           <Button
             variant="ghost-muted"
             size="xs"
@@ -760,68 +598,23 @@ function VideoCard({
           </Button>
         )}
         {error && <span className="text-destructive-foreground">{error}</span>}
-        {view?.dialogue && (
+        {job?.dialogue && (
           <span className="ml-auto">
-            <DialogueButton key={view.dialogue} job={view} />
+            <DialogueButton key={job.dialogue} job={job} />
           </span>
         )}
       </div>
-      {trying && base && (
-        <div className="mt-2 ml-7.5 flex w-fit max-w-full flex-wrap items-center gap-2 rounded-lg border bg-popover py-1.5 pr-1.5 pl-2.5 shadow-sm">
-          <span className="text-xs text-muted-foreground">{mediaLevel(trying).label}</span>
-          <HoldButton size="xs" tone="outline" onHold={() => run(() => startVersionAt(trying))}>
-            Giữ để tạo
-            <ButtonPrice>~{formatCost(priceOfVersion(trying) ?? 0)}</ButtonPrice>
-          </HoldButton>
-          <Button variant="ghost-muted" size="xs" onClick={() => setTrying(null)}>
-            Hủy
-          </Button>
-        </div>
+      {job?.planningSteps && (job.planning || jobPhase(job) === "plan") && (
+        <PlanningSteps steps={job.planningSteps} className="mt-2 ml-7.5" />
       )}
-      {offer && (
-        <div className="mt-1 flex items-center gap-1.5 pl-7.5 text-xs text-muted-foreground">
-          Dùng {mediaLevel(offer).label} cho {notStarted} video chưa tạo?
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() =>
-              run(async () => {
-                await onBatchLevel(offer);
-                setOffer(null);
-              })
-            }
-          >
-            Dùng
-          </Button>
-          <Button
-            variant="ghost-muted"
-            size="icon-xs"
-            aria-label="Bỏ qua"
-            onClick={() => setOffer(null)}
-          >
-            <X />
-          </Button>
-        </div>
+      {job &&
+        (job.status === "running" || job.status === "waiting") &&
+        jobPhase(job) !== "plan" && <MakingSteps job={job} now={now} />}
+      {job && hasPlanTable(job) && (!videoUntouched(job) || staging.status === "ready") && (
+        <LivePlanFold job={job} />
       )}
-      {view?.planningSteps && (view.planning || jobPhase(view) === "plan") && (
-        <PlanningSteps steps={view.planningSteps} className="mt-2 ml-7.5" />
-      )}
-      {view &&
-        (view.status === "running" || view.status === "waiting") &&
-        jobPhase(view) !== "plan" && <MakingSteps job={view} now={now} />}
-      {view && hasPlanTable(view) && (!videoUntouched(view) || staging.status === "ready") && (
-        <LivePlanFold job={view} />
-      )}
-      {view && view.status !== "idle" && (
-        <JobBody
-          key={selected ?? ""}
-          job={view}
-          number={number}
-          run={run}
-          version={working ? undefined : (selected ?? undefined)}
-          canAct={switchable}
-          playhead={playheadAcrossVersions}
-        />
+      {job && job.status !== "idle" && (
+        <JobBody job={job} number={number} run={run} playhead={playhead} />
       )}
     </li>
   );
@@ -875,7 +668,7 @@ function priceOf(job: VideoJob, change: FixChange): number | null {
   }
 }
 
-function playAtTempo(video: HTMLVideoElement, tempo: Tempo) {
+function playAtTempo(video: HTMLVideoElement, tempo: number) {
   video.preservesPitch = true;
   video.defaultPlaybackRate = tempo;
   video.playbackRate = tempo;
@@ -885,28 +678,20 @@ function JobBody({
   job,
   number,
   run,
-  version,
-  canAct,
   playhead,
 }: {
   job: VideoJob;
   number: number;
   run: (action: () => Promise<unknown>) => Promise<boolean>;
-  version?: string;
-  canAct: boolean;
   playhead: { current: number };
 }) {
   const phase = jobPhase(job);
   const [picked, setPicked] = useState<number | null>(null);
   const url = (file: string) => mediaUrl.video(job.sessionId, job.scriptId, file);
-  const fixable = canFix(job) && canAct;
+  const fixable = canFix(job);
+  const redoable = (shot: JobShot) => fixable && priceOf(job, redoChange(job, shot)) !== null;
   const pickedShot = picked !== null ? job.shots[picked] : undefined;
-  const selected =
-    fixable && pickedShot && (!isNative(job) || priceOf(job, redoChange(job, pickedShot)) !== null)
-      ? pickedShot
-      : null;
-  const redoable = (shot: JobShot) =>
-    fixable && (!isNative(job) || priceOf(job, redoChange(job, shot)) !== null);
+  const selected = pickedShot && redoable(pickedShot) ? pickedShot : null;
   const thumbs = useRef(new Map<number, HTMLElement>());
   const [viewing, setViewing] = useState<{ at: number; from: number } | null>(null);
   const stills = stillsOf(job);
@@ -966,7 +751,6 @@ function JobBody({
                   sessionId: job.sessionId,
                   scriptId: job.scriptId,
                   changes: [change],
-                  ...(version ? { version } : {}),
                 });
                 setPicked(null);
               })
@@ -994,7 +778,7 @@ function JobBody({
 
   const previousVideoWhileFixRuns = job.status !== "done" ? job.previous?.final : undefined;
   const playable = job.final ?? previousVideoWhileFixRuns;
-  const tempo = tempoOf(job.tempo);
+  const tempo = jobTempo(job);
   if (playable) {
     return (
       <div className="mt-3.5 grid grid-cols-[minmax(0,320px)_1fr] items-start gap-4 max-md:grid-cols-1">
@@ -1135,27 +919,23 @@ function ShotTile({
       {shot.index + 1}
     </span>
   );
+  const notes = sceneNotes(job, shot);
+  const notesMark = notes.length > 0 && <NotesMark notes={notes} />;
   const caption = (
-    <span className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/80 to-transparent px-1.5 pt-4 pb-1.5 text-2xs leading-snug text-white">
+    <span
+      className={cn(
+        "absolute inset-x-0 bottom-0 bg-linear-to-t from-black/80 to-transparent px-1.5 pt-4 pb-1.5 text-2xs leading-snug text-white",
+        notesMark && "pr-6",
+      )}
+    >
       {shot.text}
     </span>
-  );
-  const retryShown = shot.retried && shot.state !== "failed";
-  const retryMark = retryShown && (
-    <RotateCw
-      aria-label="Đã thử lại"
-      className={cn(
-        "absolute top-1 right-1.5 size-3 text-white [filter:drop-shadow(0_1px_1px_#000)]",
-        onPick && "group-hover/tile:hidden group-focus-visible/tile:hidden",
-      )}
-    />
   );
   const reusedMark = (frame?.source === "material" || shot.reused) && (
     <span
       title="Lấy từ tư liệu của series"
       className={cn(
-        "absolute top-1 rounded-full bg-black/60 px-1.5 py-0.5 text-2xs leading-none text-white",
-        retryShown ? "right-5" : "right-1",
+        "absolute top-1 right-1 rounded-full bg-black/60 px-1.5 py-0.5 text-2xs leading-none text-white",
         onPick && !selected && "group-hover/tile:hidden group-focus-visible/tile:hidden",
       )}
     >
@@ -1203,7 +983,6 @@ function ShotTile({
           className="size-full object-cover"
         />
         {number}
-        {retryMark}
         {reusedMark}
         {redoMark}
         {caption}
@@ -1212,21 +991,24 @@ function ShotTile({
     return image ? (
       <Viewable onView={onView} onPointerEnter={play} onPointerLeave={pause}>
         {main}
+        {notesMark}
       </Viewable>
     ) : (
       <div className="relative" onPointerEnter={play} onPointerLeave={pause}>
         {main}
+        {notesMark}
       </div>
     );
   }
 
   if (!image) {
     return (
-      <div className={cn(base, !shot.audio && "border-dashed", drawing && "shimmer")}>
+      <div className={cn(base, shot.end === undefined && "border-dashed", drawing && "shimmer")}>
         {number}
         <span className="absolute inset-0 overflow-hidden px-1.5 pt-5 pb-1.5 text-2xs leading-snug text-muted-foreground">
           {shot.text}
         </span>
+        {notesMark}
       </div>
     );
   }
@@ -1247,6 +1029,7 @@ function ShotTile({
           {redoMark}
           {caption}
         </button>
+        {notesMark}
       </Viewable>
     );
   }
@@ -1264,7 +1047,6 @@ function ShotTile({
           <span className="absolute inset-0 animate-[shimmer_1.6s_linear_infinite] bg-[length:250%_100%] bg-[linear-gradient(100deg,transparent_30%,rgb(255_255_255/0.45)_50%,transparent_70%)]" />
         )}
         {number}
-        {retryMark}
         {reusedMark}
         {caption}
         {(shot.state === "failed" || speechFailed) && (
@@ -1285,7 +1067,27 @@ function ShotTile({
             </HoldButton>
           </span>
         )}
+        {notesMark}
       </div>
     </Viewable>
+  );
+}
+
+function NotesMark({ notes }: { notes: string[] }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={<button type="button" />}
+        aria-label={notes.join(" ")}
+        className="absolute right-1 bottom-1 z-10 grid size-5 cursor-default place-items-center rounded-full bg-black/60 text-warning outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <TriangleAlert className="size-3" aria-hidden />
+      </TooltipTrigger>
+      <TooltipPopup side="top" align="end" className="max-w-64 space-y-1 text-xs">
+        {notes.map((note) => (
+          <p key={note}>{note}</p>
+        ))}
+      </TooltipPopup>
+    </Tooltip>
   );
 }

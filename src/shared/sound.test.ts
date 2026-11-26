@@ -3,8 +3,9 @@ import { buildDirection } from "./build-direction";
 import { redoneCharges, spentUsd } from "./cost/charges";
 import { withInUsePaid } from "./cost/charges.fixture";
 import { costToFinishUsd } from "./cost/estimate";
-import { plannedShotSec } from "./live-plan";
-import { levelRates, mediaLevel } from "./media-level";
+import { spoken } from "./job.fixture";
+import { AUTO_MODELS } from "./models";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 import { builtinRecipe } from "./recipe";
 import { reconcileJob } from "./request-reconcile";
 import { readShotList, type ShotListAnswer } from "./shot-list";
@@ -27,8 +28,8 @@ import {
   stepReportedFailure,
   type VideoJob,
   withJobSounds,
+  withSpeech,
 } from "./video-job";
-import { videoModel } from "./video-models";
 
 const CAST = [
   { id: "a", name: "An", photos: 3 },
@@ -50,15 +51,13 @@ const read = (a: ShotListAnswer, sound: boolean) => {
   return list;
 };
 
-function plannedJob(levelId: string, a: ShotListAnswer = withSounds(answer())): VideoJob {
-  const level = mediaLevel(levelId);
+function plannedJob(a: ShotListAnswer = withSounds(answer())): VideoJob {
   const live = buildDirection({
-    list: read(a, level.sound),
-    recipe: builtinRecipe(level),
-    lines: LINES,
-    level,
+    list: read(a, true),
+    recipe: builtinRecipe(AUTO_MODELS),
     cast: CAST,
     placePhotos: 3,
+    pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
   });
   const job = newJob({
     sessionId: "s",
@@ -67,14 +66,15 @@ function plannedJob(levelId: string, a: ShotListAnswer = withSounds(answer())): 
     title: "t",
     lines: LINES,
     useEnvironment: true,
+    models: AUTO_MODELS,
     now: "2026-11-19T10:00:00.000Z",
   });
-  return { ...applyLivePlan(job, live), level: level.id };
+  return withSpeech(applyLivePlan(job, live));
 }
 
 function voiced(job: VideoJob): VideoJob {
   return withJobSounds({
-    ...job,
+    ...spoken(job),
     status: "running",
     dialogue: "dialogue.mp3",
     dialogueSec: 14,
@@ -85,8 +85,6 @@ function voiced(job: VideoJob): VideoJob {
       end: i * 3 + 3,
       state: "done" as const,
       clip: `shot-${i}.mp4`,
-      audio: `audio-${i}.mp3`,
-      audioSec: 3,
     })),
   });
 }
@@ -113,51 +111,23 @@ describe("planned sound", () => {
     );
   });
 
-  it("is left out entirely when the level has no sound", () => {
+  it("is left out entirely when the shot list is read without sound", () => {
     const plan = read(withSounds(answer()), false).shots;
     expect(plan.ambience).toBeUndefined();
     expect(plan.shots.some((s) => s.sound)).toBe(false);
   });
 
   it("a plan without sound fields stays valid and makes no sound steps", () => {
-    const job = voiced(plannedJob("balanced", answer()));
+    const job = voiced(plannedJob(answer()));
     expect(job.sounds).toBeUndefined();
     expect(nextActions(job, new Set())).toEqual([{ kind: "assemble" }]);
   });
 });
 
-describe("the high level", () => {
-  it("lip-syncs with its own model and prices short speaking shots at that model's minimum", () => {
-    const high = plannedJob("high");
-    const live = high.live;
-    if (!live) throw new Error("no live plan");
-    const speaker = videoModel(mediaLevel("high").speaker);
-    const lips = live.plan.routes.filter((r) => r.route === "lip-sync");
-    expect(lips.every((r) => r.endpoint === speaker.endpoint)).toBe(true);
-    const rate = levelRates(mediaLevel("high")).speak;
-    const expected = [0, 2, 4].reduce(
-      (n, i) =>
-        n +
-        Math.max(rate.minSeconds ?? 0, plannedShotSec(live.plan.shots.shots[i] as never)) *
-          (rate.usd ?? 0),
-      0,
-    );
-    const priced = live.costs.rows
-      .filter((r) => r.step.endsWith("· Nói"))
-      .reduce((n, r) => n + (r.usd ?? 0), 0);
-    expect(priced).toBeCloseTo(expected);
-    expect(live.costs.rows.filter((r) => r.step.endsWith("· Nói")).map((r) => r.quantity)).toEqual([
-      "4 giây",
-      "4 giây",
-      "4 giây",
-    ]);
-  });
-});
-
 describe("sound steps", () => {
   it("are priced before the hold and counted once paid", () => {
-    const balanced = plannedJob("balanced");
-    const silent = plannedJob("balanced", answer());
+    const balanced = plannedJob();
+    const silent = plannedJob(answer());
     expect(
       (costToFinishUsd(balanced) ?? Number.NaN) - (costToFinishUsd(silent) ?? Number.NaN),
     ).toBeGreaterThan(0.01);
@@ -170,7 +140,7 @@ describe("sound steps", () => {
   });
 
   it("asks each sound once: never again while sending, sent or after a restart", () => {
-    const job = voiced(plannedJob("balanced"));
+    const job = voiced(plannedJob());
     expect(job.sounds?.map((s) => [s.id, s.seconds, s.loop])).toEqual([
       ["ambience", 15, true],
       ["spot:1", 3, false],
@@ -212,7 +182,7 @@ describe("sound steps", () => {
   });
 
   it("retries a failed sound once, then the video is assembled without it", () => {
-    const job = voiced(plannedJob("balanced"));
+    const job = voiced(plannedJob());
     const assembles = (j: VideoJob) => nextActions(j, new Set()).some((a) => a.kind === "assemble");
     expect(assembles(job)).toBe(false);
     let failing = job;
@@ -249,7 +219,7 @@ describe("sound steps", () => {
   });
 
   it("are not asked again when the shot times move but the sound stays the same", () => {
-    const job = voiced(plannedJob("balanced"));
+    const job = voiced(plannedJob());
     const made = withInUsePaid({
       ...job,
       sounds: job.sounds?.map((s) => ({ ...s, file: `${s.id}.mp3`, costUsd: 0.01 })),
@@ -264,7 +234,7 @@ describe("sound steps", () => {
   });
 
   it("a sound asked differently is made again and the one discarded counts as redone", () => {
-    const job = voiced(plannedJob("balanced"));
+    const job = voiced(plannedJob());
     const made = withInUsePaid({
       ...job,
       sounds: job.sounds?.map((s) => ({ ...s, file: `${s.id}.mp3`, costUsd: 0.01 })),

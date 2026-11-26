@@ -1,14 +1,30 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { z } from "zod";
-import { DEFAULT_TARGET_SEC, estimateSeconds } from "../../shared/board";
+import { clampTarget } from "../../shared/board";
 import { spentUsd } from "../../shared/cost/charges";
 import { moneyText, paidSoFar } from "../../shared/cost/table";
 import { formatCost } from "../../shared/credits";
 import { directionAt } from "../../shared/direction";
 import type { Asset, ChatPart, Script } from "../../shared/ipc";
+import { applyLineChanges, type LineChange } from "../../shared/line-changes";
 import { MAX_NOTES, NOTE_AREAS, type Note } from "../../shared/notes";
+import {
+  fasterThanBrisk,
+  lengthFit,
+  scriptPace,
+  scriptSeconds,
+  scriptTargetSec,
+} from "../../shared/pace";
 import { mixProblem } from "../../shared/product-mix";
 import { MERGE_WISH } from "../../shared/scene-actions";
+import {
+  directionText,
+  GUIDE_LINE_MAX,
+  GUIDE_SLOTS,
+  type GuideEdit,
+  PRODUCT_MENTIONS,
+  seriesTargetSec,
+} from "../../shared/series-guide";
 import { stagedWithoutPlace } from "../../shared/series-place";
 import type { PlannedShot } from "../../shared/shot-plan";
 import {
@@ -23,7 +39,7 @@ import * as board from "../board";
 import { dataFile } from "../paths";
 import { setProduct } from "../product-change";
 import * as writer from "../script-writer";
-import { getWorkspace, removeNote, saveNote, updateSession } from "../store";
+import { getWorkspace, removeNote, saveNote, updateSeries, updateSession } from "../store";
 import * as video from "../video/runner";
 
 export interface ToolHost {
@@ -69,8 +85,30 @@ const define = <S extends z.ZodRawShape>(def: ToolDef<S>): Tool => ({
   },
 });
 
-const seconds = (s: Pick<Script, "lines">) => Math.round(estimateSeconds(s.lines));
-const target = (s: Script) => s.brief.targetSec ?? DEFAULT_TARGET_SEC;
+const seconds = (s: Pick<Script, "lines" | "brief">, fallbackSec: number) =>
+  Math.round(scriptSeconds(s, fallbackSec));
+
+const FASTER_TO_FIT = " Nhân vật nói nhanh hơn một chút để vừa độ dài.";
+const LONG_EVEN_AT_FASTEST =
+  " Dài hơn mục tiêu dù nhân vật đã nói nhanh nhất. Không tự cắt lời: báo người dùng độ dài này và hỏi có muốn rút lời không, trừ khi họ đã yêu cầu rút ngắn.";
+const SHORTER_THAN_TARGET =
+  " Ngắn hơn mục tiêu; không cần viết thêm nếu người dùng chỉ yêu cầu sửa câu.";
+
+function lengthLine(s: Pick<Script, "lines" | "brief">, fallbackSec: number): string {
+  const goal = scriptTargetSec(s, fallbackSec);
+  const secs = seconds(s, fallbackSec);
+  const fit = lengthFit(scriptSeconds(s, fallbackSec), goal);
+  const note =
+    fit === "long"
+      ? LONG_EVEN_AT_FASTEST
+      : fit === "short"
+        ? SHORTER_THAN_TARGET
+        : fasterThanBrisk(scriptPace(s, fallbackSec))
+          ? FASTER_TO_FIT
+          : "";
+  return `Độ dài ~${secs} giây (mục tiêu ${goal}).${note}`;
+}
+
 const list = (numbers: number[]) => numbers.map((n) => `#${n}`).join(", ");
 
 async function pick(sessionId: string, numbers: number[]) {
@@ -233,7 +271,6 @@ const changeShape = z.discriminatedUnion("op", [
     line: z.number().int().min(1),
     shots: z.array(shotShape).min(1).max(6),
   }),
-  z.object({ op: z.literal("redo_voice") }),
 ]);
 
 function toChanges(
@@ -245,7 +282,6 @@ function toChanges(
   const cast = assets.filter((a) => job.lines.some((l) => l.characterId === a.id));
   const products = assets.filter((a) => script.productIds.includes(a.id));
   return input.map((change): FixChange => {
-    if (change.op === "redo_voice") return change;
     if (change.op === "redo_shot") {
       return { op: "redo_shot", shot: change.shot - 1, visual: change.visual };
     }
@@ -298,6 +334,46 @@ async function seriesOf(sessionId: string) {
   return { ws, series };
 }
 
+const fallbackSecOf = async (sessionId: string) =>
+  seriesTargetSec((await seriesOf(sessionId)).series);
+
+const copiedNote = (number: number, savedNumber: number) =>
+  `#${number} đã có video nên giữ nguyên; đã sửa trên bản mới #${savedNumber}. Báo người dùng một câu như vậy. Lần sửa sau trong lượt này dùng #${savedNumber}.`;
+
+const lineChangeShape = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("replace"),
+    line: z.number().int().min(1).describe("Số câu trong kịch bản trước lần gọi này"),
+    text: z.string().min(1),
+    speaker: z.string().optional().describe("@handle của nhân vật; bỏ trống là giữ người nói"),
+  }),
+  z.object({
+    op: z.literal("insert"),
+    after: z
+      .number()
+      .int()
+      .min(0)
+      .describe("Chèn sau câu số này (trong kịch bản trước lần gọi này); 0 là lên đầu"),
+    speaker: z.string().describe("@handle của nhân vật"),
+    text: z.string().min(1),
+  }),
+  z.object({
+    op: z.literal("delete"),
+    line: z.number().int().min(1).describe("Số câu trong kịch bản trước lần gọi này"),
+  }),
+]);
+
+function changeSummary(changed: { replaced: number[]; inserted: number; deleted: number[] }) {
+  const text = [
+    changed.replaced.length ? `đã sửa câu ${changed.replaced.join(", ")}` : "",
+    changed.inserted ? `thêm ${changed.inserted} câu` : "",
+    changed.deleted.length ? `xóa câu ${changed.deleted.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+  return text && `${text[0]?.toLocaleUpperCase("vi")}${text.slice(1)}`;
+}
+
 const FEEDBACK_LINES = 8;
 
 export async function recentFeedback(seriesId: string, skipLatest = false): Promise<string> {
@@ -339,6 +415,7 @@ export const TOOLS = [
       const ordered = await board.orderedScripts(host.sessionId);
       const sent = await board.sentScriptIds(host.sessionId);
       const { assets } = await getWorkspace();
+      const fallbackSec = await fallbackSecOf(host.sessionId);
       host.label("Xem bảng kịch bản");
       if (ordered.length === 0) return "Bảng chưa có kịch bản nào.";
       return ordered
@@ -348,7 +425,7 @@ export const TOOLS = [
               ? " [đang viết]"
               : s.status === "failed"
                 ? " [chưa viết được]"
-                : ` (~${seconds(s)} giây)`;
+                : ` (~${seconds(s, fallbackSec)} giây)`;
           const tags = `${s.pinned ? " [ghim]" : ""}${sent.has(s.id) ? " [đã có video]" : ""}${
             s.version ? ` [bản ${s.version}]` : ""
           }`;
@@ -382,7 +459,7 @@ export const TOOLS = [
       return scripts
         .map(
           (s, i) =>
-            `#${numbers[i]} (~${seconds(s)} giây, mục tiêu ${target(s)} giây):\n${writer.asJson(ctx, s)}${
+            `#${numbers[i]} (~${seconds(s, ctx.targetSec)} giây, mục tiêu ${scriptTargetSec(s, ctx.targetSec)} giây):\n${writer.asJson(ctx, s)}${
               plans[i] ? `\n${plans[i]}` : ""
             }`,
         )
@@ -393,7 +470,7 @@ export const TOOLS = [
   define({
     name: "update_script",
     description:
-      "Sửa trực tiếp một kịch bản do bạn tự viết. Chỉ gửi các trường cần đổi; lines thay toàn bộ lời thoại. Trả về độ dài ước tính và cảnh báo nếu có.",
+      "Viết lại trực tiếp cả một kịch bản do bạn tự viết. Chỉ gửi các trường cần đổi; lines thay toàn bộ lời thoại. Sửa, thêm hay xóa vài câu thì dùng edit_lines, không dùng update_script. Trả về độ dài ước tính và cảnh báo nếu có.",
     shape: {
       number: z.number().int().min(1),
       title: z.string().max(80).optional(),
@@ -441,16 +518,102 @@ export const TOOLS = [
       if (patch.products && written.productIds.length < patch.products.length) {
         warnings.push("có sản phẩm không có trong series nên đã bỏ");
       }
-      const secs = seconds(saved);
-      const goal = target(saved);
-      if (secs > goal * 1.12) warnings.push(`dài hơn mục tiêu (${secs} > ${goal} giây)`);
-      if (secs < goal * 0.75) warnings.push(`ngắn hơn mục tiêu (${secs} < ${goal} giây)`);
-      const where = copied
-        ? `#${number} đã có video nên giữ nguyên; đã sửa trên bản mới #${savedNumber}. Báo người dùng một câu như vậy. Lần sửa sau trong lượt này dùng #${savedNumber}.`
-        : `Đã cập nhật #${number}.`;
-      return `${where} Độ dài ~${secs} giây (mục tiêu ${goal}).${
+      const where = copied ? copiedNote(number, savedNumber) : `Đã cập nhật #${number}.`;
+      return `${where} ${lengthLine(saved, ctx.targetSec)}${
         warnings.length ? ` Cần sửa: ${warnings.join("; ")}.` : ""
       }`;
+    },
+  }),
+
+  define({
+    name: "edit_lines",
+    description:
+      "Sửa, thêm hoặc xóa vài câu thoại của một kịch bản; mọi câu khác giữ nguyên từng chữ. line và after là số câu như khi đọc kịch bản trước lần gọi này (read_scripts), kể cả khi cùng lần gọi có thêm hay xóa câu khác. Kịch bản [đã có video] được sửa trên bản mới. Trả về các câu đã đổi và độ dài ước tính.",
+    shape: {
+      number: z.number().int().min(1),
+      changes: z.array(lineChangeShape).min(1).max(30),
+    },
+    pending: "Sửa câu thoại",
+    async run({ number, changes }, host) {
+      const { scripts } = await pick(host.sessionId, [number]);
+      const current = scripts[0] as Script;
+      host.label(`Sửa câu #${number}`);
+      const ctx = await board.writerContext(host.sessionId);
+      const resolved = changes.map((c): LineChange => {
+        if (c.op === "delete") return c;
+        if (c.op === "insert") return { ...c, speaker: writer.speakerOf(ctx, c.speaker) };
+        const { speaker, ...rest } = c;
+        return speaker === undefined ? rest : { ...rest, speaker: writer.speakerOf(ctx, speaker) };
+      });
+      const changed = applyLineChanges(current.lines, resolved);
+      const summary = changeSummary(changed);
+      if (!summary)
+        return `Không câu nào của #${number} thay đổi. ${lengthLine(current, ctx.targetSec)}`;
+      const { script: saved, copied } = await board.agentUpdate(
+        host.sessionId,
+        current.id,
+        { lines: structuredClone(changed.lines) },
+        host.log,
+      );
+      const savedNumber = numberOf(await board.orderedScripts(host.sessionId), saved.id);
+      const unknown = changed.lines.filter(
+        (l) => !l.characterId && ctx.characters.length && !current.lines.includes(l),
+      );
+      const where = copied ? `${copiedNote(number, savedNumber)} ` : `#${number}: `;
+      return `${where}${summary}. ${lengthLine(saved, ctx.targetSec)}${
+        unknown.length
+          ? ` Cần sửa: người nói không có trong series: ${[...new Set(unknown.map((l) => l.speaker))].join(", ")}.`
+          : ""
+      }`;
+    },
+  }),
+
+  define({
+    name: "copy_script",
+    description:
+      "Tạo một bản sao y hệt của một kịch bản (lời thoại, tiêu đề, hook, sản phẩm, ghi chú dàn dựng, độ dài), đặt ngay sau kịch bản đó; dùng được cho mọi kịch bản, kể cả [đã có video]. Dùng khi người dùng muốn một kịch bản giống #N với vài thay đổi: copy_script rồi edit_lines trên bản sao. Trả về số của bản sao.",
+    shape: { number: z.number().int().min(1) },
+    pending: "Sao chép kịch bản",
+    async run({ number }, host) {
+      const { scripts } = await pick(host.sessionId, [number]);
+      host.label(`Sao chép #${number}`);
+      const copy = await board.agentCopy(host.sessionId, (scripts[0] as Script).id, host.log);
+      const copyNumber = numberOf(await board.orderedScripts(host.sessionId), copy.id);
+      return `Đã tạo bản sao #${copyNumber} của #${number}, giống hệt bản gốc. Sửa trên #${copyNumber}; #${number} giữ nguyên. Số thứ tự các kịch bản sau bản sao đã tăng thêm một.`;
+    },
+  }),
+
+  define({
+    name: "set_length",
+    description:
+      "Đặt độ dài video (giây) cho các kịch bản mà không đổi lời thoại: nhân vật tự nói nhanh hơn khi lời nhiều để vừa độ dài. Dùng khi người dùng muốn độ dài mới hay nhịp nhanh hơn cho kịch bản đang có. Kịch bản [đã có video] được đặt trên bản mới. Trả về độ dài ước tính của từng kịch bản.",
+    shape: {
+      numbers: z.array(z.number().int().min(1)).min(1).max(30),
+      seconds: z.number().int().min(10).max(180),
+    },
+    pending: "Đặt độ dài",
+    async run({ numbers, seconds: targetSec }, host) {
+      const { scripts } = await pick(host.sessionId, numbers);
+      host.label(`Độ dài ${list(numbers)}: ${targetSec} giây`);
+      const fallbackSec = await fallbackSecOf(host.sessionId);
+      const results = await board.agentSetLength(
+        host.sessionId,
+        scripts.map((s) => s.id),
+        targetSec,
+        host.log,
+      );
+      const ordered = await board.orderedScripts(host.sessionId);
+      return results
+        .map((r, i) => {
+          const number = numbers[i] as number;
+          if (r.outcome === "writing") return `#${number}: đang được viết, chưa đặt được.`;
+          const where = r.copied
+            ? `#${number} đã có video nên đặt trên bản mới #${numberOf(ordered, r.script.id)}`
+            : `#${number}`;
+          const done = r.outcome === "same" ? `đã là ${targetSec} giây` : `đặt ${targetSec} giây`;
+          return `${where}: ${done}. ${lengthLine(r.script, fallbackSec)}`;
+        })
+        .join("\n");
     },
   }),
 
@@ -496,7 +659,7 @@ export const TOOLS = [
               ...(given[i] !== undefined ? { productId: given[i] } : {}),
             })),
             direction: direction?.trim() ?? "",
-            targetSec: writer.clampTarget(target_seconds),
+            targetSec: clampTarget(target_seconds),
           },
           host.log,
         ),
@@ -504,10 +667,12 @@ export const TOOLS = [
       if (outcome === STOPPED) return "Người dùng đã dừng. Các thẻ đang viết sẽ tự viết xong.";
       const { written, failed } = outcome;
       const ordered = await board.orderedScripts(host.sessionId);
+      const fallbackSec = seriesTargetSec(series);
       const productName = (s: Script) =>
         ws.assets.find((a) => a.id === s.productIds[0])?.name ?? "không sản phẩm";
       const lines = written.map(
-        (s) => `#${numberOf(ordered, s.id)} ${s.title} (~${seconds(s)} giây, ${productName(s)})`,
+        (s) =>
+          `#${numberOf(ordered, s.id)} ${s.title} (~${seconds(s, fallbackSec)} giây, ${productName(s)})`,
       );
       return `Đã viết ${written.length} kịch bản:\n${lines.join("\n")}${
         failed
@@ -520,7 +685,7 @@ export const TOOLS = [
   define({
     name: "rewrite_scripts",
     description:
-      "Sửa nhiều kịch bản cùng lúc bằng người viết, song song, theo một yêu cầu sửa rõ ràng. Dùng cho sửa lớn hoặc từ 3 kịch bản trở lên.",
+      "Sửa nhiều kịch bản cùng lúc bằng người viết, song song, theo một yêu cầu sửa rõ ràng. Dùng cho sửa lớn hoặc từ 3 kịch bản trở lên. Người viết giữ độ dài lời như cũ; chỉ đặt target_seconds khi người dùng muốn viết lại lời cho vừa một độ dài. Đổi độ dài hay nhịp mà không đổi lời: set_length.",
     shape: {
       numbers: z.array(z.number().int().min(1)).optional().describe("Bỏ trống khi all = true"),
       all: z.boolean().optional(),
@@ -539,13 +704,16 @@ export const TOOLS = [
           host.sessionId,
           scripts,
           instruction,
-          writer.clampTarget(target_seconds),
+          clampTarget(target_seconds),
           host.log,
         ),
       );
       if (result === STOPPED) return "Người dùng đã dừng. Các kịch bản đang sửa sẽ tự sửa xong.";
       const after = await board.orderedScripts(host.sessionId);
-      const changed = result.changed.map((s) => `#${numberOf(after, s.id)} (~${seconds(s)} giây)`);
+      const fallbackSec = await fallbackSecOf(host.sessionId);
+      const changed = result.changed.map(
+        (s) => `#${numberOf(after, s.id)} (~${seconds(s, fallbackSec)} giây)`,
+      );
       return [
         changed.length ? `Đã sửa: ${changed.join(", ")}.` : "Không kịch bản nào cần sửa.",
         result.same ? `${result.same} kịch bản không cần đổi.` : "",
@@ -794,7 +962,7 @@ export const TOOLS = [
   define({
     name: "propose_video_fix",
     description:
-      "Đề xuất sửa hình của một video mà không đổi lời thoại. Công cụ tính giá và hiện đề xuất kèm nút cho người dùng; KHÔNG tự chạy. Chỉ phần bị đổi được tạo lại. Các thay đổi: redo_shot (quay lại một cảnh; cảnh wide/detail thì vẽ lại khung hình của nó), redo_still (vẽ lại khung hình toàn cảnh hoặc của một nhân vật, kéo theo mọi cảnh dùng nó), replace_line (đổi thứ người xem thấy trong một câu thoại), redo_voice (tạo lại giọng đọc, kéo theo mọi cảnh).",
+      "Đề xuất sửa hình của một video mà không đổi lời thoại. Công cụ tính giá và hiện đề xuất kèm nút cho người dùng; KHÔNG tự chạy. Chỉ phần bị đổi được tạo lại. Các thay đổi: redo_shot (quay lại một cảnh; cảnh wide/detail thì vẽ lại khung hình của nó), redo_still (vẽ lại khung hình toàn cảnh hoặc của một nhân vật, kéo theo mọi cảnh dùng nó), replace_line (đổi thứ người xem thấy trong một câu thoại).",
     shape: {
       number: z.number().int().min(1),
       summary: z
@@ -821,7 +989,6 @@ export const TOOLS = [
         priceUsd: price.priceUsd,
         shots: price.shots,
         stills: price.stills,
-        voice: price.voice,
         rev: price.rev,
       });
       await appendFile(
@@ -841,7 +1008,6 @@ export const TOOLS = [
         "utf8",
       ).catch(() => {});
       const parts = [
-        price.voice ? "giọng đọc" : "",
         price.stills ? `${price.stills} khung hình` : "",
         price.shots ? `${price.shots} cảnh` : "",
       ].filter(Boolean);
@@ -919,6 +1085,38 @@ export const TOOLS = [
       return `${replaced ? "Đã thay ghi nhớ cũ" : "Đã lưu"} (${
         scope === "all" ? "mọi series" : "series này"
       }). Kịch bản và video tạo sau sẽ theo; cái đã có không đổi. Xác nhận bằng vài chữ.`;
+    },
+  }),
+
+  define({
+    name: "update_series_direction",
+    description: `Sửa định hướng của series này: mọi kịch bản và video SAU này của series theo định hướng mới (cái đã có không đổi). Chỉ gọi khi người dùng đã chọn "Cả series". slot là mục cần sửa, text là toàn bộ nội dung mới của mục đó: viết lại cả mục, giữ ý cũ còn đúng, chép nguyên văn câu thoại mẫu người dùng đưa; text rỗng là bỏ mục đó. Các mục: people (từng nhân vật là ai, tính cách, cách nói, xưng hô với nhau thế nào; không tả ngoại hình), story (mỗi video kể chuyện gì, theo trình tự nào), tone (giọng điệu và mức độ, câu thoại mẫu), closing (câu kết lặp lại ở mọi video), look (hình ảnh và nhịp dựng), never (điều không được làm), other (yêu cầu khác không thuộc mục nào). product là cách nhắc sản phẩm: none (không nhắc), natural (nhắc tự nhiên trong câu chuyện), closing (giới thiệu ở cuối video). target_seconds là độ dài mặc định của video.`,
+    shape: {
+      slot: z.enum(GUIDE_SLOTS).optional(),
+      text: z.string().max(GUIDE_LINE_MAX).optional().describe("Toàn bộ nội dung mới của mục"),
+      product: z.enum(PRODUCT_MENTIONS).optional(),
+      target_seconds: z.number().int().min(10).max(180).optional(),
+    },
+    pending: "Lưu vào series",
+    async run({ slot, text, product, target_seconds }, host) {
+      if ((slot === undefined) !== (text === undefined)) {
+        throw new Error("slot và text phải đi cùng nhau");
+      }
+      if (slot === undefined && product === undefined && target_seconds === undefined) {
+        throw new Error("Chưa có gì để sửa");
+      }
+      const { series } = await seriesOf(host.sessionId);
+      const edit: GuideEdit = {
+        ...(slot !== undefined && text !== undefined ? { lines: { [slot]: text } } : {}),
+        ...(product ? { productMention: product } : {}),
+        ...(target_seconds ? { targetSec: target_seconds } : {}),
+      };
+      const saved = await updateSeries({ id: series.id, guide: edit });
+      host.label("Đã lưu vào series");
+      return `Đã lưu vào định hướng series. Kịch bản và video tạo sau sẽ theo; cái đã có không đổi. Xác nhận bằng vài chữ.
+
+Định hướng series hiện tại (thay cho phần Định hướng series trong lời nhắc):
+${directionText(saved) || "(Chưa có định hướng.)"}`;
     },
   }),
 

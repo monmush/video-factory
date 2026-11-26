@@ -1,27 +1,25 @@
-import type { Rate } from "../live-plan";
+import { VOICE_PREVIEW_TEXT } from "../voice-request";
 
 const GPT_IMAGE_EDIT = "openai/gpt-image-2.6/sunburst/edit";
-const WAN_PRIME = "alibaba/wan-3.0-prime/image-to-video";
+const NANO_BANANA_EDIT = "fal-ai/nano-banana-pro/edit";
 const WAN = "alibaba/wan-3.0/image-to-video";
+const WAN_WITH_REFERENCES = "alibaba/wan-3.0/reference-to-video";
 const MINIMAX_H3 = "minimax/h3-max/image-to-video";
-const VEO_FAST = "fal-ai/veo3.1/fast/image-to-video";
+const MINIMAX_H3_WITH_REFERENCES = "minimax/h3-max/reference-to-video";
 const SOUND_EFFECTS = "elevenlabs/sound-effects/v3";
 const BACKGROUND_REMOVAL = "bria/guided-remove-background";
-const KLING_AVATAR_STANDARD = "fal-ai/kling-video/ai-avatar/v2/standard";
-const OMNIHUMAN = "bytedance/omnihuman/v2";
-const NANO_BANANA_EDIT = "fal-ai/nano-banana-pro/edit";
+const SPEECH_FROM_TEXT = "google/gemini-3.8-flash-tts";
 
 export const LIST_UNIT_PRICE_USD: Readonly<Record<string, number>> = {
   [GPT_IMAGE_EDIT]: 1,
-  [WAN_PRIME]: 0.045,
-  [WAN]: 0.045,
+  [NANO_BANANA_EDIT]: 0.15,
+  [WAN]: 0.05,
+  [WAN_WITH_REFERENCES]: 0.05,
   [MINIMAX_H3]: 0.0375,
-  [VEO_FAST]: 0.15,
+  [MINIMAX_H3_WITH_REFERENCES]: 0.05,
   [SOUND_EFFECTS]: 0.002,
   [BACKGROUND_REMOVAL]: 0.03,
-  [KLING_AVATAR_STANDARD]: 0.0562,
-  [OMNIHUMAN]: 0.105,
-  [NANO_BANANA_EDIT]: 0.15,
+  [SPEECH_FROM_TEXT]: 0.045,
 };
 
 export const listUnitPriceUsd = (endpoint: string): number | null =>
@@ -29,45 +27,40 @@ export const listUnitPriceUsd = (endpoint: string): number | null =>
 
 const unitPrice = (endpoint: string) => LIST_UNIT_PRICE_USD[endpoint] as number;
 
-export const WAN_PRIME_1080P_SILENT_BILLED_UNITS_PER_SEC = 5.6;
-export const WAN_720P_WITH_AUDIO_BILLED_UNITS_PER_SEC = 2;
+const WAN_REFERENCES_720P_WITH_AUDIO_BILLED_UNITS_PER_SEC_UNMEASURED = 2;
+const WAN_720P_SILENT_BILLED_UNITS_PER_SEC_UNMEASURED = 1;
+const MINIMAX_H3_REFERENCES_BILLED_UNITS_PER_SEC_UNMEASURED = 1;
+const MINIMAX_H3_BILLED_UNITS_PER_SEC_UNMEASURED = 1;
+const SPEECH_FROM_TEXT_BILLED_UNITS_PER_SPOKEN_CHAR_UNMEASURED = 1 / 1000;
 const GPT_IMAGE_EDIT_BILLED_UNITS_PER_STILL_ROUNDED_UP = 0.07;
-const ONE_BILLED_UNIT_PER_SEC_UNMEASURED = 1;
-
-export const MOTION_USD_PER_SEC =
-  WAN_PRIME_1080P_SILENT_BILLED_UNITS_PER_SEC * unitPrice(WAN_PRIME);
-export const MOTION_MIN_SEC = 2;
+const NANO_BANANA_BILLED_UNITS_PER_STILL_UNMEASURED = 1;
 
 export const STILL_USD =
   GPT_IMAGE_EDIT_BILLED_UNITS_PER_STILL_ROUNDED_UP * unitPrice(GPT_IMAGE_EDIT);
-export const NANO_BANANA_STILL_USD = unitPrice(NANO_BANANA_EDIT);
+export const NANO_BANANA_STILL_USD =
+  NANO_BANANA_BILLED_UNITS_PER_STILL_UNMEASURED * unitPrice(NANO_BANANA_EDIT);
 
-export const SPEAKING_CLIP_USD_PER_SEC = {
-  minimaxH3: ONE_BILLED_UNIT_PER_SEC_UNMEASURED * unitPrice(MINIMAX_H3),
-  wan720pWithAudio: WAN_720P_WITH_AUDIO_BILLED_UNITS_PER_SEC * unitPrice(WAN),
-  veoFast: ONE_BILLED_UNIT_PER_SEC_UNMEASURED * unitPrice(VEO_FAST),
+export const VIDEO_USD_PER_SEC = {
+  wan: {
+    speech:
+      WAN_REFERENCES_720P_WITH_AUDIO_BILLED_UNITS_PER_SEC_UNMEASURED *
+      unitPrice(WAN_WITH_REFERENCES),
+    motion: WAN_720P_SILENT_BILLED_UNITS_PER_SEC_UNMEASURED * unitPrice(WAN),
+  },
+  minimaxH3: {
+    speech:
+      MINIMAX_H3_REFERENCES_BILLED_UNITS_PER_SEC_UNMEASURED * unitPrice(MINIMAX_H3_WITH_REFERENCES),
+    motion: MINIMAX_H3_BILLED_UNITS_PER_SEC_UNMEASURED * unitPrice(MINIMAX_H3),
+  },
 } as const;
 
-export const LIP_SYNC_USD_PER_SEC = {
-  klingAvatarStandard: unitPrice(KLING_AVATAR_STANDARD),
-  minimaxLipSync768p: 0.08,
-  minimaxLipSync1080p: 0.16,
-  omnihuman: unitPrice(OMNIHUMAN),
-  klingAvatarPro: 0.115,
-  fabric720p: 0.15,
-} as const;
+export const VOICE_SAMPLE_USD =
+  [...VOICE_PREVIEW_TEXT].length *
+  SPEECH_FROM_TEXT_BILLED_UNITS_PER_SPOKEN_CHAR_UNMEASURED *
+  unitPrice(SPEECH_FROM_TEXT);
 
 export const SOUND_EFFECT_USD_PER_SEC = unitPrice(SOUND_EFFECTS);
 export const CUTOUT_USD = unitPrice(BACKGROUND_REMOVAL);
-export const VOICE_USD_PER_CHAR = 0.08 / 1000;
-
-export const MOTION_RATE: Rate = {
-  usd: MOTION_USD_PER_SEC,
-  unit: "seconds",
-  minSeconds: MOTION_MIN_SEC,
-};
-
-export const STILL_RATE: Rate = { usd: STILL_USD, unit: "images" };
 
 export interface ResultCost {
   usd: number | null;

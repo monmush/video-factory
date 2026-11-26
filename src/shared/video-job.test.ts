@@ -1,22 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { estimateVoiceUsd } from "./board";
-import { spentUsd } from "./cost/charges";
-import { withInUsePaid } from "./cost/charges.fixture";
-import { costToFinishUsd, inFlightUsd } from "./cost/estimate";
-import { CUTOUT_USD, STILL_USD as FRAME_USD } from "./cost/rates";
+import { costToFinishUsd } from "./cost/estimate";
 import type { ScriptLine } from "./ipc";
-import { rulesPlan, type ShotPlan } from "./shot-plan";
+import { finished, NOW, placed, plannedJob, running, spoken, withStills } from "./job.fixture";
 import {
-  applyPlan,
-  billedSeconds,
-  followBatch,
   frameFor,
+  JOB_VERSION,
   type JobShot,
   jobPhase,
-  lineSpans,
-  madeByProvider,
   migrateJob,
-  modelLocked,
   newJob,
   nextActions,
   pickNext,
@@ -27,16 +18,9 @@ import {
   runThrough,
   settle,
   shotFailed,
-  shotModel,
   stopJob,
   type VideoJob,
-  withShotAudio,
 } from "./video-job";
-import { modelOutput, videoModel } from "./video-models";
-
-const VIDEO_USD_PER_SEC = modelOutput(videoModel()).usdPerSec;
-
-const NOW = "2026-11-12T10:00:00.000Z";
 
 function patch<T>(list: T[], i: number, fields: Partial<T>) {
   list[i] = { ...(list[i] as T), ...fields };
@@ -46,111 +30,15 @@ const line = (characterId: string | null, text: string): ScriptLine => ({
   speaker: characterId ?? "Ai đó",
   text,
 });
-const LINES = [
-  line("a", "Con chào ông ạ"),
-  line("b", "Ừ, ngồi xuống uống chén trà đã"),
-  line("a", "Trà này thơm quá"),
-  line("b", "Pha chậm thì mới thơm"),
-  line("a", "Dạ con hiểu rồi"),
-];
 
-const fresh = (useEnvironment = true) =>
-  newJob({
-    sessionId: "s",
-    seriesId: "x",
-    scriptId: "1",
-    title: "T",
-    lines: LINES,
-    useEnvironment,
-    now: NOW,
-  });
-const CTX = {
-  lines: LINES,
-  cast: [
-    { id: "a", name: "A" },
-    { id: "b", name: "B" },
-  ],
-  products: [{ id: "p", name: "Trà" }],
-  hasPlace: true,
-};
-
-const job = (patch: Partial<VideoJob> = {}, plan: ShotPlan = rulesPlan(CTX)): VideoJob => ({
-  ...applyPlan(fresh(patch.useEnvironment ?? true), plan),
-  ...patch,
+const readyForShots = (fields: Partial<VideoJob> = {}): VideoJob => ({
+  ...running(placed(spoken(withStills(plannedJob())))),
+  ...fields,
 });
 
-const readyForShots = (patch: Partial<VideoJob> = {}) => {
-  const j = withShotAudio(
-    job({ status: "running", dialogue: "dialogue.mp3", voiceCostUsd: 0.01 }),
-    LINES.map((_, i) => ({ start: i * 3, end: i * 3 + 3, audio: `line-${i}.mp3`, audioSec: 3 })),
-  );
-  return {
-    ...j,
-    frames: j.frames.map((f) => ({ ...f, file: `${f.id}.png`, costUsd: FRAME_USD })),
-    ...patch,
-  };
-};
+const roundTrip = (job: unknown) => migrateJob(JSON.parse(JSON.stringify(job)));
 
-const MIXED: ShotPlan = {
-  source: "ai",
-  seats: [],
-  props: [],
-  stateChanges: [],
-  shots: [
-    {
-      kind: "speaker",
-      characterId: "a",
-      framing: "medium_close",
-      line: 0,
-      text: "Con chào ông ạ",
-      visual: "",
-      productId: null,
-      why: "",
-    },
-    {
-      kind: "wide",
-      characterId: null,
-      framing: null,
-      line: 1,
-      text: "Ừ, ngồi xuống uống chén trà đã",
-      visual: "",
-      productId: null,
-      why: "",
-    },
-    {
-      kind: "listener",
-      characterId: "b",
-      framing: "close",
-      line: 2,
-      text: "Trà này thơm quá",
-      visual: "",
-      productId: null,
-      why: "",
-    },
-    {
-      kind: "detail",
-      characterId: null,
-      framing: null,
-      line: 3,
-      text: "Pha chậm thì mới thơm",
-      visual: "",
-      productId: "p",
-      why: "",
-    },
-    {
-      kind: "detail",
-      characterId: null,
-      framing: null,
-      line: 4,
-      text: "Dạ con hiểu rồi",
-      visual: "pour",
-      productId: null,
-      why: "",
-    },
-  ],
-};
-
-describe("shot list", () => {
+describe("a new job", () => {
   it("keeps only lines of a library speaker, and plans before anything else", () => {
     const j = newJob({
       sessionId: "s",
@@ -159,6 +47,7 @@ describe("shot list", () => {
       title: "T",
       lines: [line("a", "Một"), line(null, "Không ai"), line("b", " "), line("b", "Hai ")],
       useEnvironment: true,
+      models: { image: "gpt-image", video: "wan-3" },
       now: NOW,
     });
     expect(j.lines.map((l) => [l.characterId, l.text])).toEqual([
@@ -170,255 +59,76 @@ describe("shot list", () => {
     expect(costToFinishUsd(j)).toBeNull();
   });
 
-  it("makes the wide still first, one per character on screen, and one per detail", () => {
-    const j = job({}, MIXED);
-    expect(j.frames.map((f) => [f.id, f.kind])).toEqual([
-      ["wide", "wide"],
-      ["character:a", "character"],
-      ["character:b", "character"],
-      ["product:3", "product"],
-      ["detail:4", "detail"],
-    ]);
-    expect(j.shots.map((s) => frameFor(j, s)?.id)).toEqual([
-      "character:a",
-      "wide",
-      "character:b",
-      "product:3",
-      "detail:4",
-    ]);
-  });
-
-  it("without a place: no wide still, covers only", () => {
-    expect(job({ useEnvironment: false }).frames.map((f) => f.id)).toEqual([
-      "character:a",
-      "character:b",
-    ]);
-  });
-});
-
-describe("costs", () => {
-  it("before anything runs, finishing costs voice, frames and every shot", () => {
-    const j = job();
-    expect(spentUsd(j)).toBe(0);
-    const shots = j.shots.reduce((n, s) => n + billedSeconds(s), 0);
-    expect(shots).toBeGreaterThan(2 * j.shots.length);
-    expect(costToFinishUsd(j)).toBeCloseTo(
-      estimateVoiceUsd(j.lines) + 3 * FRAME_USD + shots * VIDEO_USD_PER_SEC,
-    );
-  });
-
-  it("without an environment, frames cost nothing", () => {
-    expect(costToFinishUsd(job({ useEnvironment: false }))).toBeCloseTo(
-      (costToFinishUsd(job()) ?? Number.NaN) - 3 * FRAME_USD,
-    );
-  });
-
-  it("wide and detail shots are made locally; a product shot costs its plate and missing cut-outs", () => {
-    const j = withShotAudio(
-      job({ status: "running", dialogue: "d.mp3" }, MIXED),
-      LINES.map((_, i) => ({ start: i * 3, end: i * 3 + 3, audio: `l${i}`, audioSec: 3 })),
-    );
-    expect(costToFinishUsd(j)).toBeCloseTo(5 * FRAME_USD + 2 * 3 * VIDEO_USD_PER_SEC);
-    patch(
-      j.frames,
-      j.frames.findIndex((f) => f.kind === "product"),
-      { cutouts: 2 },
-    );
-    expect(costToFinishUsd(j)).toBeCloseTo(
-      5 * FRAME_USD + 2 * CUTOUT_USD + 2 * 3 * VIDEO_USD_PER_SEC,
-    );
-    patch(
-      j.frames,
-      j.frames.findIndex((f) => f.kind === "product"),
-      { noCutout: true },
-    );
-    expect(costToFinishUsd(j)).toBeCloseTo(4 * FRAME_USD + 2 * 3 * VIDEO_USD_PER_SEC);
-  });
-
-  it("what is rendering may still be billed; finishing excludes it and what is spent", () => {
-    const j = readyForShots();
-    patch(j.shots, 0, { state: "done", clipSec: 4, costUsd: 4 * VIDEO_USD_PER_SEC });
-    patch(j.shots, 1, { state: "rendering", requestId: "r1" });
-    const paid = withInUsePaid(j);
-    const spent = 0.01 + 3 * FRAME_USD + 4 * VIDEO_USD_PER_SEC;
-    expect(spentUsd(paid)).toBeCloseTo(spent);
-    expect(inFlightUsd(paid)).toBeCloseTo(3 * VIDEO_USD_PER_SEC);
-    expect(costToFinishUsd(paid)).toBeCloseTo(3 * 3 * VIDEO_USD_PER_SEC);
-  });
-
-  it("a result already logged and still downloading is counted once", () => {
-    const j = readyForShots();
-    const usd = 3 * VIDEO_USD_PER_SEC;
-    patch(j.shots, 1, { state: "rendering", requestId: "r1", resultUrl: "u", costUsd: usd });
-    patch(j.frames, 0, { file: undefined, requestId: "f1", resultUrl: "u", costUsd: FRAME_USD });
-    const paid = withInUsePaid(j);
-    expect(inFlightUsd(paid)).toBe(0);
-  });
-
-  it("bills short lines at the minimum shot length", () => {
-    const j = readyForShots();
-    patch(j.shots, 0, { audioSec: 0.8 });
-    j.shots.splice(1);
-    expect(costToFinishUsd(j)).toBeCloseTo(2 * VIDEO_USD_PER_SEC);
-  });
-});
-
-describe("speaking-shot model", () => {
-  it("is copied from the series at creation; jobs saved before read as the default", () => {
-    const made = newJob({
-      sessionId: "s",
-      seriesId: "x",
-      scriptId: "1",
-      title: "T",
-      lines: LINES,
-      useEnvironment: false,
-      model: "kling-avatar-v2-pro",
-      now: NOW,
-    });
-    expect(made.model).toBe("kling-avatar-v2-pro");
-    expect(fresh().model).toBeUndefined();
-    const j = readyForShots();
-    expect(shotModel(j, j.shots[0] as JobShot).id).toBe(videoModel().id);
-  });
-
-  it("prices unsent shots at the job's model, sent ones at the model that made them", () => {
-    const j = readyForShots({ model: "kling-avatar-v2-pro" });
-    expect(costToFinishUsd(j)).toBeCloseTo(5 * 3 * 0.115);
-    patch(j.shots, 0, { state: "rendering", requestId: "r0" });
-    expect(shotModel(j, j.shots[0] as JobShot).id).toBe(videoModel().id);
-    patch(j.shots, 1, { state: "rendering", requestId: "r1", model: "omnihuman-v2" });
-    expect(shotModel(j, j.shots[1] as JobShot).endpoint).toBe("bytedance/omnihuman/v2");
-    expect(inFlightUsd(j)).toBeCloseTo(3 * VIDEO_USD_PER_SEC + 4 * 0.105);
-  });
-
-  it("an unknown job model falls back to the default", () => {
-    const j = readyForShots({ model: "gone-model" });
-    expect(costToFinishUsd(j)).toBeCloseTo(5 * 3 * VIDEO_USD_PER_SEC);
-  });
-
-  it("a shot longer than its model takes is made by the default", () => {
-    const j = readyForShots({ model: "omnihuman-v2" });
-    patch(j.shots, 0, { audioSec: 400 });
-    expect(shotModel(j, j.shots[0] as JobShot).id).toBe(videoModel().id);
-    expect(shotModel(j, j.shots[1] as JobShot).id).toBe("omnihuman-v2");
-  });
-});
-
-describe("following the batch until the first shot is sent", () => {
-  const batch = { model: "fabric-1-720p", resolution: "1080p" };
-
-  it("a video not shot yet uses the batch's model now, at its size fitted to the model", () => {
-    const paused = readyForShots({ status: "review", model: "kling-avatar-v2-standard" });
-    expect(modelLocked(paused)).toBe(false);
-    const now = followBatch(paused, batch);
-    expect(now).toMatchObject({ model: "fabric-1-720p", resolution: "720p" });
-    expect(costToFinishUsd(now)).toBeCloseTo(5 * 3 * 0.15);
-    expect(followBatch({ ...paused, ownModel: "kling-avatar-v2-pro" }, batch)).toMatchObject({
-      model: "kling-avatar-v2-pro",
-      resolution: "1080p",
-    });
-  });
-
-  it("once a shot is sent (or the snapshot is saved) nothing changes", () => {
-    const j = readyForShots({ model: "kling-avatar-v2-standard" });
-    patch(j.shots, 0, { state: "rendering", requestId: "r0", model: "kling-avatar-v2-standard" });
-    expect(modelLocked(j)).toBe(true);
-    expect(followBatch(j, batch)).toBe(j);
-    const snap = { ...readyForShots(), modelLocked: true };
-    expect(followBatch(snap, batch)).toBe(snap);
-    const old = readyForShots();
-    patch(old.shots, 0, { state: "done", clip: "c.mp4" });
-    expect(modelLocked(old)).toBe(true);
+  it("is saved and read back unchanged", () => {
+    const job = plannedJob();
+    expect(roundTrip(job)).toEqual(job);
   });
 });
 
 describe("transitions", () => {
   it("stop: queued shots are never sent, rendering ones keep going", () => {
     const j = readyForShots();
-    patch(j.shots, 0, { state: "rendering", requestId: "r0" });
+    patch(j.shots, 1, { state: "rendering", requestId: "r1" });
     const stopped = stopJob(j, NOW);
     expect(stopped.status).toBe("stopped");
     expect(stopped.shots.map((s) => s.state)).toEqual([
+      "stopped",
       "rendering",
       "stopped",
       "stopped",
       "stopped",
-      "stopped",
     ]);
-    expect(nextActions(stopped, new Set())).toEqual([{ kind: "poll-shot", index: 0 }]);
+    expect(nextActions(stopped, new Set())).toEqual([{ kind: "poll-shot", index: 1 }]);
   });
 
   it("resume continues from what exists and only pays for what is missing", () => {
     const j = readyForShots();
-    patch(j.shots, 0, { state: "done", clip: "c0.mp4", clipSec: 3, costUsd: 0.17 });
+    patch(j.shots, 1, { state: "done", clip: "c1.mp4", clipSec: 1, costUsd: 0.1 });
     const resumed = resumeJob(stopJob(j, NOW), NOW);
     expect(resumed.status).toBe("waiting");
     expect(resumed.shots.map((s) => s.state)).toEqual([
-      "done",
       "queued",
+      "done",
       "queued",
       "queued",
       "queued",
     ]);
     expect(resumed.dialogue).toBe("dialogue.mp3");
-    expect(costToFinishUsd(resumed)).toBeCloseTo(4 * 3 * VIDEO_USD_PER_SEC);
+    expect(costToFinishUsd(resumed)).toBe(0);
   });
 
   it("making everything continues a paused, stopped or running job without stopping again", () => {
-    const paused = settle({ ...readyForShots(), pause: true, status: "running" });
+    const paused = settle({ ...withStills(plannedJob()), pause: true, status: "running" });
     expect(paused.status).toBe("review");
     const resumed = settle(runThrough(paused, NOW));
     expect([resumed.status, resumed.reviewed]).toEqual(["waiting", true]);
-    const early = runThrough(job({ status: "running", pause: true }), NOW);
-    expect([early.status, early.reviewed]).toEqual(["running", true]);
     const stopped = runThrough(stopJob(readyForShots(), NOW), NOW);
     expect(stopped.status).toBe("waiting");
   });
 
-  it("stopped before the voice: shots go back to planned", () => {
-    const resumed = resumeJob(stopJob(job({ status: "running" }), NOW), NOW);
+  it("stopped before the timeline: shots go back to planned", () => {
+    const resumed = resumeJob(stopJob(running(plannedJob()), NOW), NOW);
     expect(resumed.shots.every((s) => s.state === "planned")).toBe(true);
   });
 
   it("a failed provider attempt retries once, then fails", () => {
-    const s = {
-      ...(readyForShots().shots[0] as JobShot),
-      state: "rendering" as const,
-      requestId: "r",
-    };
-    const first = shotFailed(s, "boom");
+    const s = { ...(readyForShots().shots[1] as JobShot), state: "rendering" as const };
+    const first = shotFailed({ ...s, requestId: "r" }, "boom");
     expect([first.state, first.retried, first.requestId]).toEqual(["queued", true, undefined]);
     const second = shotFailed({ ...first, state: "rendering", requestId: "r2" }, "boom");
     expect([second.state, second.error]).toEqual(["failed", "boom"]);
   });
 
-  it("a clip whose paid result could not be used is sent again, never fetched from the old link", () => {
-    const s = {
-      ...(readyForShots().shots[0] as JobShot),
-      state: "rendering" as const,
-      requestId: "r",
-      resultUrl: "https://example.test/expired.mp4",
-      costUsd: 0.4,
-    };
-    const next = shotFailed(s, "expired");
-    expect([next.state, next.requestId, next.resultUrl, next.costUsd]).toEqual([
-      "queued",
-      undefined,
-      undefined,
-      0.4,
-    ]);
-  });
-
   it("a failed shot fails the job once nothing else is open; retry by hand resumes it", () => {
     const j = readyForShots();
     j.shots = j.shots.map((s, i) =>
-      i === 2 ? { ...s, state: "failed", retried: true } : { ...s, state: "done" },
+      i === 1 ? { ...s, state: "failed", retried: true } : { ...s, state: "done" },
     );
     const failed = settle(j);
     expect(failed.status).toBe("failed");
-    const retried = retryShot(failed, 2, NOW);
+    const retried = retryShot(failed, 1, NOW);
     expect(retried.status).toBe("waiting");
-    expect(retried.shots[2]).toMatchObject({ state: "queued", retried: false });
+    expect(retried.shots[1]).toMatchObject({ state: "queued", retried: false });
   });
 
   it("a job with its final video is done", () => {
@@ -428,83 +138,51 @@ describe("transitions", () => {
 
 describe("next actions and resume", () => {
   it("waits for a staging already in progress instead of starting a second one", () => {
-    const sentWhileStaging: VideoJob = { ...fresh(), status: "running", planning: true };
+    const sentWhileStaging: VideoJob = {
+      ...newJob({
+        sessionId: "s",
+        seriesId: "x",
+        scriptId: "1",
+        title: "T",
+        lines: [line("a", "Một")],
+        useEnvironment: true,
+        models: { image: "gpt-image", video: "wan-3" },
+        now: NOW,
+      }),
+      status: "running",
+      planning: true,
+    };
     expect(nextActions(sentWhileStaging, new Set())).toEqual([]);
     expect(nextActions({ ...sentWhileStaging, planning: undefined }, new Set())).toEqual([
       { kind: "plan" },
     ]);
   });
 
-  it("follows the cheap steps first: voice, then frames, then shots", () => {
-    expect(nextActions(job({ status: "running" }), new Set())).toEqual([{ kind: "voice" }]);
-    const voiced = withShotAudio(
-      job({ status: "running", dialogue: "d.mp3" }, MIXED),
-      LINES.map((_, i) => ({ start: i * 2, end: i * 2 + 2, audio: `l${i}`, audioSec: 2 })),
-    );
-    expect(jobPhase(voiced)).toBe("frames");
-    expect(nextActions(voiced, new Set())).toEqual([{ kind: "frame", frame: "wide" }]);
-    patch(voiced.frames, 0, { file: "wide.png" });
-    expect(nextActions(voiced, new Set()).map((a) => a.kind === "frame" && a.frame)).toEqual([
-      "character:a",
-      "character:b",
-      "product:3",
-      "detail:4",
-    ]);
-  });
-
-  it("local shots do not take a provider slot", () => {
-    const j = withShotAudio(
-      job({ status: "running", dialogue: "d.mp3" }, MIXED),
-      LINES.map((_, i) => ({ start: i * 2, end: i * 2 + 2, audio: `l${i}`, audioSec: 2 })),
-    );
-    j.frames = j.frames.map((f) => ({ ...f, file: `${f.id}.png` }));
-    patch(j.shots, 0, { state: "rendering", requestId: "r0" });
-    patch(j.shots, 2, { state: "rendering", requestId: "r2" });
-    expect(nextActions(j, new Set(["shot:0", "shot:2"]))).toEqual([
+  it("sends the moving shot and one local shot at a time", () => {
+    const j = readyForShots();
+    expect(nextActions(j, new Set())).toEqual([
+      { kind: "submit-shot", index: 0 },
       { kind: "submit-shot", index: 1 },
     ]);
-  });
-
-  it("sends every ready provider shot at once", () => {
-    const j = readyForShots();
-    expect(nextActions(j, new Set())).toEqual(
-      j.shots.map((s) => ({ kind: "submit-shot", index: s.index })),
-    );
-    patch(j.shots, 0, { state: "rendering", requestId: "r0" });
-    expect(nextActions(j, new Set(["shot:0", "shot:1"]))).toEqual(
-      j.shots.slice(2).map((s) => ({ kind: "submit-shot", index: s.index })),
-    );
-  });
-
-  it("never sends more than one local shot at a time", () => {
-    const j = withShotAudio(
-      job({ status: "running", dialogue: "d.mp3" }, MIXED),
-      LINES.map((_, i) => ({ start: i * 2, end: i * 2 + 2, audio: `l${i}`, audioSec: 2 })),
-    );
-    j.frames = j.frames.map((f) => ({ ...f, file: `${f.id}.png` }));
-    const sent = nextActions(j, new Set()).flatMap((a) =>
-      a.kind === "submit-shot" ? [j.shots[a.index] as JobShot] : [],
-    );
-    expect(sent.filter((s) => !madeByProvider(s))).toHaveLength(1);
-    expect(sent.filter(madeByProvider)).toHaveLength(j.shots.filter(madeByProvider).length);
+    patch(j.shots, 0, { state: "done", clip: "c.mp4" });
+    expect(nextActions(j, new Set(["shot:1"]))).toEqual([{ kind: "submit-shot", index: 2 }]);
   });
 
   it("after a restart, saved requests are polled, never resubmitted", () => {
     const j = readyForShots();
-    patch(j.shots, 0, { state: "rendering", requestId: "r0" });
-    patch(j.shots, 1, { state: "done", clip: "c1.mp4", clipSec: 3 });
+    patch(j.shots, 1, { state: "rendering", requestId: "r1" });
     patch(j.frames, 0, { file: undefined, requestId: "f0" });
     const actions = nextActions(j, new Set());
-    expect(actions).toContainEqual({ kind: "poll-shot", index: 0 });
-    expect(actions).toContainEqual({ kind: "poll-frame", frame: "wide" });
-    expect(actions.some((a) => a.kind === "submit-shot" && a.index <= 1)).toBe(false);
+    expect(actions).toContainEqual({ kind: "poll-shot", index: 1 });
+    expect(actions).toContainEqual({ kind: "poll-frame", frame: "kf:master" });
+    expect(actions.some((a) => a.kind === "submit-shot" && a.index === 1)).toBe(false);
     expect(actions.some((a) => a.kind === "frame")).toBe(false);
     expect(resumesOnStart(j)).toBe(true);
   });
 
   it("never auto-starts a job that was not started", () => {
-    expect(resumesOnStart(job({ status: "idle" }))).toBe(false);
-    expect(nextActions(job({ status: "idle" }), new Set())).toEqual([]);
+    expect(resumesOnStart(plannedJob())).toBe(false);
+    expect(nextActions(plannedJob(), new Set())).toEqual([]);
   });
 
   it("assembles once every shot is done", () => {
@@ -514,9 +192,9 @@ describe("next actions and resume", () => {
   });
 
   it("runs one job at a time: the running one, else the earliest committed", () => {
-    const a = job({ scriptId: "a", status: "waiting", queuedAt: "2026-11-12T10:00:02Z" });
-    const b = job({ scriptId: "b", status: "waiting", queuedAt: "2026-11-12T10:00:01Z" });
-    const c = job({ scriptId: "c", status: "stopped" });
+    const a = { ...plannedJob(), scriptId: "a", status: "waiting" as const, queuedAt: "2" };
+    const b = { ...plannedJob(), scriptId: "b", status: "waiting" as const, queuedAt: "1" };
+    const c = { ...plannedJob(), scriptId: "c", status: "stopped" as const };
     expect(pickNext([a, b, c])?.scriptId).toBe("b");
     expect(pickNext([a, { ...b, status: "done" }, { ...c, status: "running" }])?.scriptId).toBe(
       "c",
@@ -525,49 +203,99 @@ describe("next actions and resume", () => {
 });
 
 describe("time left", () => {
-  const avg = { plan: 60, voice: 20, frame: 40, shot: 120, assemble: 15 };
+  const avg = { plan: 60, frame: 40, shot: 120, assemble: 15 };
   it("counts the shots left as one round, all sent at once", () => {
     const j = readyForShots();
     expect(remainingSec(j, avg, Date.parse(NOW))).toBe(120 + 15);
-    patch(j.shots, 0, { state: "rendering", requestId: "r0", submittedAt: NOW });
-    expect(remainingSec(j, avg, Date.parse(NOW) + 30_000)).toBe(120 + 15);
     j.shots = j.shots.map((s) => ({ ...s, state: "rendering", requestId: "r", submittedAt: NOW }));
     expect(remainingSec(j, avg, Date.parse(NOW) + 30_000)).toBe(90 + 15);
   });
-  it("counts down while voice runs", () => {
-    const j = job({ status: "running", phaseStartedAt: NOW });
-    const left = remainingSec(j, avg, Date.parse(NOW) + 10_000);
-    expect(left).toBe(10 + 2 * 40 + 120 + 15);
+
+  it("before the stills, counts the stills, the speech and the shots", () => {
+    const j = { ...running(plannedJob()), phaseStartedAt: NOW };
+    expect(remainingSec(j, avg, Date.parse(NOW) + 10_000)).toBe(30 + 120 + 120 + 15);
   });
 });
 
-describe("line timings", () => {
-  it("merges a line's segments and reports a missing line", () => {
-    const seg = (i: number, s: number, e: number) => ({
-      dialogueInputIndex: i,
-      startTimeSeconds: s,
-      endTimeSeconds: e,
+const savedV2 = (job: VideoJob, fields: Record<string, unknown>) => ({
+  ...JSON.parse(JSON.stringify(job)),
+  version: 2,
+  ...fields,
+});
+
+describe("jobs saved before there was one way of making videos", () => {
+  it("a video made by the video model keeps working with the model its level used", () => {
+    const paid: VideoJob = {
+      ...readyForShots(),
+      charges: [{ at: NOW, kind: "still", step: "s", usd: 1, billed: true }],
+    };
+    const fast = migrateJob(savedV2(paid, { voiceMode: "native", level: "fast", model: "x" }));
+    expect(fast).toMatchObject({
+      version: JOB_VERSION,
+      models: { image: "gpt-image", video: "minimax-h3-max" },
+      modelsKept: true,
     });
-    expect(lineSpans([seg(0, 0, 1), seg(0, 1.2, 2), seg(1, 2.5, 3)], 2)).toEqual([
-      { start: 0, end: 2 },
-      { start: 2.5, end: 3 },
-    ]);
-    expect(lineSpans([seg(0, 0, 1)], 2)).toBeNull();
+    expect(fast).not.toHaveProperty("voiceMode");
+    expect(fast).not.toHaveProperty("level");
+    expect(jobPhase(fast)).toBe("shots");
+    const high = migrateJob(savedV2(paid, { voiceMode: "native", level: "high" }));
+    expect(high.models?.video).toBe("wan-3");
+    const waiting = migrateJob(savedV2(plannedJob(), { voiceMode: "native", level: "balanced" }));
+    expect(waiting.modelsKept).toBeUndefined();
+    expect(waiting.plan).toBeDefined();
   });
-});
 
-describe("one at a time", () => {
-  it("starts the next video while a stopped one's shots are still collected", () => {
-    const stopped = { ...readyForShots({ status: "stopped" }) };
-    patch(stopped.shots, 0, { state: "rendering", requestId: "r" });
-    const next = job({ scriptId: "n", status: "waiting" });
-    expect(pickNext([stopped, next])?.scriptId).toBe("n");
-    expect(nextActions(stopped, new Set())).toEqual([{ kind: "poll-shot", index: 0 }]);
+  it("a finished video made the old way stays as it is, to watch and save", () => {
+    const done = finished();
+    const old = migrateJob(savedV2(done, { level: "balanced", model: "kling" }));
+    expect(old).toMatchObject({ dubbed: true, final: "final.mp4", status: "done" });
+    expect(old.shots).toEqual(done.shots);
+    expect(old.models).toEqual(done.models);
+    expect(jobPhase(old)).toBe("done");
   });
-});
 
-describe("jobs saved before shot plans", () => {
-  it("read as one speaker shot per line, timed from the saved line spans", () => {
+  it("a finished video made the old way shows the version that was in use", () => {
+    const done = finished();
+    const other = { ...done, final: "final-high.mp4", shots: done.shots.slice(0, 2) };
+    const saved = savedV2(done, {
+      level: "balanced",
+      chosen: "high",
+      takes: [
+        {
+          level: "high",
+          status: "done",
+          cut: { frames: other.frames, shots: other.shots, final: other.final, routes: [] },
+        },
+      ],
+    });
+    const old = migrateJob(saved) as VideoJob & { takes?: { level?: string; cut: unknown }[] };
+    expect(old.final).toBe("final-high.mp4");
+    expect(old.shots).toHaveLength(2);
+    expect(old).not.toHaveProperty("chosen");
+    expect(old.takes?.map((t) => t.level)).toEqual(["balanced"]);
+    expect(old.takes?.[0]?.cut).toMatchObject({ final: "final.mp4" });
+  });
+
+  it("a video made the old way but not finished starts again, keeping the operator's wishes", () => {
+    const direction = [{ at: NOW, want: "cười tươi", words: "Chào ông" }];
+    const half = { ...readyForShots(), rev: 2, direction, productIds: ["p"] };
+    const again = migrateJob(savedV2(half, { level: "balanced" }));
+    expect(again).toMatchObject({
+      version: JOB_VERSION,
+      status: "idle",
+      rev: 3,
+      oldFiles: true,
+      direction,
+      productIds: ["p"],
+      lines: half.lines,
+    });
+    expect(again.plan).toBeUndefined();
+    expect(again.frames).toEqual([]);
+    expect(again.dialogue).toBeUndefined();
+    expect(again.charges).toBeUndefined();
+  });
+
+  it("jobs saved before shot plans read as a finished video made the old way", () => {
     const old = {
       version: 1,
       sessionId: "s",
@@ -587,35 +315,13 @@ describe("jobs saved before shot plans", () => {
       ],
       frames: [{ characterId: "a", file: "frame-a.png", retried: false }],
       shots: [
-        {
-          index: 0,
-          lineIndex: 0,
-          characterId: "a",
-          speaker: "A",
-          text: "Một",
-          state: "done",
-          audio: "line.mp3",
-          clip: "shot.mp4",
-          retried: false,
-          failures: 0,
-        },
-        {
-          index: 1,
-          lineIndex: 1,
-          characterId: "a",
-          speaker: "A",
-          text: "Hai",
-          state: "done",
-          audio: "line.mp3",
-          clip: "shot.mp4",
-          retried: false,
-          failures: 0,
-        },
-      ],
+        { index: 0, lineIndex: 0, characterId: "a", speaker: "A", text: "Một", state: "done" },
+        { index: 1, lineIndex: 1, characterId: "a", speaker: "A", text: "Hai", state: "done" },
+      ].map((s) => ({ ...s, clip: "shot.mp4", retried: false, failures: 0 })),
       final: "final.mp4",
     };
     const j = migrateJob(old);
-    expect(j.version).toBe(2);
+    expect(j).toMatchObject({ version: JOB_VERSION, dubbed: true });
     expect(jobPhase(j)).toBe("done");
     expect(j.lines.map((l) => l.text)).toEqual(["Một", "Hai"]);
     expect(j.shots.map((s) => [s.kind, s.start, s.end])).toEqual([

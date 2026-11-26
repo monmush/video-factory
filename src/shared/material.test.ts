@@ -43,7 +43,7 @@ const shot = (index: number, keyframe: string, patch: Partial<JobShot> = {}): Jo
 const live = { plan: { routes: [] } } as unknown as LiveDirection;
 
 const finished = (patch: Partial<VideoJob> = {}): VideoJob => ({
-  version: 2,
+  version: 3,
   sessionId: "s",
   scriptId: "1",
   seriesId: "x",
@@ -146,7 +146,6 @@ const item = (patch: Partial<MaterialItem> = {}): MaterialItem => ({
   caption: "",
   people: ["a"],
   madeFrom: [{ assetId: "a", imageIds: ["a1", "a2"] }],
-  level: "",
   costUsd: null,
   source: { sessionId: "s", scriptId: "1", file: "close.png", title: "T", at: NOW },
   kept: false,

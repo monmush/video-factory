@@ -12,13 +12,13 @@ import {
   sceneAction,
 } from "@shared/scene-actions";
 import { stagedWithoutPlace } from "@shared/series-place";
-import { frameFor, type JobFrame, type JobShot, type VideoJob } from "@shared/video-job";
+import { frameFor, type JobFrame, type JobShot, jobPace, type VideoJob } from "@shared/video-job";
 import { Pencil, PenLine, Trash2, X } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { removeScriptLine } from "@/lib/board-notice";
 import { withOccurrenceKeys } from "@/lib/occurrence-keys";
-import { stagingOf, useVideoLevel } from "@/lib/staging";
+import { stagingOf } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -60,7 +60,6 @@ export function ShotBrief({
   const jobs = useVideoJobs(sessionId);
   const { assets } = useWorkspace();
   const job = given !== undefined ? given : (jobs?.jobs.get(script.id) ?? null);
-  const level = useVideoLevel(sessionId)(script.id);
   const { error, run } = useAction();
   const [editing, setEditing] = useState<number | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);
@@ -70,7 +69,7 @@ export function ShotBrief({
   if (script.status !== "ready") return null;
   const staging = script.staging?.trim();
   const errorLine = error && <p className="text-xs text-destructive-foreground">{error}</p>;
-  const { status, reasons } = stagingOf(job, script, level);
+  const { status, reasons } = stagingOf(job, script);
 
   if (job?.planning) {
     return (
@@ -194,6 +193,7 @@ export function ShotBrief({
           <Scene
             key={shot.index}
             shot={shot}
+            seconds={sceneSeconds(shot, jobPace(job))}
             reworded={changedScene(i)}
             name={nameOf(shot)}
             framing={sceneFraming(shot, keyframes)}
@@ -243,6 +243,7 @@ function RewordedNote({ changed }: { changed: Reworded }) {
 
 function Scene({
   shot,
+  seconds,
   reworded,
   name,
   framing,
@@ -260,6 +261,7 @@ function Scene({
   reuse,
 }: {
   shot: JobShot;
+  seconds: number;
   reworded: boolean;
   name: string;
   framing: string;
@@ -290,7 +292,7 @@ function Scene({
         {directed && <Badge variant="secondary">Theo ý bạn</Badge>}
         {reworded && <Badge variant="secondary">Vừa sửa</Badge>}
         <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-          {sceneSeconds(shot)} giây
+          {seconds} giây
         </span>
         {action && <SceneActionButton action={action} onClick={() => onAction(action)} />}
       </div>

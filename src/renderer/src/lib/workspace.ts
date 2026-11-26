@@ -1,4 +1,5 @@
 import type { Workspace } from "@shared/ipc";
+import { seriesTargetSec } from "@shared/series-guide";
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
 
@@ -26,4 +27,10 @@ export function useWorkspace(): Workspace {
   const value = useSyncExternalStore(subscribe, () => snapshot);
   if (!value) throw new Error("Workspace not loaded");
   return value;
+}
+
+export function useSeriesTargetSec(sessionId: string): number {
+  const { sessions, series } = useWorkspace();
+  const session = sessions.find((s) => s.id === sessionId);
+  return seriesTargetSec(series.find((s) => s.id === session?.seriesId) ?? {});
 }

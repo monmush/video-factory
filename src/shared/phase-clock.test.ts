@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AUTO_MODELS } from "./models";
 import { clocked, phaseSecNow, restartedClock, totalSec } from "./phase-clock";
 import { newJob, type VideoJob } from "./video-job";
 
@@ -14,6 +15,7 @@ const job = (patch: Partial<VideoJob> = {}): VideoJob => ({
     title: "",
     lines: [],
     useEnvironment: false,
+    models: AUTO_MODELS,
     now: iso(0),
   }),
   ...patch,

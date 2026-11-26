@@ -17,7 +17,6 @@ import {
 } from "../shared/material";
 import type { Picture, ShotList } from "../shared/shot-list";
 import type { VideoJob } from "../shared/video-job";
-import { chosenVersion, chosenView } from "../shared/video-takes";
 import { updateAsset } from "./assets";
 import { stageImages } from "./media";
 import { materialDir, writeJsonAtomic } from "./paths";
@@ -199,8 +198,7 @@ function placeInScene(edit: Edit, job: VideoJob) {
   );
 }
 
-export function syncVideoMaterial(working: VideoJob, folder: string): Promise<void> {
-  const job = chosenView(working);
+export function syncVideoMaterial(job: VideoJob, folder: string): Promise<void> {
   if (!finishedVideo(job)) return Promise.resolve();
   return editMaterial(job.seriesId, async (edit) => {
     const ws = await getWorkspace();
@@ -220,10 +218,7 @@ export function syncVideoMaterial(working: VideoJob, folder: string): Promise<vo
   });
 }
 
-const filedCut = (job: VideoJob) => {
-  const view = chosenView(job);
-  return finishedVideo(view) ? `${chosenVersion(job)}|${view.final}|${view.cutRev ?? 0}` : null;
-};
+const filedCut = (job: VideoJob) => (finishedVideo(job) ? `${job.final}|${job.cutRev ?? 0}` : null);
 
 export function fileWhenFinished(before: VideoJob, after: VideoJob, folder: string) {
   const cut = filedCut(after);

@@ -110,7 +110,6 @@ export function recut(parts: string[], line: string): string[] | null {
 export interface RestageBasis {
   lines: ScriptLine[];
   productIds: string[];
-  level: string;
   list: ShotList;
 }
 

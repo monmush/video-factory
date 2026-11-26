@@ -2,30 +2,55 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { BrowserWindow, shell } from "electron";
 import {
-  migrateSettings,
-  outputResolution,
-  withBatchLevel,
-  withVideoLevel,
-} from "../shared/batch-settings";
-import {
   type AssetKind,
   SERIES_ASSET_FIELD,
   type Series,
   type SeriesInput,
+  type SeriesUpdate,
   type Session,
   type SessionSettings,
   type Workspace,
 } from "../shared/ipc";
-import { mediaLevel } from "../shared/media-level";
+import { seriesModels } from "../shared/models";
 import { MAX_NOTE_LENGTH, type Note, type NoteArea, putNote } from "../shared/notes";
 import { mixProblem, type ProductMix } from "../shared/product-mix";
-import { videoModel } from "../shared/video-models";
+import {
+  answerQuestion,
+  confirmGuide,
+  editGuide,
+  type GuideEdit,
+  guideFromText,
+  type SeriesGuide,
+} from "../shared/series-guide";
+import { type SavedAsset, withVoiceTexts } from "../shared/voices";
 import { dataFile, mediaDir, writeJsonAtomic } from "./paths";
 
 const FILE = "workspace.json";
 const empty = (): Workspace => ({ version: 1, series: [], sessions: [], assets: [] });
 
 let cache: Workspace | null = null;
+
+type SavedSeries = Partial<Series> &
+  Pick<Series, "id"> & { videoModel?: unknown; resolution?: unknown; mediaLevel?: unknown };
+
+function withoutOldSeriesFields(saved: SavedSeries): Series {
+  const { videoModel: _model, resolution: _size, mediaLevel: _level, models, ...series } = saved;
+  const picked = seriesModels(models);
+  return {
+    ...(series as Series),
+    characterIds: series.characterIds ?? [],
+    productIds: series.productIds ?? [],
+    environmentIds: series.environmentIds ?? [],
+    ...(picked ? { models: picked } : {}),
+  };
+}
+
+function withoutOldSessionFields(session: Session): Session {
+  if (!session.settings) return session;
+  const { productMix } = session.settings;
+  const { settings: _, ...rest } = session;
+  return productMix ? { ...rest, settings: { productMix } } : rest;
+}
 let writesInOrder: Promise<unknown> = Promise.resolve();
 
 async function load(): Promise<Workspace> {
@@ -33,17 +58,9 @@ async function load(): Promise<Workspace> {
   try {
     const parsed = JSON.parse(await readFile(dataFile(FILE), "utf8")) as Workspace;
     cache = { ...empty(), ...parsed };
-    cache.series = cache.series.map((s: Partial<Series> & Pick<Series, "id">) =>
-      migrateSettings({
-        ...(s as Series),
-        characterIds: s.characterIds ?? [],
-        productIds: s.productIds ?? [],
-        environmentIds: s.environmentIds ?? [],
-      }),
-    );
-    cache.sessions = cache.sessions.map((s) =>
-      s.settings ? { ...s, settings: migrateSettings(s.settings) } : s,
-    );
+    cache.series = cache.series.map(withoutOldSeriesFields);
+    cache.sessions = cache.sessions.map(withoutOldSessionFields);
+    cache.assets = withVoiceTexts(cache.assets as SavedAsset[]);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     cache = empty();
@@ -94,9 +111,7 @@ export function createSeries(input: SeriesInput): Promise<Series> {
       characterIds: assetIds(ws, input.characterIds, "character"),
       productIds: assetIds(ws, input.productIds, "product"),
       environmentIds: assetIds(ws, input.environmentIds ?? [], "environment"),
-      ...(input.videoModel ? { videoModel: videoModel(input.videoModel).id } : {}),
-      ...(input.resolution ? { resolution: outputResolution(input.resolution) } : {}),
-      ...(input.mediaLevel ? { mediaLevel: mediaLevel(input.mediaLevel).id } : {}),
+      ...(seriesModels(input.models) ? { models: seriesModels(input.models) } : {}),
       ...(input.reuseMaterial === false ? { reuseMaterial: false } : {}),
       createdAt: now(),
       updatedAt: now(),
@@ -107,18 +122,26 @@ export function createSeries(input: SeriesInput): Promise<Series> {
   });
 }
 
-export function updateSeries(
-  input: { id: string; pinned?: boolean } & Partial<SeriesInput>,
-): Promise<Series> {
+const currentGuide = (series: Series) => series.guide ?? guideFromText(series.guidance);
+
+function applyGuideEdit(series: Series, edit: GuideEdit) {
+  const edited = editGuide(currentGuide(series), edit);
+  series.guide = edit.confirm === true ? confirmGuide(edited, now()) : edited;
+}
+
+export function updateSeries(input: SeriesUpdate): Promise<Series> {
   return mutate((ws) => {
     const series = ws.series.find((s) => s.id === input.id);
     if (!series) throw new Error(`Series not found: ${input.id}`);
     if (input.name !== undefined) series.name = input.name.trim() || series.name;
     if (input.guidance !== undefined) series.guidance = input.guidance.trim();
+    if (input.guide) applyGuideEdit(series, input.guide);
     if (input.pinned !== undefined) setPinned(series, input.pinned);
-    if (input.videoModel !== undefined) series.videoModel = videoModel(input.videoModel).id;
-    if (input.resolution !== undefined) series.resolution = outputResolution(input.resolution);
-    if (input.mediaLevel !== undefined) series.mediaLevel = mediaLevel(input.mediaLevel).id;
+    if (input.models !== undefined) {
+      const picked = seriesModels(input.models);
+      if (picked) series.models = picked;
+      else delete series.models;
+    }
     if (input.reuseMaterial !== undefined) series.reuseMaterial = input.reuseMaterial !== false;
     for (const [kind, field] of Object.entries(SERIES_ASSET_FIELD) as [
       AssetKind,
@@ -127,6 +150,34 @@ export function updateSeries(
       const ids = input[field];
       if (Array.isArray(ids)) (series[field] as string[]) = assetIds(ws, ids, kind);
     }
+    series.updatedAt = now();
+    return series;
+  });
+}
+
+export function answerSeriesQuestion(input: {
+  id: string;
+  questionId: string;
+  option: number | null;
+}): Promise<Series> {
+  return mutate((ws) => {
+    const series = ws.series.find((s) => s.id === input.id);
+    if (!series) throw new Error(`Series not found: ${input.id}`);
+    if (!series.guide) return series;
+    const option = typeof input.option === "number" ? input.option : null;
+    series.guide = answerQuestion(series.guide, input.questionId, option);
+    series.updatedAt = now();
+    return series;
+  });
+}
+
+export function saveDraftedGuide(id: string, guide: SeriesGuide, title: string): Promise<Series> {
+  return mutate((ws) => {
+    const series = ws.series.find((s) => s.id === id);
+    if (!series) throw new Error(`Series not found: ${id}`);
+    if (series.guide) return series;
+    series.guide = guide;
+    if (title && series.name === nameFrom(series.guidance)) series.name = title;
     series.updatedAt = now();
     return series;
   });
@@ -152,9 +203,6 @@ export function updateSession(input: {
   name?: string;
   pinned?: boolean;
   settings?: {
-    videoModel?: string | null;
-    resolution?: string | null;
-    mediaLevel?: string | null;
     productMix?: ProductMix | null;
   };
 }): Promise<Session> {
@@ -164,14 +212,7 @@ export function updateSession(input: {
     if (input.name !== undefined) session.name = input.name.trim() || session.name;
     if (input.pinned !== undefined) setPinned(session, input.pinned);
     if (input.settings) {
-      let next: SessionSettings = { ...session.settings };
-      const { videoModel: model, resolution } = input.settings;
-      if (model === null) delete next.videoModel;
-      else if (model !== undefined) next.videoModel = videoModel(model).id;
-      if (resolution === null) delete next.resolution;
-      else if (resolution !== undefined) next.resolution = outputResolution(resolution);
-      const level = input.settings.mediaLevel;
-      if (level !== undefined) next = withBatchLevel(next, level);
+      const next: SessionSettings = { ...session.settings };
       const mix = input.settings.productMix;
       if (mix === null || (mix && mix.length === 0)) delete next.productMix;
       else if (mix) {
@@ -192,19 +233,6 @@ export function updateSession(input: {
     }
     session.updatedAt = now();
     return session;
-  });
-}
-
-export function setVideoLevel(sessionId: string, scriptId: string, level: string): Promise<null> {
-  return mutate((ws) => {
-    const session = ws.sessions.find((s) => s.id === sessionId);
-    if (!session) throw new Error(`Session not found: ${sessionId}`);
-    const series = ws.series.find((s) => s.id === session.seriesId);
-    const settings = withVideoLevel(session, series, scriptId, level);
-    if (Object.keys(settings).length) session.settings = settings;
-    else delete session.settings;
-    session.updatedAt = now();
-    return null;
   });
 }
 
@@ -234,22 +262,12 @@ export function approveSession(sessionId: string, scriptIds: string[]): Promise<
   });
 }
 
-export function createSession(input: {
-  seriesId: string;
-  request?: string;
-  mediaLevel?: string;
-}): Promise<Session> {
+export function createSession(input: { seriesId: string; request?: string }): Promise<Session> {
   return mutate(async (ws) => {
     const series = ws.series.find((s) => s.id === input.seriesId);
     if (!series) {
       throw new Error(`Series not found: ${input.seriesId}`);
     }
-    const level =
-      input.mediaLevel &&
-      mediaLevel(input.mediaLevel).id === input.mediaLevel &&
-      input.mediaLevel !== mediaLevel(series.mediaLevel).id
-        ? input.mediaLevel
-        : undefined;
     const base = `Video ${new Date().toLocaleDateString("vi-VN")}`;
     const sameDay = ws.sessions.filter(
       (s) => s.seriesId === input.seriesId && s.name.startsWith(base),
@@ -259,7 +277,6 @@ export function createSession(input: {
       seriesId: input.seriesId,
       name: sameDay ? `${base} · ${sameDay + 1}` : base,
       ...(input.request?.trim() ? { request: input.request.trim() } : {}),
-      ...(level ? { settings: { mediaLevel: level } } : {}),
       approvedAt: null,
       createdAt: now(),
       updatedAt: now(),

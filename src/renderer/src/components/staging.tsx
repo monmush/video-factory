@@ -1,11 +1,10 @@
-import { estimateSeconds, formatSeconds } from "@shared/board";
-import { costToFinishUsd } from "@shared/cost/estimate";
+import { formatSeconds } from "@shared/board";
 import type { Script } from "@shared/ipc";
-import { type MediaLevel, type MediaLevelId, mediaLevel } from "@shared/media-level";
+import { scriptSeconds } from "@shared/pace";
 import { NO_PLACE } from "@shared/series-place";
-import { OUTDATED_TEXT, readyToMake, stageable } from "@shared/staging-status";
-import { followBatch, type VideoJob } from "@shared/video-job";
-import { planAtLevel } from "@shared/video-takes";
+import { OUTDATED_TEXT, stageable } from "@shared/staging-status";
+import { finishedLength } from "@shared/tempo";
+import type { VideoJob } from "@shared/video-job";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowRight,
@@ -18,20 +17,28 @@ import {
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
-import { addRefs, GALLERY_DEFAULT_MAX, requestCardFocus, requestChatFocus } from "@/lib/board";
+import {
+  addRefs,
+  type BoardLayout,
+  layoutFor,
+  requestCardFocus,
+  requestChatFocus,
+  usePreferredLayout,
+} from "@/lib/board";
 import { type ScriptStaging, useHasPlace } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
-import { refreshWorkspace } from "@/lib/workspace";
+import { refreshWorkspace, useSeriesTargetSec } from "@/lib/workspace";
 import { AssetPicker } from "./asset-picker";
 import { BoardToast } from "./board-notice";
+import { LayoutToggle } from "./layout-toggle";
 import { LivePlanFold } from "./live-plan";
 import { type Batch, useBatch } from "./make-all";
-import { VideoQuality } from "./quality-chip";
 import { ReadyCheckDialog, useSeriesPlaceIds } from "./ready-check";
 import { ShotBrief } from "./shot-brief";
 import { Button } from "./ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
+import { VideoLength } from "./video-length";
 
 function onStagingStep(batch: Batch) {
   const stageableScripts = batch.finished.filter(stageable);
@@ -55,10 +62,16 @@ function useCommitToVideos(sessionId: string) {
 export function StagingList({ sessionId }: { sessionId: string }) {
   const batch = useBatch(sessionId);
   const placeReady = useHasPlace(sessionId);
-  const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
+  const preferredLayout = usePreferredLayout();
+  const [toggled, setToggled] = useState<{ layout: BoardLayout; cards: Record<string, boolean> }>({
+    layout: "gallery",
+    cards: {},
+  });
   if (!batch) return null;
   const { unstarted, started } = onStagingStep(batch);
-  const grid = unstarted.length <= GALLERY_DEFAULT_MAX;
+  const layout = layoutFor(unstarted.length, preferredLayout);
+  const grid = layout === "gallery";
+  const openCards = toggled.layout === layout ? toggled.cards : {};
   const number = (s: Script) => batch.order.indexOf(s) + 1;
 
   if (unstarted.length === 0) {
@@ -77,6 +90,11 @@ export function StagingList({ sessionId }: { sessionId: string }) {
           </div>
         ) : (
           <p className="text-muted-foreground">Chưa có kịch bản.</p>
+        )}
+        {started.length > 0 && (
+          <div className="mt-6">
+            <StartedList sessionId={sessionId} started={started} batch={batch} number={number} />
+          </div>
         )}
       </section>
     );
@@ -101,10 +119,10 @@ export function StagingList({ sessionId }: { sessionId: string }) {
             placeReady={placeReady}
             open={openCards[script.id] ?? grid}
             onToggle={() =>
-              setOpenCards((current) => ({
-                ...current,
-                [script.id]: !(current[script.id] ?? grid),
-              }))
+              setToggled({
+                layout,
+                cards: { ...openCards, [script.id]: !(openCards[script.id] ?? grid) },
+              })
             }
           />
         ))}
@@ -112,29 +130,7 @@ export function StagingList({ sessionId }: { sessionId: string }) {
       {started.length > 0 && (
         <section className="mt-8">
           <h3 className="mb-3 text-sm text-muted-foreground">Đã tạo video</h3>
-          <ul className="flex flex-col gap-2">
-            {started.map((script) => (
-              <li
-                key={script.id}
-                className="flex min-h-11 items-center gap-2.5 rounded-xl border bg-card px-4 py-1.5"
-              >
-                <span className="w-5 text-xs text-muted-foreground tabular-nums">
-                  #{number(script)}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {script.title}
-                </span>
-                <Button
-                  variant="ghost-muted"
-                  size="sm"
-                  render={<Link to="/sessions/$sessionId/videos" params={{ sessionId }} />}
-                >
-                  Xem video
-                  <ArrowRight />
-                </Button>
-              </li>
-            ))}
-          </ul>
+          <StartedList sessionId={sessionId} started={started} batch={batch} number={number} />
         </section>
       )}
       <BoardToast sessionId={sessionId} />
@@ -142,8 +138,112 @@ export function StagingList({ sessionId }: { sessionId: string }) {
   );
 }
 
-function statusLine(script: Script, job: VideoJob | undefined, staging: ScriptStaging): string {
-  const length = formatSeconds(estimateSeconds(script.lines));
+function StartedList({
+  sessionId,
+  started,
+  batch,
+  number,
+}: {
+  sessionId: string;
+  started: Script[];
+  batch: Batch;
+  number: (script: Script) => number;
+}) {
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+  const toggle = (id: string) =>
+    setOpen((was) => {
+      const next = new Set(was);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  return (
+    <ul className="flex flex-col gap-2">
+      {started.map((script) => (
+        <StartedRow
+          key={script.id}
+          sessionId={sessionId}
+          script={script}
+          number={number(script)}
+          job={batch.jobOf(script.id)}
+          open={open.has(script.id)}
+          onToggle={() => toggle(script.id)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function StartedRow({
+  sessionId,
+  script,
+  number,
+  job,
+  open,
+  onToggle,
+}: {
+  sessionId: string;
+  script: Script;
+  number: number;
+  job: VideoJob | undefined;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const seriesTargetSec = useSeriesTargetSec(sessionId);
+  const finished = job?.status === "done" && job.final ? finishedLength(job) : null;
+  return (
+    <li className="rounded-xl border bg-card px-4 py-1.5">
+      <div className="flex min-h-8 items-center gap-2.5">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={onToggle}
+          className="-ml-1 flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              open && "rotate-90",
+            )}
+          />
+          <span className="text-xs text-muted-foreground tabular-nums">#{number}</span>
+          <span className="min-w-0 truncate text-muted-foreground">{script.title}</span>
+        </button>
+        <span className="shrink-0 text-xs">
+          {finished ? (
+            <VideoLength length={finished} />
+          ) : (
+            <span className="text-muted-foreground tabular-nums">
+              {formatSeconds(scriptSeconds(script, seriesTargetSec))}
+            </span>
+          )}
+        </span>
+        <Button
+          variant="ghost-muted"
+          size="sm"
+          render={<Link to="/sessions/$sessionId/videos" params={{ sessionId }} />}
+        >
+          Xem video
+          <ArrowRight />
+        </Button>
+      </div>
+      {open && (
+        <div className="pb-2.5">
+          {job?.live && <LivePlanFold job={job} />}
+          <ShotBrief
+            sessionId={sessionId}
+            script={script}
+            job={job ?? null}
+            className="mt-3 pl-6"
+          />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function statusLine(seconds: number, job: VideoJob | undefined, staging: ScriptStaging): string {
+  const length = formatSeconds(seconds);
   switch (staging.status) {
     case "ready":
       return `${job?.shots.length ?? 0} cảnh · ${length}`;
@@ -183,22 +283,14 @@ function StagingCard({
 }) {
   const { error, run } = useAction();
   const navigate = useNavigate();
-  const saved = batch.jobOf(script.id);
-  const level = batch.make.levelOf(script.id);
-  const job = saved && followBatch(saved, batch.make.batchFor(script.id));
+  const seriesTargetSec = useSeriesTargetSec(sessionId);
+  const job = batch.jobOf(script.id);
   const staging = batch.stagingOfScript(script);
   const ids = { sessionId, scriptId: script.id };
   const stage = (again = false) =>
     run(() =>
       api.invoke("video:stage", { sessionId, scriptIds: [script.id], ...(again ? { again } : {}) }),
     );
-  const priceAt = (at: MediaLevel) => {
-    if (saved?.status !== "idle" || !readyToMake(saved, script, at.id)) return null;
-    const plan = at.id === mediaLevel(saved.level).id ? saved : planAtLevel(saved, at.id);
-    return plan ? costToFinishUsd(plan) : null;
-  };
-  const setLevel = (next: MediaLevelId) =>
-    run(() => api.invoke("video:level", { ...ids, level: next }));
   const ready = staging.status === "ready" && job;
 
   let action: ReactNode = null;
@@ -289,11 +381,7 @@ function StagingCard({
             staging.status === "failed" && "text-destructive-foreground",
           )}
         >
-          {statusLine(script, saved, staging)}
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">Chất lượng</span>
-          <VideoQuality value={level} onChange={setLevel} price={priceAt} />
+          {statusLine(scriptSeconds(script, seriesTargetSec), job, staging)}
         </span>
         {error && <span className="text-destructive-foreground">{error}</span>}
         <span className="ml-auto flex items-center gap-2.5 text-sm">{action}</span>
@@ -314,6 +402,7 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
   const placeReady = useHasPlace(sessionId);
   const placeIds = useSeriesPlaceIds(sessionId);
   const [pickingPlace, setPickingPlace] = useState(false);
+  const preferredLayout = usePreferredLayout();
   const { error, run } = useAction();
   if (!batch) return null;
   const { unstarted, toStage, toCommit } = onStagingStep(batch);
@@ -332,6 +421,9 @@ export function StagingToolbar({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex items-center gap-2.5">
+      {unstarted.length > 0 && (
+        <LayoutToggle sessionId={sessionId} layout={layoutFor(unstarted.length, preferredLayout)} />
+      )}
       {error && <span className="text-xs text-destructive-foreground">{error}</span>}
       {staging > 0 && (
         <span className="text-xs text-muted-foreground tabular-nums">{staging} đang dàn dựng</span>

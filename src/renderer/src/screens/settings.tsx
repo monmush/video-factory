@@ -16,7 +16,6 @@ import { DeleteProfileDialog } from "@/components/delete-profile-dialog";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { refreshChatInfo } from "@/lib/chat";
@@ -24,7 +23,6 @@ import { useClaudeInstall } from "@/lib/claude-setup";
 import { useTheme } from "@/lib/theme";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
-import { setNativeVoice, useNativeVoice } from "@/lib/voice-mode";
 import { useWorkspace } from "@/lib/workspace";
 
 const THEMES: { value: ThemePreference; label: string }[] = [
@@ -36,7 +34,6 @@ const THEMES: { value: ThemePreference; label: string }[] = [
 const PROVIDER_NAMES: Record<ProviderId, string> = {
   fal: "fal.ai",
   "fal-billing": "fal.ai · xem số dư (không bắt buộc)",
-  elevenlabs: "ElevenLabs",
 };
 
 export function SettingsPage() {
@@ -151,7 +148,6 @@ export function SettingsPage() {
       )}
 
       <DevProfilesSection />
-      <TrialSection />
     </Page>
   );
 }
@@ -262,26 +258,6 @@ function DevProfilesSection() {
         onOpenChange={(open) => !open && setDeleting(null)}
         onDeleted={setState}
       />
-    </Section>
-  );
-}
-
-function TrialSection() {
-  const native = useNativeVoice();
-  const { error, run } = useAction();
-  if (native === null) return null;
-  return (
-    <Section title="Thử nghiệm">
-      <Checkbox
-        checked={native}
-        onChange={(event) => {
-          const on = event.currentTarget.checked;
-          void run(() => setNativeVoice(on));
-        }}
-      >
-        Video tự tạo giọng nói
-      </Checkbox>
-      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
     </Section>
   );
 }

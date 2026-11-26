@@ -1,4 +1,4 @@
-import { TEMPOS, type Tempo, tempoLabel, tempoOf } from "@shared/tempo";
+import { pickedTempo, TEMPOS, type Tempo, tempoLabel } from "@shared/tempo";
 import { ChevronDown } from "lucide-react";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
 
@@ -9,7 +9,7 @@ export function TempoMenu({
   value: unknown;
   onChange: (tempo: Tempo) => void;
 }) {
-  const current = tempoOf(value);
+  const current = pickedTempo(value) ?? 1;
   return (
     <span className="flex items-center gap-1.5">
       <span className="text-muted-foreground">Tốc độ</span>
@@ -27,7 +27,10 @@ export function TempoMenu({
           }
         />
         <MenuPopup align="start" className="min-w-24">
-          <MenuRadioGroup value={current} onValueChange={(next) => onChange(tempoOf(next))}>
+          <MenuRadioGroup
+            value={current}
+            onValueChange={(next) => onChange(pickedTempo(next) ?? 1)}
+          >
             {TEMPOS.map((tempo) => (
               <MenuRadioItem key={tempo} value={tempo} className="tabular-nums">
                 {tempoLabel(tempo)}

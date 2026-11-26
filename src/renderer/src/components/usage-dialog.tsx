@@ -79,34 +79,20 @@ function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
       ) : (
         <div className="flex min-h-0 flex-col gap-8 overflow-y-auto px-6 py-6">
           {showsProviders && (
-            <>
-              <Section title="fal.ai" hint="Tạo ảnh và video. Trả trước, trừ dần theo mỗi lần tạo.">
-                <Status result={data.fal} provider="fal" onNavigate={onNavigate}>
-                  {(fal) => (
-                    <Card>
-                      <div className="text-muted-foreground">Số dư</div>
-                      <div className="mt-1 text-3xl font-semibold tabular-nums">
-                        {fal.currency === "USD"
-                          ? formatCost(fal.balance)
-                          : `${fal.balance} ${fal.currency}`}
-                      </div>
-                    </Card>
-                  )}
-                </Status>
-              </Section>
-
-              <Section title="ElevenLabs" hint="Giọng đọc. Hạn mức theo gói, đặt lại mỗi kỳ.">
-                <Status result={data.elevenlabs} provider="elevenlabs" onNavigate={onNavigate}>
-                  {(el) => (
-                    <Meter
-                      label={el.plan ? `Gói ${capitalize(el.plan)}` : "Hạn mức"}
-                      used={el.limit > 0 ? el.used / el.limit : 0}
-                      detail={`Còn ${(el.limit - el.used).toLocaleString("vi-VN")} / ${el.limit.toLocaleString("vi-VN")} credit${el.resetsAt ? ` · đặt lại ${untilText(el.resetsAt)}` : ""}`}
-                    />
-                  )}
-                </Status>
-              </Section>
-            </>
+            <Section title="fal.ai" hint="Tạo ảnh và video. Trả trước, trừ dần theo mỗi lần tạo.">
+              <Status result={data.fal} onNavigate={onNavigate}>
+                {(fal) => (
+                  <Card>
+                    <div className="text-muted-foreground">Số dư</div>
+                    <div className="mt-1 text-3xl font-semibold tabular-nums">
+                      {fal.currency === "USD"
+                        ? formatCost(fal.balance)
+                        : `${fal.balance} ${fal.currency}`}
+                    </div>
+                  </Card>
+                )}
+              </Status>
+            </Section>
           )}
 
           <Section
@@ -148,12 +134,10 @@ function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
 
 function Status<T>({
   result,
-  provider,
   onNavigate,
   children,
 }: {
   result: BalanceResult<T>;
-  provider: "fal" | "elevenlabs";
   onNavigate: () => void;
   children: (value: T) => ReactNode;
 }) {
@@ -166,16 +150,13 @@ function Status<T>({
   return (
     <Card className="text-muted-foreground">
       {result.status === "no-key" && <>Chưa có khóa API. Thêm khóa trong {toSettings}.</>}
-      {result.status === "no-permission" &&
-        (provider === "fal" ? (
-          <>
-            Khóa fal hiện tại chỉ dùng để tạo, không được xem số dư. Tạo thêm một khóa loại{" "}
-            <b className="font-medium text-foreground">Read-only</b> trên fal.ai (mục API Keys), rồi
-            dán vào {toSettings} → “fal.ai · xem số dư”.
-          </>
-        ) : (
-          <>Khóa ElevenLabs không có quyền xem gói. Kiểm tra quyền của khóa trong {toSettings}.</>
-        ))}
+      {result.status === "no-permission" && (
+        <>
+          Khóa fal hiện tại chỉ dùng để tạo, không được xem số dư. Tạo thêm một khóa loại{" "}
+          <b className="font-medium text-foreground">Read-only</b> trên fal.ai (mục API Keys), rồi
+          dán vào {toSettings} → “fal.ai · xem số dư”.
+        </>
+      )}
       {result.status === "error" && <>Không đọc được số dư: {result.message}</>}
     </Card>
   );
@@ -231,8 +212,6 @@ function Section({ title, hint, children }: { title: string; hint: string; child
     </section>
   );
 }
-
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const time = (iso: string) =>
   new Date(iso).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });

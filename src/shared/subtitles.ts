@@ -1,5 +1,3 @@
-import type { Alignment, LineChars } from "./shot-plan";
-
 export interface CueWord {
   text: string;
   start: number;
@@ -44,24 +42,6 @@ export function shownWord(word: string): string {
     .replace(/^[^\p{L}\p{N}]+/u, "")
     .replace(/[^\p{L}\p{N}?!]+$/u, "")
     .replace(/[^\p{L}\p{N}]+(?=[?!]+$)/u, "");
-}
-
-function timedWords(words: string[], alignment: Alignment, chars: LineChars): Word[] | undefined {
-  const text = alignment.characters.slice(chars.start, chars.end).join("").normalize("NFC");
-  if (text.length !== chars.end - chars.start) return undefined;
-  const out: Word[] = [];
-  let cursor = 0;
-  for (const word of words) {
-    const core = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-    const at = text.indexOf(core, cursor);
-    if (!core || at < 0) return undefined;
-    const start = alignment.characterStartTimesSeconds[chars.start + at];
-    const end = alignment.characterEndTimesSeconds[chars.start + at + core.length - 1];
-    if (start === undefined || end === undefined || end < start) return undefined;
-    out.push({ text: word, start, end });
-    cursor = at + core.length;
-  }
-  return out;
 }
 
 function spreadWords(words: string[], span: { start: number; end: number }): Word[] {
@@ -110,17 +90,13 @@ function phrases(words: Word[]): Word[][] {
 export function wordCues(
   lines: { text: string }[],
   lineSpans: ({ start: number; end: number } | undefined)[],
-  timing?: { alignment: Alignment; lineChars: LineChars[] },
 ): Cue[] {
   const groups: { words: Word[]; lineEnd: boolean }[] = [];
   lines.forEach((line, i) => {
     const words = lineWords(line.text);
     const span = lineSpans[i];
-    const chars = timing?.lineChars[i];
     if (!words.length || !span) return;
-    const timed =
-      (timing && chars && timedWords(words, timing.alignment, chars)) || spreadWords(words, span);
-    const parts = phrases(timed);
+    const parts = phrases(spreadWords(words, span));
     parts.forEach((words, j) => {
       groups.push({ words, lineEnd: j === parts.length - 1 });
     });

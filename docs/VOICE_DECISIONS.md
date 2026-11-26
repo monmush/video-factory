@@ -1,75 +1,51 @@
 # Character voices
 
-Updated 13 November 2026. Owns the voice catalogue, how a character gets its voice, how the voices were chosen and the plan for making voices sound like one room. Code: `src/shared/voices.ts` (catalogue and rules), `src/main/voices.ts` (provider mapping, main process only), voice row in the character dialog.
+Updated 26 November 2026. Owns how a character gets its voice, the voice sample the video model hears, and what is still unverified. How a speech clip is requested: [video generation](VIDEO_GENERATION_DECISIONS.md), "The video model speaks". Code: `src/shared/voices.ts` (voice text, default rule, region, migration), `src/shared/voice-step.ts` (the job's voices step), `src/shared/voice-request.ts` (what the voice-making model is asked), `src/main/voice-maker.ts` (the voice-making model), `src/main/voice-suggestions.ts`, `src/renderer/src/components/voice-field.tsx`.
+
+## Why the voice-making model changed (26 November 2026)
+
+MiniMax Voice Design cost $3 a sample, of which the app used only the preview clip, and on the first live sample it gave a Southern accent for "miền Bắc". On 26 November the owner compared by ear Eleven v4, MiniMax Speech 2.8 HD and Gemini 3.8 Flash TTS; Gemini held the instructed accent. The owner's note: not quite studio quality, accepted.
+
+## Why it changed (25 November 2026)
+
+When the video model speaks, each clip invented a new voice from a fixed English sentence, so a character changed voice and accent between clips. The ten catalogue voices (and their ElevenLabs ids and sample clips) could not cover characters of other regions or nations and are removed, with the separately configured ElevenLabs key. Everything now goes through fal.
 
 ## Decisions (agreed with the owner)
 
-- **A voice belongs to the character** (library asset), so a recurring character keeps one recognisable voice across videos. It is optional and never blocks anything.
-- **No voice chosen: the app assigns one by rule and saves it**, so the choice is made once and not re-guessed per video. The dialog preselects the suggestion while the character is created or edited; generation uses `resolveVoice` for characters saved without one.
-- **Staff pick from a short list we chose**, never from a provider library. Voices carry our own Vietnamese names and labels; provider names and voice ids never appear in the UI.
-- **No voice settings** (speed, tone, stability). Only which voice.
-- **Accent: Northern only for now.** Shown as a read-only choice (Bắc selected, Trung and Nam disabled with "Sắp có") to hint that more will come.
-- Minimal text: no helper paragraphs in the voice row.
+- **A character's voice is a text**: `Asset.voice`, free Vietnamese, at most 200 characters (gender, age, region or accent, timbre, pace, attitude). It replaces `voiceId`. Saved characters with a catalogue voice got a text built from its row, for example `mai` → "Giọng nữ trẻ, miền Bắc, tươi sáng, tự nhiên", `tuan-anh` → "Giọng nam lớn tuổi, miền Bắc, trầm ấm, kể chuyện" (`withVoiceTexts`, run when the workspace is read).
+- **Every character always has a voice; nothing blocks.** A character saved with an empty voice gets the default in the main process.
+- **Default** (`defaultVoiceText`): "Giọng {nữ|nam} {trẻ|trung niên|lớn tuổi}, {region}, {timbre, pace}". Gender and age band come from `guessVoiceTraits` (unknown gender: female; unknown age: middle). Three variants per gender and age band; the first one no other character already uses is taken, so two characters never get the same default. Region: "miền Bắc" unless the name or description names another place first (Huế, Đà Nẵng, xứ Nghệ… → "miền Trung"; Sài Gòn, miền Tây, Cần Thơ… → "miền Nam") or a nationality ("người Hàn Quốc nói tiếng Việt").
+- **Character dialog**, row "Giọng nói" under "Mô tả": a two-line field. Until the user types in it or picks a suggestion it shows the default and follows the name and description; after that it never changes by itself; emptying it returns to the default. No region chooser: region and accent are part of the text.
+- **Suggestions**: three chips under the field, the same interaction as "Định hướng" (the label on the chip, the full text on hover, one click fills the field). The user's own text AI is asked from the name and description when the dialog opens and about a second after the description stops changing; stale answers are dropped. While waiting, one shimmer line "Đang gợi ý giọng…"; on failure, or when the text AI is not the user's own, nothing. Fixture mode returns the three default variants.
+- **Listen**: beside the label. A sample for exactly this text exists → "Nghe thử" / "Dừng". Otherwise the paid hold "Giữ để nghe", then "Đang tạo giọng…", then it plays. A failure shows "Không tạo được giọng" and the hold again. When a sample exists, the paid hold "Tạo lại" beside "Nghe thử" makes a new sample for the same text and replaces the old one (same file); a failure keeps the old one playable. A video already running with that voice uses the new sample for the clips not yet made. The dialog stays usable and saving never needs a sample.
+- **Words follow the voice** (writer and series direction): each character is listed with its voice text; the accent for the writing rules is read from that text (`accentOfVoice`: Bắc or Hà Nội → North, Trung, Huế, Đà Nẵng, xứ Nghệ → Central, miền Nam, Sài Gòn, miền Tây → South; anything else gets no accent rule).
+- **Ready check**: two characters who speak in the videos with the same voice text (compared trimmed, case-insensitive, spaces collapsed) give the warning "{A, B} cùng giọng" with "Đổi giọng". A warning, never a block.
 
-## Catalogue
+## The voice sample
 
-Order within each gender is preference order. Ages: bands the voice suits, best fit first (young under 35, middle 35–59, old 60+).
+- Made by `google/gemini-3.8-flash-tts` through `falCall` (dialog) or the queue (video), purpose `character-voice`, recorded in usage. Input (`voiceRequest`): `prompt` = "Xin chào! Đây là giọng nói của tôi. Hôm nay trời đẹp quá, mình ngồi xuống đây một lát rồi kể cho nhau nghe một câu chuyện nhỏ nhé. Bạn có muốn nghe thử không?" (brand-neutral, about 12 s); `voice` = a base voice; `style_instructions` = English sentences: who and accent ("A young Vietnamese woman, a native speaker with a Northern Vietnamese (Hanoi) accent."; Central: Huế, Southern: Saigon; no region found, for example a foreign speaker: "A young woman speaking Vietnamese with exactly the accent the description names."), then `The voice is described in Vietnamese as: "<voice text>".`, then "Speaking naturally, as in everyday conversation. Clean, dry, close-microphone studio recording with no background sound and no music." The output `audio.url` (WAV) is kept.
+- **Gender and age** (`spokenTraits`): what the voice text states (`voiceTextTraits`: lowercase "giọng nam" is a male voice, "giọng Nam" or "miền Nam" the South); for what it leaves out, the character's name and description (`guessVoiceTraits`); then female for gender, and no age named. So a typed "trầm ấm, chậm rãi" on "Ông lão" speaks as an elderly man. The dialog uses its current, possibly unsaved, name and description.
+- **Base voice**: Gemini's preset names are split into a female and a male pool from Google's published list; the preset is picked within the gender's pool by a stable hash of the normalised voice text.
+- Treated with FFmpeg: mono, at most 12 s (the video models take 2–15 s), −18 LUFS, true peak −1.5, mp3. Shorter than 2 s is a failure.
+- **Stored by content**: `<data folder>/voices/<sha256 of the request's identity>.mp3`, the identity being the model id, the preset and the style instructions (`sampleIdentity`). Any change to the model or to how the request is built makes new samples instead of reusing stale ones; earlier samples become unfindable and are made again on demand, and samples are never deleted automatically. Two characters with the same text and the same resolved gender and age share a sample; editing the text, or a character change that the text leaves to the character, points at another file. The dialog's address of a sample carries the file's modification time, so a remade sample is never played from a cached copy.
+- Price, list read 26 November 2026: $0.045 per 1000 characters; the preview text's 158 characters make about $0.007 (`VOICE_SAMPLE_USD`). Whether the style instructions' characters are billed too is unmeasured.
+- Fixture mode: no network; the fixture dialogue gets the same treatment after a short wait.
 
-| Id | Name | Gender | Ages | Label |
-| --- | --- | --- | --- | --- |
-| mai | Mai | female | young | tươi sáng, tự nhiên |
-| nhu | Như | female | young | điềm tĩnh, tự tin |
-| hanh | Hạnh | female | young | mượt, rõ ràng |
-| hien | Hiền | female | middle, old | ấm, trầm |
-| trang | Trang | female | middle, old | ấm áp, đáng tin |
-| ninh | Ninh | male | young | trầm ấm, gần gũi |
-| son | Sơn | male | young | rõ ràng, điềm đạm |
-| tuan-anh | Tuấn Anh | male | old, middle | trầm ấm, kể chuyện |
-| lam | Lâm | male | middle | ấm, trò chuyện |
-| luong | Lượng | male | middle | điềm tĩnh, rõ ràng |
+## In a video: the voices step
 
-Defaults: `mai` for women, `tuan-anh` for men (the pair the owner approved by ear, after an A/B listening of dialogue with different pairs). Unknown gender: `mai`.
+- When a video starts (after the first hold) it records, per character who still has lines to speak, the voice text, the character's gender and age band at that moment and the sample file it uses (the request is rebuilt from these, so later edits never reach it; a video saved before 26 November has no recorded character and is treated as text only), and keeps them: editing a character later changes the next videos, never one already started. Until then a staged video follows the characters (and the price follows which samples exist). Old videos without recorded voices take them on resume.
+- Missing samples are made alongside the stills, through the same marks, restart attachment, stop and resume as other paid steps; one automatic retry, then the video fails with the usual "Giữ để tạo tiếp". No speech segment of a character is sent before its sample exists.
+- Cost: the group "Giọng nhân vật", listing only samples the video had to make; it is part of the first hold's price. A batch counts a sample shared by several videos once. The progress list shows "Tạo giọng nhân vật" only when something had to be made.
 
-## How a voice is suggested
+## Not verified
 
-1. `guessVoiceTraits(name, description)` reads gender and age from Vietnamese text. Strongest first: an age in years ("khoảng 70 tuổi"), then plain words (nam, nữ, đàn ông, phụ nữ, trẻ, trung niên, lớn tuổi, già), then forms of address (ông, bà, cô, chị, anh, chú, bác, cụ). Words are matched whole, so "xanh", "bàn" or "công" never count; common other meanings are excluded (Việt Nam, cô đơn, chú ý, bác sĩ, dụng cụ) and a capitalised word after another is read as part of a name ("Tuấn Anh").
-2. `suggestVoice(traits, taken)` picks the same gender, then the voice whose best-fit age matches, in preference order. Voices already saved on other characters are skipped while the gender has a free one; if all old voices are taken, the nearest age comes next. An old woman gets a middle-aged female voice (there is no elderly female voice). A middle-aged man gets Lâm, keeping Tuấn Anh for elderly men.
-3. The character description prompt now asks for gender and approximate age in years in its first sentence, so AI-written descriptions feed step 1 reliably.
-
-In the dialog the suggestion follows the name and description until the user picks a voice by hand; after that it is never overridden. Saving stores whatever is shown.
-
-## How the voices were chosen
-
-- Source: the provider's voice library, native Vietnamese, Northern or "standard" (Hanoi) accent, ranked by one-year usage. 198 candidates; the top dozen per gender/age group (53 clips) were measured.
-- Each voice's free sample clip was measured, not listened to: speech bandwidth (to exclude phone-quality recordings; several of the most-used voices carry almost nothing above 4–6 kHz), level in the quietest frames (noise and room tail), and how fast the level falls after words (echo).
-- Only voices with a long removal notice (365–730 days) were kept, so a voice cannot vanish mid-series.
-- Limits: clips are 3–11 seconds, so the numbers are a coarse filter. Only `mai` and `tuan-anh` are approved by ear; the owner is listening to the rest.
-- Removed: `ngan`, a library voice the owner recognised as an unauthorised copy of a well-known person's voice (12 Nov). Never add a voice that imitates a recognisable real person; the library's "professional" label does not guarantee consent.
-- Gaps: Tuấn Anh is the only elderly male voice, so a second old man gets a middle-aged voice; no elderly female Vietnamese voice exists in the library; no Central or Southern voices chosen yet.
-
-## Sample clips
-
-The clips in `src/renderer/src/assets/voices/` are our own, not the library previews (the owner, 12 Nov: people might recognise the provider's clips). Every voice reads the same brand-neutral line, so they compare fairly and the app needs no change when sold to other businesses:
-
-> Xin chào! Đây là giọng đọc của tôi. Có một câu chuyện nhỏ rất thú vị, bạn có muốn nghe thử không?
-
-Generated 12 Nov with `eleven_v4` text-to-dialogue, one take per voice, prefixed with the same dry close-mic direction as dialogue 03; 333 credits for eleven voices, including the since-removed `ngan`. Levelled to the same loudness (FFmpeg `loudnorm` I=-18, TP=-1.5), mono 128 kbps, about 6 s each. A new voice gets the same line, direction and levelling.
+- The Central accent and foreign-speaker texts with the new model (only Northern was heard).
+- Whether two characters on the same preset sound distinct enough.
+- The gender of presets other than Leda (female) and Charon (male), which were heard.
+- Whether Wan 3.0 and MiniMax H3 Max hold the voice and accent from the reference sample across clips (fal does not document what the audio references do).
+- Wan 3.0 reference-to-video has no start frame: the still is only a reference, so its first frame may differ from the picture.
+- The billed units of the voice-making model and of both reference-to-video endpoints.
 
 ## Sounds without words — 13 November 2026
 
-A line may end with one sound in square brackets when the story calls for it, for example a laugh after one's own joke: `[cười]`, `[cười khẽ]` or `[thở dài]` (`src/shared/cues.ts`). The script writer may use it at most twice per script; anything else in brackets is removed from what the writer returns. The voice step sends the voice model's own tag (`[laughs]`, `[chuckles]`, `[sighs]`, after the dry close-mic direction); subtitles skip it; it is not counted as a word in lengths and prices; the director keeps it on the speaker's shot and holds after it. Untested live: whether `eleven_v4` laughs convincingly in Vietnamese dialogue, and how long the laugh runs. Tags in English are the provider's convention, so a script never shows them.
-
-## Shared acoustics (1–2 built in the voice step; 3 not built)
-
-1. Catalogue voices are chosen dry and close-mic, so any pair is compatible.
-2. A whole exchange is generated in one multi-speaker dialogue request, with the same dry-recording direction on every line, as in the approved audition dialogue (kept locally).
-3. The room is added once, by us, at assembly: each speaker levelled to the same loudness, then one shared light room reverb and one ambience bed over the whole mix (FFmpeg), matched to the scene.
-4. If a voice still sounds wet, remove it from the catalogue rather than repair it per video.
-
-## Open items
-
-- (a) the owner listens to the eight unheard voices and removes any they dislike or recognises as a real person. Measured on the sample line, `luong` has a much louder background and longer tail than the rest (possible room echo); `son` is mildly raised.
-- (b) Seven of the ten are not in the ElevenLabs account. Speech generation worked for all of them without adding (12 Nov), so adding is optional; the current key lacks `voices_write` anyway. `src/main/voices.ts` keeps the public owner ids in case it is needed.
-- (c) One short paid dialogue audition per new voice against the approved pair, to hear them together. Needs the owner's approval of model, scope and estimate.
-- (d) Whether fal's ElevenLabs endpoints accept these voice ids is unverified, so speech may stay on ElevenLabs directly.
-
+A line may end with one sound in square brackets when the story calls for it: `[cười]`, `[cười khẽ]` or `[thở dài]` (`src/shared/cues.ts`). The writer may use it at most twice per script. The speech prompt describes it after the quoted words ("then they laugh softly"); subtitles skip it; it is not counted as a word in lengths and prices.

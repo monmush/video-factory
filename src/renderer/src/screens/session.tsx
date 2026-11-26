@@ -2,15 +2,22 @@ import { boardOrder } from "@shared/board";
 import { finishedScripts } from "@shared/ready-check";
 import { sessionSteps } from "@shared/session-steps";
 import { Link, Outlet, useMatches, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowRight, Check, ChevronRight, LayoutGrid, LoaderCircle, Rows3 } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { ArrowRight, Check, ChevronRight, LoaderCircle } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { LayoutToggle } from "@/components/layout-toggle";
 import { ScriptBoard } from "@/components/script-board";
 import { StagingList, StagingToolbar } from "@/components/staging";
 import { Button } from "@/components/ui/button";
 import { VideosList, VideosToolbar } from "@/components/videos";
 import { api } from "@/lib/api";
-import { boardLayout, requestChatFocus, useBoard, useBoardView } from "@/lib/board";
-import { stagingOf, useHasPlace, useVideoLevel } from "@/lib/staging";
+import {
+  boardLayout,
+  requestChatFocus,
+  useBoard,
+  useBoardView,
+  usePreferredLayout,
+} from "@/lib/board";
+import { stagingOf, useHasPlace } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
@@ -22,7 +29,6 @@ export function SessionLayout() {
   const session = useWorkspace().sessions.find((s) => s.id === sessionId);
   const board = useBoard(sessionId);
   const jobs = useVideoJobs(sessionId);
-  const levelOf = useVideoLevel(sessionId);
   const matches = useMatches();
   const onStep = (step: string) =>
     matches.some((m) => m.routeId === `/sessions/$sessionId/${step}`);
@@ -37,7 +43,7 @@ export function SessionLayout() {
   }, [empty, sessionId]);
   if (!session) return <NotFound />;
 
-  const steps = sessionSteps(session, board?.scripts ?? [], jobs?.jobs ?? null, levelOf);
+  const steps = sessionSteps(session, board?.scripts ?? [], jobs?.jobs ?? null);
   const tab =
     "flex items-center gap-1.5 whitespace-nowrap rounded-none px-2.5 py-2.5 text-muted-foreground hover:text-foreground [&.active]:text-foreground [&.active]:shadow-[inset_0_-2px_var(--foreground)]";
   const disabledTab = cn(tab, "cursor-default opacity-50 hover:text-muted-foreground");
@@ -140,19 +146,19 @@ function StepLabel({
 function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: boolean }) {
   const board = useBoard(sessionId);
   const jobs = useVideoJobs(sessionId);
-  const levelOf = useVideoLevel(sessionId);
   const navigate = useNavigate();
-  const [view, setView] = useBoardView(sessionId);
+  const [view] = useBoardView(sessionId);
+  const preferredLayout = usePreferredLayout();
   const placeReady = useHasPlace(sessionId);
   const { error, run } = useAction();
   if (!board) return null;
   const scripts = boardOrder(board.scripts);
   const writing = scripts.some((s) => s.status === "writing");
   const chatting = board.messages.some((m) => m.pending);
-  const layout = boardLayout(view, scripts.length);
+  const layout = boardLayout(view, scripts.length, preferredLayout);
   const staging = finishedScripts(board.scripts).map((s) => ({
     id: s.id,
-    ...stagingOf(jobs?.jobs.get(s.id), s, levelOf(s.id)),
+    ...stagingOf(jobs?.jobs.get(s.id), s),
   }));
   const toStage = staging.filter((s) => s.canStage).map((s) => s.id);
   const staged = staging.some((s) => s.status === "ready" || s.status === "staging");
@@ -164,27 +170,7 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
 
   return (
     <div className="flex items-center gap-2">
-      {scripts.length > 0 && (
-        <fieldset
-          className="flex rounded-[var(--control-radius)] border p-0.5"
-          aria-label="Kiểu xem"
-        >
-          <ViewButton
-            label="Thẻ"
-            active={layout === "gallery"}
-            onClick={() => setView({ layout: "gallery" })}
-          >
-            <LayoutGrid />
-          </ViewButton>
-          <ViewButton
-            label="Danh sách"
-            active={layout === "list"}
-            onClick={() => setView({ layout: "list" })}
-          >
-            <Rows3 />
-          </ViewButton>
-        </fieldset>
-      )}
+      {scripts.length > 0 && <LayoutToggle sessionId={sessionId} layout={layout} />}
       {error && <span className="text-xs text-destructive-foreground">{error}</span>}
       {toStage.length > 0 || writing ? (
         <Button disabled={writing || chatting || toStage.length === 0} onClick={stageAll}>
@@ -210,35 +196,6 @@ function ScriptsToolbar({ sessionId, approved }: { sessionId: string; approved: 
         )
       )}
     </div>
-  );
-}
-
-function ViewButton({
-  label,
-  active,
-  onClick,
-  children,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <Button
-      variant="ghost-muted"
-      size="icon-xs"
-      className={cn(
-        "rounded-[calc(var(--control-radius)-2px)]",
-        active && "bg-accent text-foreground",
-      )}
-      aria-label={label}
-      title={label}
-      aria-pressed={active}
-      onClick={onClick}
-    >
-      {children}
-    </Button>
   );
 }
 

@@ -39,7 +39,6 @@ const item = (id: string, patch: Partial<MaterialItem> = {}): MaterialItem => ({
   people: ["a"],
   sceneId: "scene",
   madeFrom: MADE_FROM,
-  level: "balanced",
   costUsd: 0.05,
   source: { sessionId: "s", scriptId: "old", file: `${id}.png`, title: "", at: "2026-11-01" },
   kept: false,
@@ -240,17 +239,16 @@ const motionShot = (patch: Partial<JobShot> = {}): JobShot =>
 
 const job = (frames: JobFrame[], shots: JobShot[], motion = "m"): VideoJob =>
   ({
-    resolution: "1080p",
     live: { plan: { routes: shots.map(() => ({ route: "motion", input: { prompt: motion } })) } },
     frames,
     shots,
   }) as unknown as VideoJob;
 
 describe("what the store holds for a staged video right now", () => {
-  const clip = (id: string, seconds: number, resolution = "1080p") =>
+  const clip = (id: string, seconds: number, resolution = "720p") =>
     item(id, { kind: "clip", pictureId: "p1", seconds, motion: "m", resolution });
   const store = {
-    items: [item("p1"), clip("c3", 3), clip("c5", 5), clip("c6", 6), clip("c9", 9, "720p")],
+    items: [item("p1"), clip("c3", 3), clip("c5", 5), clip("c6", 6), clip("c9", 9, "1080p")],
     assets: ASSETS,
   };
 

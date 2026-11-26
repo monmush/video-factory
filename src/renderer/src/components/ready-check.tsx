@@ -1,19 +1,13 @@
-import { batchMediaLevel } from "@shared/batch-settings";
 import { boardOrder, formatSeconds } from "@shared/board";
 import type { Asset } from "@shared/ipc";
-import { type MediaLevelId, mediaLevel } from "@shared/media-level";
 import { isFlagged, placeFinding, placeWarning } from "@shared/place-check";
 import { needsAttention, readyCheck, type ScriptCheck } from "@shared/ready-check";
-import { fitResolution } from "@shared/video-models";
-import { voiceById } from "@shared/voices";
 import { ArrowRight, ChevronDown, Plus } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { api } from "@/lib/api";
 import { addRefs, requestChatFocus, useBoard } from "@/lib/board";
-import { useVideoLevel } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
-import { useVoiceMode } from "@/lib/voice-mode";
-import { useWorkspace } from "@/lib/workspace";
+import { useSeriesTargetSec, useWorkspace } from "@/lib/workspace";
 import { AssetDialog } from "./asset-dialog";
 import { AssetThumb } from "./asset-picker";
 import { Button } from "./ui/button";
@@ -33,21 +27,19 @@ export function useSeriesPlaceIds(sessionId: string): string[] {
   return series.find((s) => s.id === session?.seriesId)?.environmentIds ?? [];
 }
 
-function useBatchMediaLevel(sessionId: string): { id: MediaLevelId; inherited: boolean } {
+function useSeriesModels(sessionId: string) {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
-  return batchMediaLevel(
-    session,
-    series.find((s) => s.id === session?.seriesId),
-  );
+  return series.find((s) => s.id === session?.seriesId)?.models;
 }
 
 function useCheckOpts(sessionId: string) {
-  const level = useBatchMediaLevel(sessionId).id;
-  const levelOf = useVideoLevel(sessionId);
-  const placeIds = useSeriesPlaceIds(sessionId);
-  const voiceMode = useVoiceMode();
-  return { opts: { placeIds, voiceMode }, level, levelOf };
+  return {
+    opts: {
+      placeIds: useSeriesPlaceIds(sessionId),
+      seriesTargetSec: useSeriesTargetSec(sessionId),
+    },
+  };
 }
 
 export const stagingText = (count: number) => `${count} video đang dàn dựng`;
@@ -55,11 +47,8 @@ export const stagingText = (count: number) => `${count} video đang dàn dựng`
 export function useMakeVideos({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const { assets } = useWorkspace();
-  const { opts, level, levelOf } = useCheckOpts(sessionId);
-  const batchFor = (scriptId: string) => {
-    const at = mediaLevel(levelOf(scriptId));
-    return { model: at.speaker, resolution: fitResolution(at.speaker, at.output) };
-  };
+  const { opts } = useCheckOpts(sessionId);
+  const models = useSeriesModels(sessionId);
   const [scope, setScope] = useState<string[] | null>(null);
 
   const needsCheck = (ids: string[]) => {
@@ -72,9 +61,7 @@ export function useMakeVideos({ sessionId }: { sessionId: string }) {
     open: (ids: string[]) => setScope(ids),
     close: () => setScope(null),
     scope,
-    level,
-    levelOf,
-    batchFor,
+    models,
   };
 }
 
@@ -155,13 +142,9 @@ function ReadyCheckBody({
   };
 
   const overTarget = check.makeable.filter((c) => c.overTarget);
-  const shared = check.cast.filter((m) => m.sharesVoice);
-  const sharedGroups = [...new Set(shared.map((m) => m.voiceId))].map((voiceId) =>
-    shared.filter((m) => m.voiceId === voiceId),
-  );
   const title = toMakeIds.length ? `Tạo ${toMakeIds.length} video` : "Tạo video";
   const hasProblems =
-    check.blocked.length + overTarget.length + sharedGroups.length + check.places.length > 0;
+    check.blocked.length + overTarget.length + check.sharedVoices.length + check.places.length > 0;
 
   return (
     <>
@@ -224,7 +207,7 @@ function ReadyCheckBody({
                   key={c.script.id}
                   number={number(c)}
                   warning
-                  text={`Dài ${formatSeconds(c.seconds)}, dự kiến ${formatSeconds(c.script.brief.targetSec ?? 0)}`}
+                  text={`Dài ${formatSeconds(c.seconds)}, dự kiến ${formatSeconds(c.targetSec)}`}
                 >
                   <DialogClose
                     render={<Button variant="outline" size="xs" />}
@@ -234,17 +217,13 @@ function ReadyCheckBody({
                   </DialogClose>
                 </Problem>
               ))}
-              {sharedGroups.map((group) => (
+              {check.sharedVoices.map((group) => (
                 <Problem
-                  key={group[0]?.voiceId}
+                  key={group.map((c) => c.id).join()}
                   warning
-                  text={`${group.map((m) => m.character.name).join(", ")} cùng giọng ${voiceById(group[0]?.voiceId)?.name ?? ""}`}
+                  text={`${group.map((c) => c.name).join(", ")} cùng giọng`}
                 >
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={() => setEditing(group[1]?.character ?? null)}
-                  >
+                  <Button variant="outline" size="xs" onClick={() => setEditing(group[1] ?? null)}>
                     Đổi giọng
                   </Button>
                 </Problem>

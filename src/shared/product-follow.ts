@@ -2,7 +2,7 @@ import type { DirectionEntry } from "./direction";
 import type { ScriptLine } from "./ipc";
 import { costTable, fitDuration, type LiveDirection, plannedShotSec, planSteps } from "./live-plan";
 import { coverageErrors, type ShotPlan } from "./shot-plan";
-import { applyLivePlan, applyPlan, spokenLines, type VideoJob } from "./video-job";
+import { applyLivePlan, applyPlan, jobPace, spokenLines, type VideoJob } from "./video-job";
 
 export interface NamedProduct {
   id: string;
@@ -84,7 +84,7 @@ export function followProduct(
     ...(stagedDirection ? { stagedDirection } : {}),
   };
   const followed = job.live
-    ? applyLivePlan(base, followLive(job.live, nextPlan, lines, renamed))
+    ? applyLivePlan(base, followLive(job.live, nextPlan, renamed, jobPace(job)))
     : applyPlan(base, nextPlan);
   return {
     kind: "patched",
@@ -100,8 +100,8 @@ export function followProduct(
 function followLive(
   live: LiveDirection,
   shots: ShotPlan,
-  lines: ScriptLine[],
   renamed: ReadonlySet<number>,
+  pace: number,
 ): LiveDirection {
   const routes = live.plan.routes.map((r, i) => {
     const shot = shots.shots[i];
@@ -110,11 +110,11 @@ function followLive(
     }
     return {
       ...r,
-      input: fitDuration(live.schemas[r.endpoint], r.input, plannedShotSec(shot)).input,
+      input: fitDuration(live.schemas[r.endpoint], r.input, plannedShotSec(shot, pace)).input,
     };
   });
   const plan = { ...live.plan, shots, routes };
-  const steps = planSteps(plan, lines);
+  const steps = planSteps(plan, pace);
   return {
     ...live,
     plan,

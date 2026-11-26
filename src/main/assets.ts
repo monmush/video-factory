@@ -11,7 +11,7 @@ import {
   MAX_CHARACTER_IMAGES,
   type Workspace,
 } from "../shared/ipc";
-import { voiceById } from "../shared/voices";
+import { cleanVoiceText, defaultVoiceFor } from "../shared/voices";
 import { assetDir, imageRefPath } from "./media";
 import { carryOverCheck } from "./place-check";
 import { checkSets } from "./product-sets";
@@ -52,8 +52,14 @@ const cleanContains = (ids: string[] | undefined) => {
   return unique.length ? unique : undefined;
 };
 
-const cleanVoice = (kind: AssetInput["kind"], id: string | undefined) =>
-  kind === "character" ? voiceById(id)?.id : undefined;
+function voiceToSave(
+  ws: Workspace,
+  character: Pick<Asset, "id" | "kind" | "name" | "description">,
+  typed: string | undefined,
+): string | undefined {
+  if (character.kind !== "character") return undefined;
+  return cleanVoiceText(typed) || defaultVoiceFor(character, ws.assets);
+}
 
 const imageFiles = (asset?: Asset) => new Map(asset?.images.map((i) => [i.id, i.file]));
 
@@ -142,16 +148,22 @@ async function withNewFolders<T>(ids: string[], save: () => Promise<T>): Promise
 
 const now = () => new Date().toISOString();
 
-async function buildAsset(input: AssetInput, id: string = randomUUID()): Promise<Asset> {
+async function buildAsset(
+  ws: Workspace,
+  input: AssetInput,
+  id: string = randomUUID(),
+): Promise<Asset> {
+  const name = input.name.trim();
+  const description = input.description.trim();
   return {
     id,
     kind: input.kind,
-    name: input.name.trim(),
+    name,
     handle: input.handle,
-    description: input.description.trim(),
+    description,
     images: (await applyImages(id, input.images, [])).images,
     contains: input.kind === "product" ? cleanContains(input.contains) : undefined,
-    voiceId: cleanVoice(input.kind, input.voiceId),
+    voice: voiceToSave(ws, { id, kind: input.kind, name, description }, input.voice),
     createdAt: now(),
     updatedAt: now(),
   };
@@ -163,7 +175,7 @@ export function createAsset(input: AssetInput): Promise<Asset> {
     mutate(async (ws) => {
       validate(ws, input);
       checkSets([...ws.assets, { id, kind: input.kind, contains: cleanContains(input.contains) }]);
-      const asset = await buildAsset(input, id);
+      const asset = await buildAsset(ws, input, id);
       ws.assets.unshift(asset);
       return asset;
     }),
@@ -197,7 +209,9 @@ export function createProductBatch(items: BatchProductItem[]): Promise<Asset[]> 
       ]);
       const created: Asset[] = [];
       for (const [i, item] of items.entries()) {
-        created.push(await buildAsset({ ...item.input, contains: contains[i] }, ids[i] as string));
+        created.push(
+          await buildAsset(ws, { ...item.input, contains: contains[i] }, ids[i] as string),
+        );
       }
       ws.assets.unshift(...created);
       return created;
@@ -223,7 +237,7 @@ export async function updateAsset(id: string, input: AssetInput): Promise<Asset>
     asset.images = applied.images;
     removed = applied.removed;
     asset.contains = contains;
-    if (input.voiceId !== undefined) asset.voiceId = cleanVoice(asset.kind, input.voiceId);
+    asset.voice = voiceToSave(ws, asset, input.voice ?? asset.voice);
     asset.updatedAt = now();
     return asset;
   });

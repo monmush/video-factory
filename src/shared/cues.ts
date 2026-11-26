@@ -18,10 +18,6 @@ export function cleanCues(text: string): string {
   return ending && body ? `${body} ${ending}` : body;
 }
 
-export function voiceText(text: string): string {
-  return text.replace(BRACKETED, (m) => CUES[key(m.slice(1, -1))] ?? m);
-}
-
 export const withoutCues = (text: string) =>
   text.replace(BRACKETED, " ").replace(/\s+/g, " ").trim();
 

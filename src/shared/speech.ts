@@ -1,16 +1,17 @@
-import { SPEECH_RATE } from "./board";
 import { splitTrailingCue } from "./cues";
+import { type Mishap, SPEECH_CUT_OFF, withMishaps } from "./mishaps";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 import { type Alignment, estimatePartSec, type LineChars } from "./shot-plan";
+import type { JobShot } from "./video-job";
 import {
-  askedSpeechSec,
+  askedSec,
   longerSpeechSec,
   SPEECH_MARGIN_SEC,
-  type SpeechModel,
-  speechModel,
   speechModelToTry,
   speechUsd,
-} from "./speech-models";
-import type { JobShot } from "./video-job";
+  type VideoModel,
+  videoModel,
+} from "./video-models";
 
 export type SegmentState = "queued" | "rendering" | "done" | "failed" | "stopped";
 
@@ -23,6 +24,7 @@ export interface SpeechSegment {
   text: string;
   frame: string;
   hold: number;
+  pace?: number;
 }
 
 export interface SpeechBounds {
@@ -51,6 +53,7 @@ export interface JobSegment extends SpeechSegment {
   clip?: string;
   clipSec?: number;
   speech?: SpeechBounds;
+  mishaps?: Mishap[];
   error?: string;
 }
 
@@ -66,6 +69,7 @@ export function speechSegments<S extends GroupedShot>(
   shots: readonly S[],
   frameOf: (shot: S) => string,
   pictureOfSpeaker: (characterId: string) => string | null,
+  pace: number | undefined,
 ): SpeechSegment[] {
   const segments: SpeechSegment[] = [];
   lines.forEach((line, lineIndex) => {
@@ -89,6 +93,7 @@ export function speechSegments<S extends GroupedShot>(
         text: norm(group.map((s) => s.text).join(" ")),
         frame,
         hold: group.at(-1)?.hold ?? 0,
+        ...(pace === undefined ? {} : { pace }),
       });
     });
   });
@@ -108,6 +113,7 @@ const samePlan = (a: SpeechSegment, b: SpeechSegment) =>
   a.frame === b.frame &&
   a.characterId === b.characterId &&
   a.hold === b.hold &&
+  a.pace === b.pace &&
   a.shots.join() === b.shots.join();
 
 export function withSegments(
@@ -119,32 +125,32 @@ export function withSegments(
 
 export const CUE_SEC = 1;
 
-export const SYLLABLES_A_SECOND_SPOKEN_BY_A_VIDEO_MODEL = 2.7;
+export const segmentPace = (seg: Pick<SpeechSegment, "pace">) =>
+  seg.pace ?? PACE_OF_VIDEOS_MADE_BEFORE_PACES;
 
-export const speakingSec = (text: string) =>
-  (estimatePartSec(text) * SPEECH_RATE) / SYLLABLES_A_SECOND_SPOKEN_BY_A_VIDEO_MODEL +
-  (splitTrailingCue(text).cue ? CUE_SEC : 0);
+export const speakingSec = (seg: Pick<SpeechSegment, "text" | "pace">) =>
+  estimatePartSec(seg.text, segmentPace(seg)) + (splitTrailingCue(seg.text).cue ? CUE_SEC : 0);
 
-export const wantedSec = (seg: Pick<JobSegment, "text" | "hold" | "atLeastSec">) =>
-  Math.max(speakingSec(seg.text) + seg.hold + SPEECH_MARGIN_SEC, seg.atLeastSec ?? 0);
+export const wantedSec = (seg: Pick<JobSegment, "text" | "hold" | "atLeastSec" | "pace">) =>
+  Math.max(speakingSec(seg) + seg.hold + SPEECH_MARGIN_SEC, seg.atLeastSec ?? 0);
 
 const sentOrMade = (seg: JobSegment) =>
   Boolean(seg.requestId || seg.state === "rendering" || seg.state === "done");
 
-export function segmentModel(levelSpeech: string, seg: JobSegment): SpeechModel | null {
-  if (seg.model && sentOrMade(seg)) return speechModel(seg.model);
-  return speechModelToTry(levelSpeech, seg.rejectedModels ?? [], wantedSec(seg));
+export function segmentModel(chosen: VideoModel, seg: JobSegment): VideoModel | null {
+  if (seg.model && sentOrMade(seg)) return videoModel(seg.model);
+  return speechModelToTry(chosen.id, seg.rejectedModels ?? [], wantedSec(seg));
 }
 
-export function segmentAskedSec(levelSpeech: string, seg: JobSegment): number | null {
+export function segmentAskedSec(chosen: VideoModel, seg: JobSegment): number | null {
   if (seg.seconds && sentOrMade(seg)) return seg.seconds;
-  const model = segmentModel(levelSpeech, seg);
-  return model ? askedSpeechSec(model, wantedSec(seg)) : null;
+  const model = segmentModel(chosen, seg);
+  return model ? askedSec(model, wantedSec(seg)) : null;
 }
 
-export function segmentEstimateUsd(levelSpeech: string, seg: JobSegment): number | null {
-  const model = segmentModel(levelSpeech, seg);
-  const asked = segmentAskedSec(levelSpeech, seg);
+export function segmentEstimateUsd(chosen: VideoModel, seg: JobSegment): number | null {
+  const model = segmentModel(chosen, seg);
+  const asked = segmentAskedSec(chosen, seg);
   return model && asked ? speechUsd(model, asked) : null;
 }
 
@@ -171,24 +177,75 @@ export const segmentWithdrawn = (seg: JobSegment, state: "queued" | "stopped"): 
   state,
 });
 
-export const SPEECH_CUT_OFF = "Lời nói bị cắt ở cuối";
+export const segmentTriedAfresh = (seg: JobSegment): JobSegment => ({
+  ...seg,
+  state: "queued",
+  retried: false,
+  error: undefined,
+  atLeastSec: undefined,
+});
 
-export function segmentCutOff(seg: JobSegment, levelSpeech: string): JobSegment {
-  const model = segmentModel(levelSpeech, seg);
-  const asked = segmentAskedSec(levelSpeech, seg) ?? wantedSec(seg);
+export const cutOffAskedAgainLonger = (seg: Pick<JobSegment, "retried">, cutOff: boolean) =>
+  cutOff && !seg.retried;
+
+export function segmentKept(
+  seg: JobSegment,
+  heard: { clip: string; clipSec: number; speech: SpeechBounds; cutOff: boolean },
+  at = new Date().toISOString(),
+): JobSegment {
+  const made: JobSegment = {
+    ...seg,
+    state: "done",
+    clip: heard.clip,
+    clipSec: heard.clipSec,
+    speech: heard.speech,
+  };
+  return heard.cutOff ? withMishaps(made, ["cut-kept"], at, seg.model) : made;
+}
+
+export function segmentCutOff(
+  seg: JobSegment,
+  chosen: VideoModel,
+  at = new Date().toISOString(),
+): JobSegment {
+  const asked = segmentAskedSec(chosen, seg) ?? wantedSec(seg);
   return {
-    ...segmentAttemptFailed(seg, SPEECH_CUT_OFF),
+    ...withMishaps(segmentAttemptFailed(seg, SPEECH_CUT_OFF), ["cut"], at, seg.model),
     costUsd: undefined,
     costBilled: undefined,
     cutOffs: (seg.cutOffs ?? 0) + 1,
-    atLeastSec: model ? longerSpeechSec(model, asked) : asked,
+    atLeastSec: longerSpeechSec(asked),
   };
 }
 
 export const segmentOpen = (s: JobSegment) => s.state === "queued" || s.state === "rendering";
 
-export const SILENCE_NOISE_DB = -35;
+export const QUIETEST_SILENCE_THRESHOLD_DB = -35;
+const LOUDEST_SILENCE_THRESHOLD_DB = -20;
+const BACKGROUND_PERCENTILE = 0.2;
+const SPEECH_PEAKS_STAND_ABOVE_THE_BACKGROUND_RMS_DB = 16;
+const SILENT_FRAME_DB = -120;
 export const SILENCE_MIN_SEC = 0.3;
+
+export function backgroundLevelDb(frameRmsDb: readonly number[]): number | null {
+  if (!frameRmsDb.length) return null;
+  const sorted = frameRmsDb
+    .map((db) => (Number.isFinite(db) ? db : SILENT_FRAME_DB))
+    .sort((a, b) => a - b);
+  return sorted[Math.floor(BACKGROUND_PERCENTILE * (sorted.length - 1))] as number;
+}
+
+export function silenceThresholdDb(frameRmsDb: readonly number[]): number {
+  const background = backgroundLevelDb(frameRmsDb);
+  if (background === null) return QUIETEST_SILENCE_THRESHOLD_DB;
+  return Math.min(
+    LOUDEST_SILENCE_THRESHOLD_DB,
+    Math.max(
+      QUIETEST_SILENCE_THRESHOLD_DB,
+      background + SPEECH_PEAKS_STAND_ABOVE_THE_BACKGROUND_RMS_DB,
+    ),
+  );
+}
 const EDGE_SEC = 0.05;
 const SOUND_THIS_SHORT_AFTER_THE_LAST_QUIET_IS_NOT_SPEECH_SEC = 0.3;
 
@@ -215,8 +272,32 @@ export function speechBounds(silenceLog: string, clipSec: number): SpeechBounds 
   return end - start > EDGE_SEC ? { start, end } : null;
 }
 
+export const VOICE_HAS_STOPPED_AFTER_QUIET_SEC = 0.08;
+
+export function trailingQuietSec(
+  frameRmsDb: readonly number[],
+  thresholdDb: number,
+  clipSec: number,
+): number {
+  if (!frameRmsDb.length) return 0;
+  const lastLoud = frameRmsDb.findLastIndex((db) => Number.isFinite(db) && db >= thresholdDb);
+  const quietFrames = frameRmsDb.length - 1 - lastLoud;
+  return (quietFrames * clipSec) / frameRmsDb.length;
+}
+
+export function endingBeforeTrailingQuiet(
+  bounds: SpeechBounds,
+  quietSec: number,
+  clipSec: number,
+): SpeechBounds | null {
+  const detectorFoundTheEnding = bounds.end < clipSec - EDGE_SEC;
+  if (detectorFoundTheEnding) return bounds;
+  const end = clipSec - quietSec;
+  return end - bounds.start > EDGE_SEC ? { start: bounds.start, end } : null;
+}
+
 export const speechCutOff = (bounds: SpeechBounds, clipSec: number) =>
-  clipSec - bounds.end < SILENCE_MIN_SEC;
+  clipSec - bounds.end < VOICE_HAS_STOPPED_AFTER_QUIET_SEC;
 
 export const SPEECH_LEAD_SEC = 0.15;
 

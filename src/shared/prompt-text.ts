@@ -1,3 +1,5 @@
+import { FAST_FROM_SYLLABLES_A_SECOND } from "./pace";
+
 export const NO_CAPTIONS = "No captions, subtitles, watermarks or any text on screen.";
 export const CLEAN_FOOTAGE =
   "Every frame is clean, unedited camera footage that looks exactly like the reference image, with nothing laid over the picture.";
@@ -61,6 +63,15 @@ const SPEECH_FAITHFUL =
   "Keep the face, hair and outfit faithful to the reference image; the camera stays steady unless a camera move is described.";
 const SPEECH_SOUND =
   "The only sound is their voice and the natural quiet sound of the room; no music.";
+const SAYS_ONLY_THAT =
+  "They say exactly these words once, in this order, with no other word and no repetition. After that they close the mouth and stay silent, holding their expression, until the clip ends.";
+const OPENS_ON_IMAGE_1 =
+  "The scene, the people, their clothes, the light and the framing are exactly those of Image 1, and the clip opens on that picture.";
+const VOICE_OF_AUDIO_1 =
+  "The speaker's voice is the voice heard in Audio 1, with the same timbre, pitch, age and accent. Audio 1 is only a sample of that voice: never repeat its words.";
+
+const voiceDescribed = (voice: string) =>
+  `That voice is described as: "${voice.replace(/"/g, "'").trim()}".`;
 
 export interface SpeechPromptInput {
   people: number;
@@ -69,7 +80,16 @@ export interface SpeechPromptInput {
   voice: string;
   motion?: string;
   ambient?: string;
+  pace?: number;
 }
+
+const BRISK_DELIVERY =
+  "They speak at a brisk, natural conversational pace, with no pauses between phrases.";
+const FAST_DELIVERY =
+  "They speak fast and energetically, like a short social video, with no pauses between phrases.";
+
+const delivery = (pace: number | undefined) =>
+  pace === undefined ? "" : pace < FAST_FROM_SYLLABLES_A_SECOND ? BRISK_DELIVERY : FAST_DELIVERY;
 
 const asSentence = (text: string) => {
   const t = text.trim();
@@ -81,9 +101,13 @@ export function speechPrompt(input: SpeechPromptInput): string {
   const said = `They say: "${input.words}"${after ? `, ${after}.` : ""}`;
   return [
     input.people > 1 ? SPEAKS_AMONG_OTHERS : SPEAKS_ALONE,
+    OPENS_ON_IMAGE_1,
     asSentence(input.motion ?? ""),
     said,
-    input.voice,
+    SAYS_ONLY_THAT,
+    delivery(input.pace),
+    VOICE_OF_AUDIO_1,
+    voiceDescribed(input.voice),
     background(input.ambient),
     SPEECH_SOUND,
     SPEECH_FAITHFUL,

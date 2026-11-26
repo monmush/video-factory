@@ -1,17 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { shotTimes, withHolds } from "./shot-plan";
 import {
+  cutOffAskedAgainLonger,
+  endingBeforeTrailingQuiet,
   type GroupedShot,
   type HeardSegment,
   newSegment,
   SPEECH_LEAD_SEC,
+  type SpeechBounds,
+  type SpeechSegment,
   segmentCutOff,
+  segmentKept,
+  segmentTriedAfresh,
+  silenceThresholdDb,
   speechBounds,
   speechCutOff,
   speechSegments,
   speechTimeline,
+  trailingQuietSec,
   wantedSec,
 } from "./speech";
+import { SPEECH_MARGIN_SEC, videoModel } from "./video-models";
 
 const shot = (
   index: number,
@@ -43,6 +52,7 @@ describe("speech segments", () => {
       ],
       frameOf,
       portrait,
+      undefined,
     );
     expect(segments.map((s) => s.shots)).toEqual([[0, 1], [2]]);
     expect(segments.map((s) => s.text)).toEqual(["Chào ông, hôm nay", "trời đẹp quá ạ."]);
@@ -56,6 +66,7 @@ describe("speech segments", () => {
       [shot(0, 0, "wide", "Ừ cháu ngồi đây,"), shot(1, 0, "speaker", "uống chén trà đã cháu.")],
       frameOf,
       portrait,
+      undefined,
     );
     expect(segment?.shots).toEqual([0, 1]);
     expect(segment?.speakerShot).toBe(1);
@@ -73,6 +84,7 @@ describe("speech segments", () => {
       ],
       frameOf,
       portrait,
+      undefined,
     );
     const second = segments[1];
     expect(second).toMatchObject({ line: 1, shots: [1, 2], speakerShot: null, characterId: "b" });
@@ -87,31 +99,63 @@ describe("how long a segment is asked for", () => {
     expect(wantedSec(laughing) - wantedSec(plain)).toBeCloseTo(2);
   });
 
-  it("speech cut off at the end asks again longer, as one failed attempt", () => {
+  it("a segment saved before paces existed asks for the clip length it always did", () => {
+    const words = "một hai ba bốn năm sáu bảy tám chín mười";
+    expect(wantedSec({ text: words, hold: 0 })).toBeCloseTo(10 / 2.7 + SPEECH_MARGIN_SEC);
+  });
+
+  it("the same words at a faster pace ask for a shorter clip", () => {
+    const words = { text: "một hai ba bốn năm sáu bảy tám chín mười", hold: 0 };
+    expect(wantedSec({ ...words, pace: 5 })).toBeLessThan(wantedSec({ ...words, pace: 4 }));
+    expect(wantedSec({ ...words, pace: 4 })).toBeLessThan(wantedSec(words));
+  });
+
+  const SEGMENT: SpeechSegment = {
+    id: "line-1-1",
+    line: 0,
+    shots: [0],
+    speakerShot: 0,
+    characterId: "a",
+    text: "Chào ông, hôm nay trời đẹp quá ạ.",
+    frame: "f",
+    hold: 0,
+  };
+
+  it("speech cut off at the end asks again longer once, as one failed attempt", () => {
     const sent = {
-      ...newSegment({
-        id: "line-1-1",
-        line: 0,
-        shots: [0],
-        speakerShot: 0,
-        characterId: "a",
-        text: "Chào ông, hôm nay trời đẹp quá ạ.",
-        frame: "f",
-        hold: 0,
-      }),
+      ...newSegment(SEGMENT),
       state: "rendering" as const,
-      model: "veo-3.1-fast",
+      model: "minimax-h3-max",
       seconds: 4,
       requestId: "r",
       costUsd: 0.6,
     };
-    const again = segmentCutOff(sent, "wan-3");
+    const again = segmentCutOff(sent, videoModel("wan-3"));
     expect(again).toMatchObject({ state: "queued", retried: true, atLeastSec: 6, cutOffs: 1 });
     expect(again.requestId).toBeUndefined();
-    expect(
-      segmentCutOff({ ...again, state: "rendering", model: "veo-3.1-fast", seconds: 6 }, "wan-3")
-        .state,
-    ).toBe("failed");
+    expect(cutOffAskedAgainLonger(sent, true)).toBe(true);
+    expect(cutOffAskedAgainLonger(again, true)).toBe(false);
+    expect(cutOffAskedAgainLonger(sent, false)).toBe(false);
+  });
+
+  it("a second cut-off keeps the clip with a note instead of failing the scene", () => {
+    const heard = { clip: "c.mp4", clipSec: 6, speech: { start: 0.4, end: 6 }, cutOff: true };
+    const kept = segmentKept({ ...newSegment(SEGMENT), state: "rendering", model: "wan-3" }, heard);
+    expect(kept).toMatchObject({ state: "done", clip: "c.mp4", speech: heard.speech });
+    expect(kept.mishaps?.map((m) => [m.kind, m.model])).toEqual([["cut-kept", "wan-3"]]);
+    expect(segmentKept(newSegment(SEGMENT), { ...heard, cutOff: false }).mishaps).toBeUndefined();
+  });
+
+  it("trying a failed segment again by hand starts from the normal length", () => {
+    const failed = {
+      ...newSegment(SEGMENT),
+      state: "failed" as const,
+      retried: true,
+      atLeastSec: 9,
+    };
+    const again = segmentTriedAfresh(failed);
+    expect(again).toMatchObject({ state: "queued", retried: false });
+    expect(wantedSec(again)).toBe(wantedSec(newSegment(SEGMENT)));
   });
 });
 
@@ -139,6 +183,36 @@ describe("speech in a clip", () => {
     expect(speechCutOff(bounds, 4)).toBe(true);
   });
 
+  const FRAMES_A_SECOND = 40;
+  const clipEndingQuietFor = (clipSec: number, quietSec: number) => {
+    const frames = Array.from({ length: clipSec * FRAMES_A_SECOND }, () => -14);
+    return frames.fill(-48, frames.length - Math.round(quietSec * FRAMES_A_SECOND));
+  };
+  const heardIn = (clipSec: number, quietSec: number) => {
+    const untilTheEnd = { start: 0.3, end: clipSec };
+    const quiet = trailingQuietSec(clipEndingQuietFor(clipSec, quietSec), -35, clipSec);
+    return endingBeforeTrailingQuiet(untilTheEnd, quiet, clipSec) as SpeechBounds;
+  };
+
+  it("a line that ends a fifth of a second before the clip does is complete, not cut off", () => {
+    const speech = heardIn(5, 0.2);
+    expect(speech.end).toBeCloseTo(4.8);
+    expect(speechCutOff(speech, 5)).toBe(false);
+  });
+
+  it("a voice still sounding in the clip's last instant is cut off", () => {
+    expect(speechCutOff(heardIn(5, 0.025), 5)).toBe(true);
+    expect(speechCutOff(heardIn(5, 0), 5)).toBe(true);
+  });
+
+  it("an ending the silence detector found is kept as it is, so a soft laugh after the line is not trimmed", () => {
+    const quiet = trailingQuietSec(clipEndingQuietFor(5, 2.4), -35, 5);
+    expect(endingBeforeTrailingQuiet({ start: 0.3, end: 3 }, quiet, 5)).toEqual({
+      start: 0.3,
+      end: 3,
+    });
+  });
+
   it("a trailing quiet that is never closed still ends the speech", () => {
     expect(speechBounds(LOG(["silence_start: 3.1"]), 6)).toEqual({ start: 0, end: 3.1 });
   });
@@ -147,6 +221,34 @@ describe("speech in a clip", () => {
     expect(speechBounds(LOG(["silence_start: 0", "silence_end: 6 | silence_duration: 6"]), 6)).toBe(
       null,
     );
+  });
+});
+
+describe("the level below which a clip counts as quiet", () => {
+  const clipWithBackgroundAt = (backgroundDb: number) => [
+    ...Array.from({ length: 15 }, () => backgroundDb - 4),
+    ...Array.from({ length: 25 }, () => backgroundDb),
+    ...Array.from({ length: 60 }, (_, i) => -18 - (i % 6)),
+  ];
+
+  it("stays at -35 dB for a clean clip, so a soft ending is not trimmed", () => {
+    for (const background of [-56.3, -53.9, -55]) {
+      expect(silenceThresholdDb(clipWithBackgroundAt(background))).toBe(-35);
+    }
+  });
+
+  it("listens above the sound of a stream under the speech", () => {
+    expect(silenceThresholdDb(clipWithBackgroundAt(-42.9))).toBeCloseTo(-26.9, 1);
+    expect(silenceThresholdDb(clipWithBackgroundAt(-37.8))).toBeCloseTo(-21.8, 1);
+  });
+
+  it("never rises above -20 dB, however loud the background", () => {
+    expect(silenceThresholdDb(clipWithBackgroundAt(-25))).toBe(-20);
+  });
+
+  it("falls back to -35 dB when nothing was measured or every frame is silent", () => {
+    expect(silenceThresholdDb([])).toBe(-35);
+    expect(silenceThresholdDb([Number.NEGATIVE_INFINITY, Number.NaN])).toBe(-35);
   });
 });
 

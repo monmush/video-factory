@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { estimateVoiceUsd } from "./board";
 import { buildDirection } from "./build-direction";
 import { costToFinishUsd, costToPreviewUsd } from "./cost/estimate";
 import { STILL_USD } from "./cost/rates";
-import { plannedShotSec } from "./live-plan";
-import { mediaLevel } from "./media-level";
+import { AUTO_MODELS } from "./models";
+import { PACE_OF_VIDEOS_MADE_BEFORE_PACES } from "./pace";
 import {
   CLEAN_FOOTAGE,
   NO_CAPTIONS,
@@ -29,7 +28,6 @@ import {
   type VideoJob,
 } from "./video-job";
 
-const level = mediaLevel("balanced");
 const CAST = [
   { id: "a", name: "An", photos: 3 },
   { id: "b", name: "Ba", photos: 2 },
@@ -43,10 +41,16 @@ function list(caps = { motion: false }, edit?: (a: ReturnType<typeof answer>) =>
   return list;
 }
 
-const build = (l: ShotList, recipe: Recipe = builtinRecipe(level)) =>
-  buildDirection({ list: l, recipe, lines: LINES, level, cast: CAST, placePhotos: 3 });
+const build = (l: ShotList, recipe: Recipe = builtinRecipe(AUTO_MODELS)) =>
+  buildDirection({
+    list: l,
+    recipe,
+    cast: CAST,
+    placePhotos: 3,
+    pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
+  });
 
-const MOTION: NonNullable<Recipe["motion"]> = {
+const MOTION: Recipe["motion"] = {
   endpoint: "maker/image-to-video",
   name: "Motion One",
   input: { image_url: "{{keyframe}}", prompt: "{{prompt}}", duration: "5" },
@@ -116,7 +120,7 @@ describe("buildDirection", () => {
   });
 
   it("shares capped references so everyone keeps a photo, the place giving way first", () => {
-    const recipe = builtinRecipe(level);
+    const recipe = builtinRecipe(AUTO_MODELS);
     recipe.stills.maxReferences = 4;
     const master = build(list(), recipe).plan.keyframes[0];
     expect(master?.references).toEqual(["place-1", "cast1-1", "cast1-2", "cast2-1"]);
@@ -129,11 +133,10 @@ describe("buildDirection", () => {
     const cast = [...CAST, { id: "c", name: "Cô", photos: 3 }];
     const master = buildDirection({
       list: list(),
-      recipe: builtinRecipe(level),
-      lines: LINES,
-      level,
+      recipe: builtinRecipe(AUTO_MODELS),
       cast,
       placePhotos: 3,
+      pace: PACE_OF_VIDEOS_MADE_BEFORE_PACES,
     }).plan.keyframes[0];
     expect(master?.references).toEqual([
       "place-1",
@@ -148,37 +151,43 @@ describe("buildDirection", () => {
   });
 
   it("refuses a picture with more people than the image model takes references", () => {
-    const recipe = builtinRecipe(level);
+    const recipe = builtinRecipe(AUTO_MODELS);
     recipe.stills.maxReferences = 2;
     expect(() => build(list(), recipe)).toThrow(/needs at least 3 reference images.*takes 2/);
   });
 
-  it("asks speaking shots with the seat's ambient and the shot's clause, local routes with nothing", () => {
+  it("keeps a speaking shot's clause for its speech, and sends no request for it or a local route", () => {
     const live = build(list());
     expect(live.plan.routes.map((r) => [r.route, r.keyframe, Boolean(r.endpoint)])).toEqual([
-      ["lip-sync", "an", true],
+      ["lip-sync", "an", false],
       ["still-move", "master", false],
-      ["lip-sync", "ba-ots", true],
+      ["lip-sync", "ba-ots", false],
       ["product", "plate", false],
-      ["lip-sync", "an", true],
+      ["lip-sync", "an", false],
     ]);
-    const first = live.plan.routes[0]?.input;
-    expect(first).toMatchObject({ image_url: "{{keyframe}}", audio_url: "{{audio}}" });
-    expect(String(first?.prompt)).toMatch(
-      /speaks naturally.*bamboo leaves stir in a light breeze.*nods slightly$/,
+    expect(live.plan.routes[0]).toMatchObject({ input: null, motion: "nods slightly" });
+  });
+
+  it("makes a listener the director asked to speak a moving shot of them listening", () => {
+    const listening = list({ motion: true }, (a) => {
+      const s = a.shots?.[1] as Record<string, unknown>;
+      Object.assign(s, { type: "listener", character: "An", framing: "close" });
+      Object.assign(s, { picture: "an", route: "speak", motion: "glances at the cup" });
+    });
+    const route = build(listening).plan.routes[1];
+    expect(route).toMatchObject({ route: "motion", endpoint: "alibaba/wan-3.0/image-to-video" });
+    expect(String(route?.input?.prompt)).toMatch(
+      /listens silently.*bamboo leaves stir in a light breeze.*glances at the cup$/,
     );
   });
 
-  it("has no motion without a motion model, and fits the length when there is one", () => {
+  it("fits a moving shot's length to its video model", () => {
     const withMotion = list({ motion: true }, (a) => {
       const s = a.shots?.[1] as Record<string, unknown>;
       s.route = "motion";
       s.motion = "Leaves sway; the camera pushes in slowly.";
     });
-    expect(() => build(withMotion, { ...builtinRecipe(level), motion: null })).toThrow(
-      /no motion model/,
-    );
-    const recipe = { ...builtinRecipe(level), motion: MOTION };
+    const recipe = { ...builtinRecipe(AUTO_MODELS), motion: MOTION };
     const live = build(withMotion, recipe);
     const r = live.plan.routes[1];
     expect(r?.endpoint).toBe(MOTION.endpoint);
@@ -187,30 +196,24 @@ describe("buildDirection", () => {
       prompt: "Leaves sway; the camera pushes in slowly.",
       duration: "5",
     });
-    expect(live.plan.models.map((m) => m.role)).toEqual(["keyframes", "lip-sync", "motion"]);
+    expect(live.plan.models.map((m) => m.role)).toEqual(["keyframes", "motion"]);
     const none = build(list(), recipe);
-    expect(none.plan.models.map((m) => m.role)).toEqual(["keyframes", "lip-sync"]);
+    expect(none.plan.models.map((m) => m.role)).toEqual(["keyframes"]);
     expect(Object.keys(none.rates)).not.toContain(MOTION.endpoint);
   });
 
   it("throws when a built request breaks the recipe's schema", () => {
-    const recipe = builtinRecipe(level);
+    const recipe = builtinRecipe(AUTO_MODELS);
     recipe.stills.input = { ...recipe.stills.input, colour: "warm" };
     expect(() => build(list(), recipe)).toThrow(/has no field "colour"/);
   });
 
-  it("prices every step from the recipe's rates", () => {
+  it("prices the pictures from the recipe's rates", () => {
     const live = build(list());
-    const speak = builtinRecipe(level).speak.rate.usd as number;
-    const shots = list().shots.shots;
-    const lips = [0, 2, 4].reduce(
-      (n, i) => n + Math.max(2, plannedShotSec(shots[i] as never)) * speak,
-      0,
-    );
-    expect(live.costs.knownUsd).toBeCloseTo(estimateVoiceUsd(LINES) + 4 * STILL_USD + lips, 6);
+    expect(live.costs.knownUsd).toBeCloseTo(4 * STILL_USD, 6);
     expect(live.costs.unknownSteps).toBe(0);
     expect(live.connection).toBe("recipe");
-    expect(live.recipe).toEqual({ id: "builtin", source: "builtin" });
+    expect(live.recipe).toEqual({ id: "builtin-gpt-image-wan-3", source: "builtin" });
     expect(live.costs.rows.find((r) => r.step === "Khung hình master")?.model).toBe(
       "GPT Image 2.6",
     );
@@ -224,6 +227,7 @@ describe("buildDirection", () => {
       title: "t",
       lines: LINES,
       useEnvironment: true,
+      models: AUTO_MODELS,
       now: "2026-11-16T10:00:00.000Z",
     });
     const planned = applyLivePlan(job, build(list()));
@@ -245,7 +249,6 @@ describe("buildDirection", () => {
         ...s,
         start: i * 3,
         end: i * 3 + 3,
-        ...(s.route === "lip-sync" ? { audio: `a${i}.mp3`, audioSec: 2.4 } : {}),
         state: "queued" as const,
       })),
     };
@@ -271,6 +274,7 @@ describe("a fix on a planned video", () => {
       title: "t",
       lines: LINES,
       useEnvironment: true,
+      models: AUTO_MODELS,
       now: "2026-11-16T10:00:00.000Z",
     });
     return { ...applyLivePlan(job, build(list())), status: "review" as const };
@@ -372,6 +376,7 @@ describe("a fix on a planned video", () => {
           title: "t",
           lines: LINES,
           useEnvironment: true,
+          models: AUTO_MODELS,
           now: "2026-11-16T10:00:00.000Z",
         }),
         build(
@@ -440,6 +445,7 @@ describe("what the next hold makes", () => {
         title: "t",
         lines: LINES,
         useEnvironment: true,
+        models: AUTO_MODELS,
         now: "2026-11-16T10:00:00.000Z",
       }),
       build(list()),

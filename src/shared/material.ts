@@ -1,5 +1,6 @@
 import { MASTER_PLACE_PHOTOS, PHOTOS_OFFERED_PER_PERSON } from "./build-direction";
 import type { Series } from "./ipc";
+import { OUTPUT_RESOLUTION } from "./output-size";
 import type { Picture } from "./shot-list";
 import { type FrameKind, frameFor, type JobFrame, type JobShot, type VideoJob } from "./video-job";
 
@@ -55,7 +56,6 @@ export interface MaterialItem {
   sceneId?: string;
   scene?: SceneSetup;
   madeFrom: MadeFrom[];
-  level: string;
   costUsd: number | null;
   source: MaterialSource;
   kept: boolean;
@@ -178,7 +178,6 @@ function pictureDraft(
     caption: job.shots.find((s) => s.keyframe === frame.keyframe)?.brief ?? "",
     people,
     madeFrom: madeFromOf(people, place, assets),
-    level: job.level ?? "",
     costUsd: frame.costUsd ?? null,
     source: sourceOf(job, frame.file as string),
   };
@@ -205,7 +204,7 @@ function clipDraft(job: VideoJob, shot: JobShot, picture: PictureDraft): ClipDra
     picture,
     seconds: shot.clipSec,
     motion: plannedMotion(job, shot),
-    resolution: job.resolution,
+    resolution: OUTPUT_RESOLUTION,
     caption: shot.brief ?? "",
     costUsd: shot.costUsd ?? null,
     source: sourceOf(job, shot.clip as string),

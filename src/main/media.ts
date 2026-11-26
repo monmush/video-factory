@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { net, protocol } from "electron";
 import { type ImageRef, mediaUrl, type StagedImage } from "../shared/ipc";
 import { findSession } from "./board";
-import { dataDir, materialDir, mediaDir } from "./paths";
+import { dataDir, materialDir, mediaDir, voicesDir } from "./paths";
 import { childPath, childPathOrNull } from "./safe-path";
 
 const SCHEME = "hyan-media";
@@ -54,6 +54,9 @@ async function mediaFile(url: URL): Promise<string | null> {
   }
   if (url.hostname === "material" && parts.length === 2) {
     return childPathOrNull(materialDir(first as string), second as string);
+  }
+  if (url.hostname === "voice" && parts.length === 1) {
+    return childPathOrNull(voicesDir(), first as string);
   }
   if (url.hostname === "chat" && parts.length === 2) {
     const dir = await sessionDir(first);

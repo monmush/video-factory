@@ -6,7 +6,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 
 const BUNDLE_FILE = ".env.bundle";
-const REQUIRED_KEYS = ["FAL_KEY", "ELEVENLABS_API_KEY"];
+const REQUIRED_KEYS = ["FAL_KEY"];
 const OPTIONAL_KEYS = ["FAL_BILLING_KEY"];
 
 function bundledKeys(command: "build" | "serve"): Record<string, string> {

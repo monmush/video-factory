@@ -72,10 +72,42 @@ export interface BoardView {
   focusId: string | null;
 }
 
-export const GALLERY_DEFAULT_MAX = 6;
+const GALLERY_DEFAULT_MAX = 6;
 
-export const boardLayout = (view: BoardView, count: number): BoardLayout =>
-  view.layout ?? (count > GALLERY_DEFAULT_MAX ? "list" : "gallery");
+export const layoutFor = (count: number, preferred: BoardLayout | null): BoardLayout =>
+  preferred ?? (count > GALLERY_DEFAULT_MAX ? "list" : "gallery");
+
+export const boardLayout = (
+  view: BoardView,
+  count: number,
+  preferred: BoardLayout | null,
+): BoardLayout => view.layout ?? layoutFor(count, preferred);
+
+const LAYOUT_STORAGE_KEY = "hyan:board-layout";
+
+const isLayout = (value: unknown): value is BoardLayout => value === "gallery" || value === "list";
+
+function storedLayout(): BoardLayout | null {
+  try {
+    const stored = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    return isLayout(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+let preferredLayout = storedLayout();
+
+export const usePreferredLayout = () => useSyncExternalStore(subscribe, () => preferredLayout);
+
+export function preferLayout(sessionId: string, layout: BoardLayout) {
+  preferredLayout = layout;
+  try {
+    localStorage.setItem(LAYOUT_STORAGE_KEY, layout);
+  } catch {}
+  views.set(sessionId, { ...(views.get(sessionId) ?? DEFAULT_VIEW), layout });
+  emit();
+}
 
 const DEFAULT_VIEW: BoardView = {
   refs: [],

@@ -1,18 +1,8 @@
-import { estimateVoiceUsd } from "../board";
-import { recipeModels } from "../build-direction";
-import {
-  type LiveDirection,
-  PAID_ROUTES,
-  ROUTE_LABEL,
-  type Route,
-  requestCost,
-} from "../live-plan";
-import { mediaLevel } from "../media-level";
-import { builtinRecipe } from "../recipe";
+import { imageModel } from "../image-models";
+import { ROUTE_LABEL, type Route } from "../live-plan";
 import { stagedWithoutPlace } from "../series-place";
 import { asksUsd, type JobSound, type SoundAsk, soundInFlight, soundToSend } from "../sound";
 import {
-  billedSeconds,
   frameFor,
   isGenerated,
   type JobFrame,
@@ -21,45 +11,22 @@ import {
   jobSoundSource,
   liveSeconds,
   madeByProvider,
-  shotModel,
+  modelsOf,
   type VideoJob,
+  videoModelOf,
 } from "../video-job";
-import { clipUsd } from "../video-models";
-import { STEP, spentUsd } from "./charges";
+import { motionSec, motionUsd } from "../video-models";
+import { STEP } from "./charges";
 import { SPEAKING_SCENES } from "./group-names";
 import { COST_PARTS } from "./parts";
-import { CUTOUT_USD, STILL_USD } from "./rates";
+import { CUTOUT_USD, VOICE_SAMPLE_USD } from "./rates";
+import { voiceFilesToMake, voicesToMakeUsd } from "./voice-cost";
 
-export function liveFrameUsd(live: LiveDirection, id: string): number | null {
-  const k = live.plan.keyframes.find((x) => x.id === id);
-  if (!k) return null;
-  return requestCost(live.rates[k.endpoint], live.schemas[k.endpoint], k.input, "keyframe", 0).usd;
-}
+export const shotEstimateUsd = (job: Pick<VideoJob, "models" | "pace">, shot: JobShot): number =>
+  madeByProvider(shot) ? motionUsd(videoModelOf(job), liveSeconds(job, shot)) : 0;
 
-export function liveShotUsd(live: LiveDirection, index: number, seconds: number): number | null {
-  const r = live.plan.routes[index];
-  if (!r?.endpoint || !r.input || !PAID_ROUTES.includes(r.route)) return 0;
-  return requestCost(live.rates[r.endpoint], live.schemas[r.endpoint], r.input, r.route, seconds)
-    .usd;
-}
-
-export const shotEstimateUsd = (
-  job: Pick<VideoJob, "model" | "resolution" | "live">,
-  shot: JobShot,
-): number | null => {
-  if (!madeByProvider(shot)) return 0;
-  if (job.live && shot.route && !shot.fallback) {
-    return liveShotUsd(job.live, shot.index, liveSeconds(shot));
-  }
-  return clipUsd(shotModel(job, shot), billedSeconds(shot), job.resolution);
-};
-
-export const frameUsd = (job: Pick<VideoJob, "live">, frame: JobFrame): number | null =>
-  job.live && frame.keyframe && !frame.fallback
-    ? liveFrameUsd(job.live, frame.keyframe)
-    : STILL_USD;
-
-const orZero = (usd: number | null | undefined) => usd ?? 0;
+export const frameUsd = (job: Pick<VideoJob, "models">): number =>
+  imageModel(modelsOf(job).image).fallbackUsd;
 
 export const takenFromMaterial = (frame: JobFrame) =>
   Boolean(frame.materialFile) && !frame.fresh && !frame.file;
@@ -97,24 +64,15 @@ const soundsInFlightUsd = (job: VideoJob) =>
     (job.sounds ?? []).filter((s) => soundInFlight(s) && !s.resultUrl),
   );
 
-const voiceTrackMade = (job: VideoJob) =>
-  Boolean(job.dialogue) || COST_PARTS.some((p) => p.replacesVoiceTrack(job));
-
-const voiceToMakeUsd = (job: VideoJob) => (voiceTrackMade(job) ? 0 : estimateVoiceUsd(job.lines));
-
 const stillsToMakeUsd = (job: VideoJob) =>
-  framesToMake(job)
-    .filter((f) => !f.requestId)
-    .reduce((n, f) => n + orZero(frameUsd(job, f)), 0) + cutoutsToMakeUsd(job);
+  framesToMake(job).filter((f) => !f.requestId).length * frameUsd(job) + cutoutsToMakeUsd(job);
 
 export function inFlightUsd(job: VideoJob): number {
   return (
     job.shots
       .filter((s) => s.state === "rendering" && !s.resultUrl)
-      .reduce((n, s) => n + orZero(shotEstimateUsd(job, s)), 0) +
-    framesToMake(job)
-      .filter((f) => f.requestId && !f.resultUrl)
-      .reduce((n, f) => n + orZero(frameUsd(job, f)), 0) +
+      .reduce((n, s) => n + shotEstimateUsd(job, s), 0) +
+    framesToMake(job).filter((f) => f.requestId && !f.resultUrl).length * frameUsd(job) +
     soundsInFlightUsd(job) +
     COST_PARTS.reduce((n, p) => n + p.inFlightUsd(job), 0)
   );
@@ -124,9 +82,8 @@ export function costToFinishUsd(job: VideoJob): number | null {
   if (!job.plan) return null;
   const shots = job.shots
     .filter((s) => s.state !== "done" && s.state !== "rendering")
-    .reduce((n, s) => n + orZero(shotToMakeUsd(job, s)), 0);
+    .reduce((n, s) => n + shotToMakeUsd(job, s), 0);
   return (
-    voiceToMakeUsd(job) +
     stillsToMakeUsd(job) +
     shots +
     soundsToMakeUsd(job) +
@@ -135,7 +92,7 @@ export function costToFinishUsd(job: VideoJob): number | null {
 }
 
 export const costToPreviewUsd = (job: VideoJob): number | null =>
-  job.plan ? voiceToMakeUsd(job) + stillsToMakeUsd(job) : null;
+  job.plan ? stillsToMakeUsd(job) + voicesToMakeUsd(job) : null;
 
 export const stagedToMake = (job: VideoJob | null | undefined): job is VideoJob =>
   Boolean(job?.plan && !job.planning && !stagedWithoutPlace(job));
@@ -145,9 +102,11 @@ export function batchToMake(jobs: readonly (VideoJob | null | undefined)[]): {
   usd: number;
 } {
   const staged = jobs.filter(stagedToMake);
+  const voiceFiles = staged.flatMap(voiceFilesToMake);
+  const sharedVoicesUsd = (voiceFiles.length - new Set(voiceFiles).size) * VOICE_SAMPLE_USD;
   return {
     count: staged.length,
-    usd: staged.reduce((n, j) => n + (costToFinishUsd(j) ?? 0), 0),
+    usd: staged.reduce((n, j) => n + (costToFinishUsd(j) ?? 0), 0) - sharedVoicesUsd,
   };
 }
 
@@ -169,21 +128,20 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 const madeWithoutCharge = (made: boolean, costUsd: number | null | undefined) =>
   made && costUsd === undefined;
 
-function voiceStep(job: VideoJob): StepEstimate[] {
-  if (COST_PARTS.some((p) => p.replacesVoiceTrack(job))) return [];
-  return [
-    {
-      key: STEP.voice,
-      group: "Giọng đọc",
-      label: "Giọng đọc",
-      quantity: "",
-      usd:
-        job.voiceCostUsd === 0 || madeWithoutCharge(Boolean(job.dialogue), job.voiceCostUsd)
-          ? 0
-          : estimateVoiceUsd(job.lines),
-    },
-  ];
-}
+const OLD_VOICE = "Giọng đọc";
+
+const oldVoiceStep = (job: VideoJob): StepEstimate[] =>
+  job.voiceCostUsd === undefined
+    ? []
+    : [
+        {
+          key: STEP.voice,
+          group: OLD_VOICE,
+          label: OLD_VOICE,
+          quantity: "",
+          usd: job.voiceCostUsd,
+        },
+      ];
 
 function frameSteps(job: VideoJob): StepEstimate[] {
   return job.frames.flatMap((f): StepEstimate[] => {
@@ -198,7 +156,7 @@ function frameSteps(job: VideoJob): StepEstimate[] {
       group: label === "Ảnh sản phẩm" ? label : "Khung hình",
       label,
       quantity: generated ? "1 ảnh" : "",
-      usd: free ? 0 : frameUsd(job, f),
+      usd: free ? 0 : frameUsd(job),
     };
     const cutouts =
       f.kind === "product" && generated && (f.cutouts || f.cutoutCostUsd !== undefined);
@@ -216,20 +174,8 @@ function frameSteps(job: VideoJob): StepEstimate[] {
   });
 }
 
-function shotQuantity(job: VideoJob, shot: JobShot): string {
-  if (!madeByProvider(shot)) return "";
-  const r = job.live?.plan.routes[shot.index];
-  if (job.live && r?.endpoint && r.input && !shot.fallback) {
-    return requestCost(
-      job.live.rates[r.endpoint],
-      job.live.schemas[r.endpoint],
-      r.input,
-      r.route,
-      liveSeconds(shot),
-    ).quantity;
-  }
-  return `${round1(billedSeconds(shot))} giây`;
-}
+const shotQuantity = (job: VideoJob, shot: JobShot): string =>
+  madeByProvider(shot) ? `${motionSec(videoModelOf(job), liveSeconds(job, shot))} giây` : "";
 
 const ROUTE_GROUP: Record<Route, string> = { ...ROUTE_LABEL, "lip-sync": SPEAKING_SCENES };
 
@@ -266,7 +212,7 @@ function soundSteps(job: VideoJob): StepEstimate[] {
 }
 
 export const stepEstimates = (job: VideoJob): StepEstimate[] => [
-  ...voiceStep(job),
+  ...oldVoiceStep(job),
   ...frameSteps(job),
   ...COST_PARTS.flatMap((p) => p.steps(job)),
   ...shotSteps(job),
@@ -302,13 +248,3 @@ export function firstPassOf(job: VideoJob, at: string): FirstPass {
 
 export const withFirstPass = (job: VideoJob, at: string): VideoJob =>
   job.plan && !job.firstPass ? { ...job, firstPass: firstPassOf(job, at) } : job;
-
-export function withCurrentRates(job: VideoJob): VideoJob {
-  if (!job.live || spentUsd(job) > 0) return job;
-  const current = recipeModels(builtinRecipe(mediaLevel(job.level))).rates;
-  const saved = job.live.rates;
-  const refreshed = Object.fromEntries(
-    Object.entries(saved).map(([endpoint, rate]) => [endpoint, current[endpoint] ?? rate]),
-  );
-  return { ...job, live: { ...job.live, rates: refreshed } };
-}

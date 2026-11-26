@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { MaterialOffer } from "../../shared/material-offer";
-import { mediaLevel } from "../../shared/media-level";
 import { shotListPrompt } from "./shot-list-prompt";
 
 const BASE = "Direct this script.\n## Output\nold output";
-const VIDEO = { level: mediaLevel("balanced"), motion: true, sound: false, direction: "none" };
+const VIDEO = { direction: "none" };
 const NAMES = new Map([
   ["a", "An"],
   ["b", "Ba"],

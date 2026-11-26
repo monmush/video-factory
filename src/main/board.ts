@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
-import { boardOrder, clearMarks, DEFAULT_TARGET_SEC } from "../shared/board";
+import { boardOrder, clearMarks } from "../shared/board";
 import {
   type Board,
   type ChatMessage,
@@ -20,10 +20,17 @@ import {
 } from "../shared/line-edit";
 import { mentionedProducts, newTopicProducts } from "../shared/product-mix";
 import { checkScript, committedIds, finishedScripts } from "../shared/ready-check";
+import {
+  directionStates,
+  directionText,
+  effectiveMention,
+  seriesTargetSec,
+} from "../shared/series-guide";
 import { copyScript } from "../shared/versions";
 import { applyUndo, dropTouch, recordTouch, type TurnLog, turnUndo } from "./board-undo";
 import { mediaDir, writeJsonAtomic } from "./paths";
 import * as writer from "./script-writer";
+import { draftSettled } from "./series-guide";
 import { readSettings } from "./settings";
 import { getWorkspace, updateSeries } from "./store";
 
@@ -110,9 +117,9 @@ async function read(sessionId: string): Promise<Board> {
     };
   }
   for (const s of board.scripts) {
-    if (s.status === "writing" && !scriptsBeingWrittenInThisProcess.has(s.id)) {
-      s.status = s.lines.length ? "ready" : "failed";
-    }
+    if (scriptsBeingWrittenInThisProcess.has(s.id)) continue;
+    if (s.status === "writing") s.status = s.lines.length ? "ready" : "failed";
+    delete s.changing;
   }
   for (const m of board.messages) {
     if (m.pending && !runningRequests.has(m.id)) {
@@ -192,6 +199,7 @@ const readChoice = () => {
 };
 
 export async function writerContext(sessionId: string): Promise<writer.WriterContext> {
+  await draftSettled((await findSession(sessionId)).session.seriesId);
   const { ws, session } = await findSession(sessionId);
   const series = ws.series.find((s) => s.id === session.seriesId);
   if (!series) throw new Error("Không tìm thấy series");
@@ -206,11 +214,16 @@ export async function writerContext(sessionId: string): Promise<writer.WriterCon
     }
   }
   const choice = resolveChoice((await load(sessionId)).agent ?? readChoice());
+  const states = directionStates(series.guide);
   return {
     sessionId,
     model: choice.model,
     effort: choice.effort,
-    guidance: series.guidance,
+    direction: directionText(series),
+    targetSec: seriesTargetSec(series),
+    productMention: effectiveMention(series.guide, series.productIds.length),
+    storyOrToneStated: states.storyOrTone,
+    closingStated: states.closing,
     notes: { every: ws.notes ?? [], series: series.notes ?? [] },
     characters: pick(series.characterIds),
     products: pick(series.productIds),
@@ -265,6 +278,7 @@ async function topicProducts(
     mentioned,
     savedMix: session.settings?.productMix,
     seriesProductIds: series?.productIds ?? [],
+    withoutProducts: effectiveMention(series?.guide, series?.productIds.length ?? 0) === "none",
     offset: Math.max(
       0,
       siblings.findIndex((s) => s.id === sessionId),
@@ -364,7 +378,7 @@ async function addScripts(
       brief: {
         kind: "topic",
         ...(plan.direction ? { direction: plan.direction } : {}),
-        targetSec: plan.targetSec ?? DEFAULT_TARGET_SEC,
+        targetSec: plan.targetSec ?? ctx.targetSec,
       },
     }),
   );
@@ -431,12 +445,7 @@ async function editScripts(
       let outcome: "changed" | "same" | "failed" = "failed";
       let written: writer.WrittenScript | null = null;
       try {
-        written = await writer.revise(
-          ctx,
-          before,
-          plan.instruction,
-          plan.targetSec ?? before.brief.targetSec ?? DEFAULT_TARGET_SEC,
-        );
+        written = await writer.revise(ctx, before, plan.instruction, plan.targetSec);
         outcome = written ? "changed" : "same";
       } catch (error) {
         console.error("[board] revise failed", error);
@@ -552,6 +561,9 @@ export async function variant(
   scriptId: string,
   direction?: string,
 ): Promise<null> {
+  const { ws, session } = await findSession(sessionId);
+  const series = ws.series.find((s) => s.id === session.seriesId);
+  const fallbackSec = seriesTargetSec(series ?? {});
   const card = newScript({
     brief: {
       kind: "variant",
@@ -567,7 +579,8 @@ export async function variant(
       if (!source) throw new Error("Không tìm thấy kịch bản");
       clearMarks(b);
       card.mark = "new";
-      card.brief.targetSec = source.brief.targetSec ?? DEFAULT_TARGET_SEC;
+      const sourceSec = source.brief.targetSec ?? fallbackSec;
+      card.brief.targetSec = writer.variantLength(direction, sourceSec) ?? sourceSec;
       card.pinned = source.pinned;
       b.scripts.splice(index + 1, 0, card);
     });
@@ -787,6 +800,60 @@ export async function agentUpdate(
   });
 }
 
+export async function agentCopy(
+  sessionId: string,
+  scriptId: string,
+  log: TurnLog,
+): Promise<Script> {
+  return mutateBoard(sessionId, (b) => {
+    const source = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
+    if (!source) throw new Error("Không tìm thấy kịch bản");
+    if (source.status !== "ready" || source.changing) {
+      throw new Error("Kịch bản đang được viết, thử lại sau");
+    }
+    const copy = insertCopy(b, source);
+    delete copy.changeUndo;
+    const undoState = turnUndo(b, log);
+    if (undoState) undoState.added = [...(undoState.added ?? []), copy.id];
+    log.touched.add(copy.id);
+    return structuredClone(copy);
+  });
+}
+
+export type LengthSet =
+  | { scriptId: string; outcome: "set" | "same"; script: Script; copied: boolean }
+  | { scriptId: string; outcome: "writing" };
+
+export async function agentSetLength(
+  sessionId: string,
+  scriptIds: string[],
+  targetSec: number,
+  log: TurnLog,
+): Promise<LengthSet[]> {
+  const { ws, session } = await findSession(sessionId);
+  const fallbackSec = seriesTargetSec(ws.series.find((s) => s.id === session.seriesId) ?? {});
+  return mutateBoard(sessionId, (b) => {
+    const locked = lockedIds(session, b);
+    return scriptIds.map((scriptId): LengthSet => {
+      const s = b.scripts.find((x) => x.id === scriptId && !x.deletedAt);
+      if (!s) throw new Error("Không tìm thấy kịch bản");
+      if (s.status !== "ready" || s.changing) return { scriptId, outcome: "writing" };
+      if ((s.brief.targetSec ?? fallbackSec) === targetSec) {
+        return { scriptId, outcome: "same", script: structuredClone(s), copied: false };
+      }
+      const { target, copied } = editTarget(b, locked, log, s);
+      if (!copied) recordTouch(b, log, target);
+      Object.assign(target, {
+        brief: { ...target.brief, targetSec },
+        mark: "edited",
+        changeUndo: undefined,
+        updatedAt: now(),
+      });
+      return { scriptId, outcome: "set", script: structuredClone(target), copied };
+    });
+  });
+}
+
 export async function agentAdd(
   sessionId: string,
   plan: {
@@ -810,7 +877,7 @@ export async function agentAdd(
         kind: "topic",
         ...(plan.direction ? { direction: plan.direction } : {}),
         ...(products[i] !== undefined ? { productId: products[i] } : {}),
-        targetSec: plan.targetSec ?? DEFAULT_TARGET_SEC,
+        targetSec: plan.targetSec ?? ctx.targetSec,
       },
     }),
   );
@@ -865,12 +932,7 @@ export async function agentRewrite(
       let written: writer.WrittenScript | null = null;
       let failed = false;
       try {
-        written = await writer.revise(
-          ctx,
-          before,
-          instruction,
-          targetSec ?? before.brief.targetSec ?? DEFAULT_TARGET_SEC,
-        );
+        written = await writer.revise(ctx, before, instruction, targetSec);
       } catch (error) {
         console.error("[board] agent rewrite failed", error);
         failed = true;
@@ -940,7 +1002,8 @@ export async function scriptsToCommit(sessionId: string, ids?: string[]): Promis
   const chosen = ids ? open.filter((s) => ids.includes(s.id)) : open;
   if (ids && chosen.length !== new Set(ids).size)
     throw new Error("Kịch bản này không làm video được");
-  if (chosen.some((s) => checkScript(s, ws.assets).blockers.length)) {
+  const fallbackSec = seriesTargetSec(ws.series.find((s) => s.id === session.seriesId) ?? {});
+  if (chosen.some((s) => checkScript(s, ws.assets, fallbackSec).blockers.length)) {
     throw new Error("Có kịch bản cần sửa trước khi tạo video");
   }
   if (chosen.length === 0) throw new Error("Không còn kịch bản nào để tạo video");

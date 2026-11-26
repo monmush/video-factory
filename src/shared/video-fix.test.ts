@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { redoneCharges, spentUsd } from "./cost/charges";
 import { withInUsePaid } from "./cost/charges.fixture";
 import { STILL_USD as FRAME_USD } from "./cost/rates";
-import type { ScriptLine } from "./ipc";
-import type { PlannedShot, ShotPlan } from "./shot-plan";
+import { finished, plannedJob, withStills } from "./job.fixture";
+import { answer, LINES } from "./shot-list.fixture";
+import type { PlannedShot } from "./shot-plan";
 import {
   applyFix,
   canFix,
@@ -14,189 +15,119 @@ import {
   restorePrevious,
 } from "./video-fix";
 import {
-  applyPlan,
   frameFor,
   jobPhase,
-  newJob,
   nextActions,
   resumeJob,
   revFile,
   settle,
   type VideoJob,
-  withShotAudio,
 } from "./video-job";
-import { modelOutput, videoModel } from "./video-models";
+import { motionUsd, videoModel } from "./video-models";
 
-const VIDEO_USD_PER_SEC = modelOutput(videoModel()).usdPerSec;
+const LATER = "2026-11-25T11:00:00.000Z";
+const MOVING = 1;
+const WAN_ONE_SECOND = motionUsd(videoModel("wan-3"), 1);
 
-const NOW = "2026-11-13T10:00:00.000Z";
-const LATER = "2026-11-13T11:00:00.000Z";
+const done = (): VideoJob =>
+  withInUsePaid({
+    ...finished(),
+    shots: finished().shots.map((s) =>
+      s.index === MOVING ? { ...s, clipSec: 1, costUsd: WAN_ONE_SECOND, requestId: "r1" } : s,
+    ),
+  });
 
-const line = (characterId: string, text: string): ScriptLine => ({
-  characterId,
-  speaker: characterId,
-  text,
-});
-const LINES = [
-  line("a", "Con chào ông ạ, con mới tới."),
-  line("b", "Ừ, ngồi xuống uống chén trà đã."),
-  line("a", "Ơ… ông ơi, trà tràn ra bàn rồi kìa! Ông rót gì mà rót mãi vậy?"),
-  line("b", "Chén đầy rồi thì rót thêm làm sao được."),
-];
+const stillDone = (): VideoJob => withInUsePaid(finished(plannedJob(undefined, answer())));
+
 const shot = (
   kind: PlannedShot["kind"],
-  lineNo: number,
+  line: number,
   text: string,
   extra: Partial<PlannedShot> = {},
 ): PlannedShot => ({
   kind,
-  characterId: kind === "speaker" ? (LINES[lineNo]?.characterId ?? null) : null,
+  characterId: kind === "speaker" ? (LINES[line]?.characterId ?? null) : null,
   framing: kind === "speaker" ? "medium_close" : null,
-  line: lineNo,
+  line,
   text,
   visual: "",
   productId: null,
   why: "",
   ...extra,
 });
-const PLAN: ShotPlan = {
-  source: "ai",
-  seats: [],
-  props: [],
-  stateChanges: [{ fromShot: 3, change: "tea on the table" }],
-  shots: [
-    shot("speaker", 0, LINES[0]?.text ?? ""),
-    shot("wide", 1, LINES[1]?.text ?? ""),
-    shot("speaker", 2, LINES[2]?.text ?? ""),
-    shot("detail", 3, LINES[3]?.text ?? "", { productId: "p" }),
-  ],
-};
-
-function done(plan: ShotPlan = PLAN): VideoJob {
-  const planned = applyPlan(
-    newJob({
-      sessionId: "s",
-      seriesId: "x",
-      scriptId: "1",
-      title: "T",
-      lines: LINES,
-      useEnvironment: true,
-      now: NOW,
-    }),
-    plan,
-  );
-  const voiced = withShotAudio(
-    {
-      ...planned,
-      status: "running",
-      dialogue: "dialogue.mp3",
-      dialogueSec: 12,
-      voiceCostUsd: 0.05,
-    },
-    planned.shots.map((_, i) => ({
-      start: i * 3,
-      end: i * 3 + 3,
-      audio: `a${i}.mp3`,
-      audioSec: 3,
-    })),
-  );
-  return withInUsePaid({
-    ...voiced,
-    status: "done",
-    final: "final.mp4",
-    finalSec: 12,
-    frames: voiced.frames.map((f) => ({
-      ...f,
-      file: `${f.id}.png`,
-      ...(f.kind === "product" ? { source: "photo" as const } : { costUsd: FRAME_USD }),
-    })),
-    shots: voiced.shots.map((s) => ({
-      ...s,
-      state: "done",
-      clip: `shot-${s.index}.mp4`,
-      clipSec: 3,
-      ...(s.kind === "speaker" ? { costUsd: 3 * VIDEO_USD_PER_SEC, requestId: `r${s.index}` } : {}),
-    })),
-  });
-}
 
 describe("redoing one shot", () => {
-  it("a speaking shot: only it is made again, the old cut stays, the total never drops", () => {
+  it("a moving shot: only it is made again, the old cut stays, the total never drops", () => {
     const job = done();
     const spent = spentUsd(job);
-    const fixed = applyFix(job, [{ op: "redo_shot", shot: 2 }], LATER);
+    const fixed = applyFix(job, [{ op: "redo_shot", shot: MOVING }], LATER);
     expect(fixed.status).toBe("waiting");
-    expect(fixed.shots.map((s) => s.state)).toEqual(["done", "done", "queued", "done"]);
-    expect(fixed.shots[2]?.clip).toBeUndefined();
+    expect(fixed.shots.map((s) => s.state)).toEqual(["done", "queued", "done", "done", "done"]);
+    expect(fixed.shots[MOVING]?.clip).toBeUndefined();
     expect(fixed.final).toBeUndefined();
     expect(fixed.previous?.final).toBe("final.mp4");
-    expect(fixed.previous?.shots[2]?.clip).toBe("shot-2.mp4");
+    expect(fixed.previous?.shots[MOVING]?.clip).toBe("shot-1.mp4");
     expect(spentUsd(fixed)).toBeCloseTo(spent);
-    expect(fixPriceUsd(job, [{ op: "redo_shot", shot: 2 }], LATER)).toBeCloseTo(
-      3 * VIDEO_USD_PER_SEC,
+    expect(fixPriceUsd(job, [{ op: "redo_shot", shot: MOVING }], LATER)).toBeCloseTo(
+      WAN_ONE_SECOND,
     );
     expect(jobPhase(fixed)).toBe("shots");
     expect(nextActions({ ...fixed, status: "running" }, new Set())).toEqual([
-      { kind: "submit-shot", index: 2 },
+      { kind: "submit-shot", index: MOVING },
     ]);
-    expect(revFile(fixed, "shot-03", "mp4")).toBe("shot-03-r1.mp4");
-    expect(revFile(job, "shot-03", "mp4")).toBe("shot-03.mp4");
+    expect(revFile(fixed, "shot-02", "mp4")).toBe("shot-02-r1.mp4");
+    expect(revFile(job, "shot-02", "mp4")).toBe("shot-02.mp4");
   });
 
   it("with a new direction, the shot's description changes too", () => {
-    const fixed = applyFix(done(), [{ op: "redo_shot", shot: 0, visual: " smiles " }], LATER);
-    expect(fixed.shots[0]).toMatchObject({ visual: "smiles", state: "queued" });
+    const fixed = applyFix(done(), [{ op: "redo_shot", shot: MOVING, visual: " pours " }], LATER);
+    expect(fixed.shots[MOVING]).toMatchObject({ visual: "pours", state: "queued" });
   });
 
-  it("a wide shot remakes the scene still, not the characters'", () => {
-    const job = done();
+  it("a shot made from its still remakes that still, not the people's", () => {
+    const job = stillDone();
     const fixed = applyFix(job, [{ op: "redo_shot", shot: 1 }], LATER);
-    expect(fixed.frames.filter((f) => !f.file).map((f) => f.id)).toEqual(["wide"]);
-    expect(fixed.shots.map((s) => s.state)).toEqual(["done", "queued", "done", "done"]);
+    expect(fixed.frames.filter((f) => !f.file).map((f) => f.id)).toEqual(["kf:master"]);
+    expect(fixed.shots.map((s) => s.state)).toEqual(["done", "queued", "done", "done", "done"]);
     expect(fixPriceUsd(job, [{ op: "redo_shot", shot: 1 }], LATER)).toBeCloseTo(FRAME_USD);
-    expect(fixScope(job, [{ op: "redo_shot", shot: 1 }], LATER)).toEqual({
-      shots: 1,
-      stills: 1,
-      voice: false,
-    });
-  });
-
-  it("a remake always uses the video's model, and records it again when sent", () => {
-    const job = { ...done(), model: "omnihuman-v2" };
-    const fixed = applyFix(job, [{ op: "redo_shot", shot: 2 }], LATER);
-    expect(fixed.shots[2]?.model).toBeUndefined();
-    expect(fixPriceUsd(job, [{ op: "redo_shot", shot: 2 }], LATER)).toBeCloseTo(4 * 0.105);
-  });
-
-  it("a fix keeps the video's model and resolution", () => {
-    const job = { ...done(), model: "kling-avatar-v2-pro", resolution: "1080p" };
-    const fixed = applyFix(job, [{ op: "redo_shot", shot: 0 }], LATER);
-    expect(fixed).toMatchObject({ model: "kling-avatar-v2-pro", resolution: "1080p" });
+    expect(fixScope(job, [{ op: "redo_shot", shot: 1 }], LATER)).toEqual({ shots: 1, stills: 1 });
   });
 
   it("a product photo cannot be made again", () => {
-    expect(() => applyFix(done(), [{ op: "redo_shot", shot: 3 }], LATER)).toThrow(FixError);
-    expect(() => applyFix(done(), [{ op: "redo_shot", shot: 9 }], LATER)).toThrow(
-      "Không có cảnh 10",
-    );
+    const job = done();
+    const photo = {
+      ...job,
+      frames: job.frames.map((f) =>
+        f.kind === "product" ? { ...f, source: "photo" as const } : f,
+      ),
+    };
+    expect(() => applyFix(photo, [{ op: "redo_shot", shot: 3 }], LATER)).toThrow(FixError);
+    expect(() => applyFix(job, [{ op: "redo_shot", shot: 9 }], LATER)).toThrow("Không có cảnh 10");
   });
 });
 
 describe("redoing a still", () => {
-  it("a character's still takes all of that character's shots with it", () => {
-    const job = done();
-    const change = { op: "redo_still" as const, frame: "character:a", note: "look right" };
+  it("the scene's still takes the shots made from it with it", () => {
+    const job = stillDone();
+    const change = { op: "redo_still" as const, frame: "kf:master", note: "warmer light" };
     const fixed = applyFix(job, [change], LATER);
-    const frame = fixed.frames.find((f) => f.id === "character:a");
-    expect(frame).toMatchObject({ note: "look right", retried: false });
+    const frame = fixed.frames.find((f) => f.id === "kf:master");
+    expect(frame).toMatchObject({ note: "warmer light", retried: false });
     expect(frame?.file).toBeUndefined();
-    expect(fixed.shots.map((s) => s.state)).toEqual(["queued", "done", "queued", "done"]);
-    expect(fixPriceUsd(job, [change], LATER)).toBeCloseTo(FRAME_USD + 6 * VIDEO_USD_PER_SEC);
+    expect(fixed.shots.map((s) => s.state)).toEqual(["done", "queued", "done", "done", "done"]);
+    expect(fixPriceUsd(job, [change], LATER)).toBeCloseTo(FRAME_USD);
     expect(jobPhase(fixed)).toBe("frames");
   });
 
   it("refuses stills that are not generated", () => {
-    expect(() => applyFix(done(), [{ op: "redo_still", frame: "product:3" }], LATER)).toThrow(
+    const job = done();
+    const photo = {
+      ...job,
+      frames: job.frames.map((f) =>
+        f.kind === "product" ? { ...f, source: "photo" as const } : f,
+      ),
+    };
+    expect(() => applyFix(photo, [{ op: "redo_still", frame: "kf:plate" }], LATER)).toThrow(
       FixError,
     );
   });
@@ -208,84 +139,68 @@ describe("a fix of something taken from the series' material", () => {
     return {
       ...job,
       frames: job.frames.map((f) =>
-        f.id === "wide" ? { ...f, source: "material", material: "m1", costUsd: undefined } : f,
+        f.id === "kf:master" ? { ...f, source: "material", material: "m1", costUsd: undefined } : f,
       ),
       shots: job.shots.map((s) =>
-        s.index === 1 ? { ...s, route: "motion", reused: "c1", costUsd: undefined } : s,
+        s.index === MOVING ? { ...s, reused: "c1", costUsd: undefined } : s,
       ),
     };
   };
 
   it("a still made again is generated, never taken from the store again", () => {
-    const fixed = applyFix(fromStore(), [{ op: "redo_still", frame: "wide" }], LATER);
-    expect(fixed.frames.find((f) => f.id === "wide")).toMatchObject({
+    const fixed = applyFix(fromStore(), [{ op: "redo_still", frame: "kf:master" }], LATER);
+    expect(fixed.frames.find((f) => f.id === "kf:master")).toMatchObject({
       fresh: true,
       material: "m1",
     });
-    expect(fixed.shots[1]?.reused).toBeUndefined();
+    expect(fixed.shots[MOVING]?.reused).toBeUndefined();
   });
 
-  it("a clip made again is made by the provider, never replayed from the store again", () => {
-    const fixed = applyFix(fromStore(), [{ op: "redo_shot", shot: 1 }], LATER);
-    expect(fixed.shots[1]).toMatchObject({ state: "queued", reused: undefined });
-    expect(fixed.frames.find((f) => f.id === "wide")).toMatchObject({
+  it("a clip made again is made by the video model, never replayed from the store again", () => {
+    const fixed = applyFix(fromStore(), [{ op: "redo_shot", shot: MOVING }], LATER);
+    expect(fixed.shots[MOVING]).toMatchObject({ state: "queued", reused: undefined });
+    expect(fixed.frames.find((f) => f.id === "kf:master")).toMatchObject({
       fresh: true,
-      file: "wide.png",
+      file: "kf:master.png",
     });
   });
 });
 
-describe("showing something else during a line", () => {
+describe("showing something else during a line, before anything speaks", () => {
+  const paused = (): VideoJob =>
+    settle({ ...withStills(plannedJob()), status: "running", pause: true });
   const parts = [
-    shot("detail", 2, "Ơ… ông ơi, trà tràn ra bàn rồi kìa!", { visual: "tea spills" }),
-    shot("speaker", 2, "Ông rót gì mà rót mãi vậy?", { framing: "close" }),
+    shot("detail", 1, "Ừ cháu ngồi đây,", { visual: "Ba pats the cushion" }),
+    shot("speaker", 1, "uống chén trà đã cháu."),
   ];
 
-  it("replaces that line's shots, keeps the others and their stills", () => {
-    const job = done();
-    const fixed = applyFix(job, [{ op: "replace_line", line: 2, shots: parts }], LATER);
-    expect(fixed.shots.map((s) => [s.index, s.kind, s.state])).toEqual([
-      [0, "speaker", "done"],
-      [1, "wide", "done"],
-      [2, "detail", "planned"],
-      [3, "speaker", "planned"],
-      [4, "detail", "done"],
+  it("replaces that line's shots and keeps the others and their stills", () => {
+    const job = paused();
+    expect(job.status).toBe("review");
+    const fixed = applyFix(job, [{ op: "replace_line", line: 1, shots: parts }], LATER);
+    expect(fixed.shots.map((s) => [s.index, s.kind])).toEqual([
+      [0, "speaker"],
+      [1, "detail"],
+      [2, "speaker"],
+      [3, "detail"],
+      [4, "speaker"],
     ]);
-    expect(frameFor(fixed, fixed.shots[4] as never)).toMatchObject({
-      id: "product:4",
-      shot: 4,
-      file: "product:3.png",
-    });
-    expect(fixed.frames.find((f) => f.id === "detail:2")?.file).toBeUndefined();
+    expect(frameFor(fixed, fixed.shots[0] as never)?.file).toBe("kf:an.png");
+    expect(fixed.segments?.map((s) => s.shots)).toEqual([[0], [1, 2], [3, 4]]);
     expect(fixed.plan?.shots).toHaveLength(5);
-    expect(fixed.plan?.stateChanges).toEqual([{ fromShot: 4, change: "tea on the table" }]);
-    expect(jobPhase(fixed)).toBe("voice");
-    expect(fixed.dialogue).toBe("dialogue.mp3");
-    expect(spentUsd(fixed)).toBeCloseTo(spentUsd(job));
   });
 
-  it("an identical shot in the line is reused", () => {
-    const same = [shot("speaker", 0, LINES[0]?.text ?? "")];
-    const fixed = applyFix(done(), [{ op: "replace_line", line: 0, shots: same }], LATER);
-    expect(fixed.shots[0]).toMatchObject({ state: "done", clip: "shot-0.mp4" });
-  });
-
-  it("a hold after a line: that shot is made again and every shot is placed again, free", () => {
-    const job = done();
-    const held = [shot("speaker", 2, LINES[2]?.text ?? "", { hold: 1.5 })];
-    const fixed = applyFix(job, [{ op: "replace_line", line: 2, shots: held }], LATER);
-    expect(fixed.shots[2]).toMatchObject({ hold: 1.5, state: "planned", clip: undefined });
-    expect(fixed.shots[3]).toMatchObject({ state: "done", clip: "shot-3.mp4" });
+  it("a hold after a line places every shot again, and is limited", () => {
+    const job = paused();
+    const held = [shot("speaker", 0, LINES[0]?.text ?? "", { hold: 1.5 })];
+    const fixed = applyFix(job, [{ op: "replace_line", line: 0, shots: held }], LATER);
+    expect(fixed.shots[0]).toMatchObject({ hold: 1.5 });
     expect(fixed.shots.every((s) => s.end === undefined)).toBe(true);
-    expect(jobPhase(fixed)).toBe("voice");
-    expect(fixed.plan?.shots[2]?.hold).toBe(1.5);
-    expect(fixPriceUsd(job, [{ op: "replace_line", line: 2, shots: held }], LATER)).toBeGreaterThan(
-      1.5 * VIDEO_USD_PER_SEC,
-    );
+    expect(fixed.plan?.shots[0]?.hold).toBe(1.5);
     expect(() =>
       applyFix(
         job,
-        [{ op: "replace_line", line: 2, shots: [{ ...(held[0] as PlannedShot), hold: 5 }] }],
+        [{ op: "replace_line", line: 0, shots: [{ ...(held[0] as PlannedShot), hold: 5 }] }],
         LATER,
       ),
     ).toThrow("1 to 2 seconds");
@@ -293,105 +208,83 @@ describe("showing something else during a line", () => {
 
   it("refuses plans that change or badly split the words", () => {
     const fix = (shots: PlannedShot[]) => () =>
-      applyFix(done(), [{ op: "replace_line", line: 2, shots }], LATER);
-    expect(fix([shot("speaker", 2, "Ơ… ông ơi!")])).toThrow("reproduce the line exactly");
+      applyFix(paused(), [{ op: "replace_line", line: 1, shots }], LATER);
+    expect(fix([shot("speaker", 1, "Ừ cháu ngồi đây.")])).toThrow("reproduce the line exactly");
     expect(
-      fix([
-        shot("speaker", 2, "Ơ… ông ơi, trà tràn ra bàn"),
-        shot("speaker", 2, "rồi kìa! Ông rót gì mà rót mãi vậy?"),
-      ]),
+      fix([shot("speaker", 1, "Ừ cháu ngồi đây, uống"), shot("speaker", 1, "chén trà đã cháu.")]),
     ).toThrow("punctuation");
-    expect(fix([shot("speaker", 2, LINES[2]?.text ?? "", { characterId: "b" })])).toThrow(
+    expect(fix([shot("speaker", 1, LINES[1]?.text ?? "", { characterId: "a" })])).toThrow(
       "person saying the line",
     );
-  });
-});
-
-describe("the most expensive fix", () => {
-  it("a new voice remakes every shot but keeps the stills", () => {
-    const job = done();
-    const fixed = applyFix(job, [{ op: "redo_voice" }], LATER);
-    expect(jobPhase(fixed)).toBe("voice");
-    expect(fixed.dialogue).toBeUndefined();
-    expect(fixed.shots.every((s) => s.state === "planned" && s.start === undefined)).toBe(true);
-    expect(fixed.frames.every((f) => f.file)).toBe(true);
-    expect(spentUsd(fixed)).toBeCloseTo(spentUsd(job));
   });
 });
 
 describe("the previous cut", () => {
   it("comes back for free, and the newer one after it", () => {
     const job = done();
-    const fixing = applyFix(job, [{ op: "redo_shot", shot: 0 }], LATER);
+    const fixing = applyFix(job, [{ op: "redo_shot", shot: MOVING }], LATER);
     expect(canRestore(fixing)).toBe(false);
     const fixed: VideoJob = withInUsePaid({
       ...fixing,
       status: "done",
       final: "final-r1.mp4",
       shots: fixing.shots.map((s) =>
-        s.index === 0
+        s.index === MOVING
           ? {
               ...s,
               state: "done",
-              clip: "shot-01-r1.mp4",
-              requestId: "r0-fix",
-              costUsd: 3 * VIDEO_USD_PER_SEC,
+              clip: "shot-02-r1.mp4",
+              requestId: "r1-fix",
+              costUsd: WAN_ONE_SECOND,
             }
           : s,
       ),
     });
     const spent = spentUsd(fixed);
-    expect(spent).toBeCloseTo(spentUsd(job) + 3 * VIDEO_USD_PER_SEC);
-    expect(redoneCharges(fixed).map((c) => c.requestId)).toEqual(["r0"]);
+    expect(spent).toBeCloseTo(spentUsd(job) + WAN_ONE_SECOND);
+    expect(redoneCharges(fixed).map((c) => c.requestId)).toEqual(["r1"]);
     const back = restorePrevious(fixed, LATER);
-    expect([back.final, back.shots[0]?.clip, back.status]).toEqual([
+    expect([back.final, back.shots[MOVING]?.clip, back.status]).toEqual([
       "final.mp4",
-      "shot-0.mp4",
+      "shot-1.mp4",
       "done",
     ]);
     expect(spentUsd(back)).toBeCloseTo(spent);
-    expect(redoneCharges(back).map((c) => c.requestId)).toEqual(["r0-fix"]);
+    expect(redoneCharges(back).map((c) => c.requestId)).toEqual(["r1-fix"]);
     const again = restorePrevious(back, LATER);
-    expect([again.final, again.shots[0]?.clip]).toEqual(["final-r1.mp4", "shot-01-r1.mp4"]);
+    expect([again.final, again.shots[MOVING]?.clip]).toEqual(["final-r1.mp4", "shot-02-r1.mp4"]);
     expect(spentUsd(again)).toBeCloseTo(spent);
-    expect(applyFix(back, [{ op: "redo_shot", shot: 0 }], LATER).rev).toBe(2);
+    expect(applyFix(back, [{ op: "redo_shot", shot: MOVING }], LATER).rev).toBe(2);
   });
 
   it("a stopped fix can be abandoned for the cut before it", () => {
     const stopped: VideoJob = {
-      ...applyFix(done(), [{ op: "redo_shot", shot: 0 }], LATER),
+      ...applyFix(done(), [{ op: "redo_shot", shot: MOVING }], LATER),
       status: "stopped",
     };
     expect(restorePrevious(stopped, LATER)).toMatchObject({ status: "done", final: "final.mp4" });
   });
 
-  it("is not offered while a shot is still with the provider", () => {
-    const fixing = applyFix(done(), [{ op: "redo_shot", shot: 0 }], LATER);
+  it("is not offered while a shot is still with the provider, nor for a video made the old way", () => {
+    const fixing = applyFix(done(), [{ op: "redo_shot", shot: MOVING }], LATER);
     const rendering: VideoJob = {
       ...fixing,
       status: "stopped",
       shots: fixing.shots.map((s) =>
-        s.index === 0 ? { ...s, state: "rendering", requestId: "r" } : s,
+        s.index === MOVING ? { ...s, state: "rendering", requestId: "r" } : s,
       ),
     };
     expect(canRestore(rendering)).toBe(false);
     expect(() => restorePrevious(rendering, LATER)).toThrow(FixError);
+    expect(canRestore({ ...fixing, status: "stopped", dubbed: true })).toBe(false);
   });
 });
 
 describe("the test video's pause", () => {
-  const paused = (): VideoJob => {
-    const job = done();
-    return settle({
-      ...job,
-      status: "running",
-      pause: true,
-      final: undefined,
-      shots: job.shots.map((s) => ({ ...s, state: "queued", clip: undefined, costUsd: undefined })),
-    });
-  };
+  const paused = (): VideoJob =>
+    settle({ ...withStills(plannedJob()), status: "running", pause: true });
 
-  it("waits once voice and stills exist, before any shot is sent", () => {
+  it("waits once the stills exist, before anything speaks", () => {
     const job = paused();
     expect(job.status).toBe("review");
     expect(nextActions(job, new Set())).toEqual([]);
@@ -403,7 +296,7 @@ describe("the test video's pause", () => {
   it("a still fixed at the pause costs only the still, and pauses again", () => {
     const job = paused();
     expect(canFix(job)).toBe(true);
-    const change = { op: "redo_still" as const, frame: "character:a", note: "look right" };
+    const change = { op: "redo_still" as const, frame: "kf:an", note: "look right" };
     expect(fixPriceUsd(job, [change], LATER)).toBeCloseTo(FRAME_USD);
     const fixed = applyFix(job, [change], LATER);
     expect(fixed.previous).toBeUndefined();

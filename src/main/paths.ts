@@ -10,6 +10,8 @@ export function dataDir(): string {
 
 export const dataFile = (name: string) => join(dataDir(), name);
 
+export const voicesDir = () => join(dataDir(), "voices");
+
 export const mediaDir = (seriesId: string, sessionId?: string) =>
   sessionId
     ? childPath(join(dataDir(), "media"), seriesId, sessionId)

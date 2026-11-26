@@ -131,4 +131,10 @@ describe("products for new topics", () => {
       undefined,
     ]);
   });
+
+  it("gives no product in a series that names none, unless the request or topic names one", () => {
+    const none = { ...base, withoutProducts: true, savedMix: [{ productId: "a", share: 100 }] };
+    expect(newTopicProducts({ ...none, named: [undefined, "b"] })).toEqual([null, "b"]);
+    expect(newTopicProducts({ ...none, named: [undefined], mentioned: ["c"] })).toEqual(["c"]);
+  });
 });

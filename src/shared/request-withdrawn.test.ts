@@ -1,57 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { ScriptLine } from "./ipc";
+import { placed, plannedJob, running, spoken, withStills } from "./job.fixture";
 import { sentRequests } from "./paid-work";
-import { rulesPlan } from "./shot-plan";
 import { type JobSound, soundToSend } from "./sound";
 import type { JobSegment } from "./speech";
-import {
-  applyPlan,
-  newJob,
-  nextActions,
-  requestWithdrawn,
-  resumeJob,
-  stopJob,
-  type VideoJob,
-  withShotAudio,
-} from "./video-job";
+import { nextActions, requestWithdrawn, resumeJob, stopJob, type VideoJob } from "./video-job";
 
 const NOW = "2026-11-21T10:00:00.000Z";
 const LATER = "2026-11-21T10:05:00.000Z";
 
-const line = (characterId: string, text: string): ScriptLine => ({
-  characterId,
-  speaker: characterId,
-  text,
-});
-const LINES = [line("a", "Con chào ông ạ"), line("b", "Ừ, ngồi xuống uống chén trà đã")];
-
-function inShots(): VideoJob {
-  const planned = applyPlan(
-    newJob({
-      sessionId: "s",
-      seriesId: "x",
-      scriptId: "1",
-      title: "T",
-      lines: LINES,
-      useEnvironment: true,
-      now: NOW,
-    }),
-    rulesPlan({
-      lines: LINES,
-      cast: [
-        { id: "a", name: "A" },
-        { id: "b", name: "B" },
-      ],
-      products: [],
-      hasPlace: true,
-    }),
-  );
-  const voiced = withShotAudio(
-    { ...planned, status: "running", reviewed: true, dialogue: "dialogue.mp3" },
-    LINES.map((_, i) => ({ start: i * 3, end: i * 3 + 3, audio: `line-${i}.mp3`, audioSec: 3 })),
-  );
-  return { ...voiced, frames: voiced.frames.map((f) => ({ ...f, file: `${f.id}.png` })) };
-}
+const inShots = (): VideoJob => running(placed(spoken(withStills(plannedJob()))));
 
 const clipOut = (job: VideoJob): VideoJob => ({
   ...job,
@@ -125,12 +82,12 @@ describe("a request the provider withdrew", () => {
         i === 0 ? { ...f, file: undefined, requestId: "f1", retried: true } : f,
       ),
     };
-    const withdrawn = requestWithdrawn(stopJob(stillOut, LATER), { frame: "wide" }, "f1");
+    const withdrawn = requestWithdrawn(stopJob(stillOut, LATER), { frame: "kf:master" }, "f1");
     expect(withdrawn.frames[0]?.retried).toBe(true);
     expect(nextActions(withdrawn, new Set())).toEqual([]);
     expect(nextActions(continued(withdrawn), new Set())).toContainEqual({
       kind: "frame",
-      frame: "wide",
+      frame: "kf:master",
     });
   });
 
@@ -171,7 +128,7 @@ describe("a request the provider withdrew", () => {
       retried: true,
       failures: 1,
     };
-    const job: VideoJob = { ...inShots(), voiceMode: "native", segments: [segment] };
+    const job: VideoJob = { ...inShots(), segments: [segment] };
     const withdrawn = requestWithdrawn(stopJob(job, LATER), { segment: "line-1-a" }, "g1");
     const after = withdrawn.segments?.[0];
     expect(after?.state).toBe("stopped");

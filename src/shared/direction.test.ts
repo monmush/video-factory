@@ -7,6 +7,7 @@ import {
   MAX_DIRECTIONS,
   setDirection,
 } from "./direction";
+import { AUTO_MODELS } from "./models";
 import { readShotList, rulesShotList } from "./shot-list";
 import { answer, CTX, LINES } from "./shot-list.fixture";
 import { BRIEF_MAX, cleanBrief, rulesPlan } from "./shot-plan";
@@ -46,6 +47,7 @@ describe("briefs", () => {
       title: "t",
       lines: LINES,
       useEnvironment: true,
+      models: AUTO_MODELS,
       now: T,
     });
     expect(applyPlan(job, list.shots).shots[2]?.brief).toBe("An mỉm cười");

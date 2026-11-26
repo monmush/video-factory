@@ -34,6 +34,7 @@ export function applyUndo(b: Board, messageId: string, locked: ReadonlySet<strin
       lines: before.lines,
       productIds: before.productIds,
       staging: before.staging,
+      brief: before.brief,
       deletedAt: before.deletedAt,
       mark: null,
       updatedAt: now(),

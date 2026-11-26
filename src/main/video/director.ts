@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MAX_HOLDS_SEC, SPEECH_RATE } from "../../shared/board";
+import { MAX_HOLDS_SEC } from "../../shared/board";
 import { buildDirection } from "../../shared/build-direction";
 import { directionSlot } from "../../shared/direction";
 import type { Asset } from "../../shared/ipc";
@@ -11,10 +11,10 @@ import {
   type ToolRecord,
 } from "../../shared/live-plan";
 import { type MaterialOffer, withMaterialKeys } from "../../shared/material-offer";
-import { type MediaLevel, mediaLevel } from "../../shared/media-level";
 import { DIRECTOR_AREAS, notesBlock } from "../../shared/notes";
-import { builtinRecipe, type Recipe, readRecipe } from "../../shared/recipe";
+import { builtinRecipe } from "../../shared/recipe";
 import { restagePlan } from "../../shared/restage";
+import { directionText } from "../../shared/series-guide";
 import { NO_PLACE } from "../../shared/series-place";
 import {
   readShotList,
@@ -30,7 +30,7 @@ import {
   type ShotPlan,
   seatsFor,
 } from "../../shared/shot-plan";
-import type { VideoJob } from "../../shared/video-job";
+import { jobPace, modelsOf, type VideoJob } from "../../shared/video-job";
 import { getBoard } from "../board";
 import { providerMode } from "../providers";
 import { getWorkspace } from "../store";
@@ -72,23 +72,6 @@ async function fixtureShotList(
   }
 }
 
-async function loadRecipe(level: MediaLevel): Promise<Recipe> {
-  const file = process.env.HYAN_RECIPE;
-  if (file) {
-    try {
-      const recipe = readRecipe(JSON.parse(await readFile(file, "utf8")));
-      if (recipe) return recipe;
-      console.warn("[video] HYAN_RECIPE is not a recipe or a live plan; using the built-in one.");
-    } catch (error) {
-      console.warn(
-        "[video] HYAN_RECIPE unreadable; using the built-in one:",
-        (error as Error).message,
-      );
-    }
-  }
-  return builtinRecipe(level);
-}
-
 export interface Direction {
   plan: ShotPlan;
   live?: LiveDirection;
@@ -117,11 +100,16 @@ async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
     }
     return {
       plan: plan.shots,
-      live: liveDirection(plan, record, ctx.lines, {
-        connection: "signed-in",
-        model: null,
-        ms: 0,
-      }),
+      live: liveDirection(
+        plan,
+        record,
+        {
+          connection: "signed-in",
+          model: null,
+          ms: 0,
+        },
+        ctx.pace,
+      ),
     };
   } catch (error) {
     console.warn("[video] fixture live plan:", (error as Error).message);
@@ -129,11 +117,11 @@ async function fixtureLive(ctx: LiveContext): Promise<Direction | null> {
   }
 }
 
-function restageOf(job: VideoJob, ctx: PlanContext, caps: ShotListCaps, level: MediaLevel) {
+const CAPS: ShotListCaps = { motion: true, sound: true };
+
+function restageOf(job: VideoJob, ctx: PlanContext, caps: ShotListCaps) {
   const basis = job.restageFrom;
   if (!basis) return null;
-  const was = mediaLevel(basis.level);
-  if (was.motion !== level.motion || was.sound !== level.sound) return null;
   const restage = restagePlan(basis, job.lines, ctx, caps);
   if (restage.kind === "full") {
     console.log(`[video] staging again in full (${restage.why})`);
@@ -174,15 +162,14 @@ export async function directJob(
   };
 
   if (!ctx.hasPlace || !place) throw new Error(NO_PLACE);
-  const level = mediaLevel(job.level);
-  const liveCtx: LiveContext = { ...ctx, refs: liveRefs(place, cast), level };
+  const pace = jobPace(job);
+  const liveCtx: LiveContext = { ...ctx, refs: liveRefs(place, cast), pace };
   if (providerMode() === "fixture") {
     const replay = await fixtureLive(liveCtx);
     if (replay) return replay;
   }
 
-  const recipe = await loadRecipe(level);
-  const caps: ShotListCaps = { motion: Boolean(recipe.motion), sound: level.sound };
+  const recipe = builtinRecipe(modelsOf(job));
   const save = (name: string, text: string) =>
     writeFile(join(dir, name), text, "utf8").catch(() => undefined);
   const offer = material?.offer ?? null;
@@ -196,15 +183,14 @@ export async function directJob(
       live: buildDirection({
         list,
         recipe,
-        lines: job.lines,
-        level,
         cast: cast.map((c) => ({ id: c.id, name: c.name, photos: c.images.length })),
         placePhotos: place.images.length,
+        pace,
         ...(run ? { run } : {}),
       }),
     };
   };
-  if (textAiMode() === "fixture") return build(await fixtureShotList(ctx, caps, offer));
+  if (textAiMode() === "fixture") return build(await fixtureShotList(ctx, CAPS, offer));
 
   const names = new Map(cast.map((c) => [c.id, c.name]));
   const seats = seatsFor(castIds)
@@ -214,12 +200,12 @@ export async function directJob(
     )
     .join("\n");
   const base = fill({
-    speech_rate: String(SPEECH_RATE),
+    speech_rate: pace.toFixed(1),
     max_holds: String(MAX_HOLDS_SEC),
     place: describe(place),
     cast: cast.map((c) => `- ${describe(c)}`).join("\n"),
     products: products.map((p) => `- ${describe(p)}`).join("\n") || "none",
-    series_direction: series?.guidance.trim() || "none",
+    series_direction: (series && directionText(series)) || "none",
     notes: notesBlock(ws.notes, series?.notes, DIRECTOR_AREAS) || "none",
     seats,
     staging_note: script?.staging?.trim() || "none",
@@ -229,15 +215,12 @@ export async function directJob(
   });
 
   const prompt = shotListPrompt(base, {
-    level,
-    motion: caps.motion,
-    sound: level.sound,
     direction: directionSlot(job.direction),
     reuse: Boolean(material),
     material: { offer, names },
   });
   await save("shot-list-prompt.md", prompt);
-  const partial = restageOf(job, ctx, caps, level);
+  const partial = restageOf(job, ctx, CAPS);
   const staged = await stageShotList({
     prompt,
     ask: (request, onText) =>
@@ -251,7 +234,7 @@ export async function directJob(
         ...(signal ? { signal } : {}),
       }),
     parse: (text) => parseJsonObject<unknown>(text),
-    read: (answer) => readShotList(answer, ctx, caps, offer),
+    read: (answer) => readShotList(answer, ctx, CAPS, offer),
     save,
     ...(onSteps ? { onSteps } : {}),
     ...(partial ? { partial } : {}),

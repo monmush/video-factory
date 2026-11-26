@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SOUND_EFFECT_USD_PER_SEC, STILL_USD } from "./cost/rates";
-import type { ScriptLine } from "./ipc";
+import { placed, plannedJob, spoken, withStills } from "./job.fixture";
 import {
   deleteWarning,
   paidWork,
@@ -9,51 +9,19 @@ import {
   videosBeingMade,
   windowCloseConfirmation,
 } from "./paid-work";
-import { rulesPlan } from "./shot-plan";
 import type { JobSound } from "./sound";
 import type { JobSegment } from "./speech";
-import { speechModel, speechUsd } from "./speech-models";
-import { applyPlan, newJob, type VideoJob, withShotAudio } from "./video-job";
-import { modelOutput, videoModel } from "./video-models";
+import type { VideoJob } from "./video-job";
+import { motionUsd, speechUsd, videoModel } from "./video-models";
 
-const VIDEO_USD_PER_SEC = modelOutput(videoModel()).usdPerSec;
-const NOW = "2026-11-21T10:00:00.000Z";
-
-const line = (characterId: string, text: string): ScriptLine => ({
-  characterId,
-  speaker: characterId,
-  text,
-});
-const LINES = [line("a", "Con chào ông ạ"), line("b", "Ừ, ngồi xuống uống chén trà đã")];
+const MOVING_USD = motionUsd(videoModel("wan-3"), 1);
+const MOVING = 1;
 
 function made(sessionId: string, patch: Partial<VideoJob> = {}): VideoJob {
-  const planned = applyPlan(
-    newJob({
-      sessionId,
-      seriesId: "x",
-      scriptId: `${sessionId}-1`,
-      title: "T",
-      lines: LINES,
-      useEnvironment: true,
-      now: NOW,
-    }),
-    rulesPlan({
-      lines: LINES,
-      cast: [
-        { id: "a", name: "A" },
-        { id: "b", name: "B" },
-      ],
-      products: [],
-      hasPlace: true,
-    }),
-  );
-  const voiced = withShotAudio(
-    { ...planned, dialogue: "dialogue.mp3" },
-    LINES.map((_, i) => ({ start: i * 3, end: i * 3 + 3, audio: `line-${i}.mp3`, audioSec: 3 })),
-  );
   return {
-    ...voiced,
-    frames: voiced.frames.map((f) => ({ ...f, file: `${f.id}.png` })),
+    ...placed(spoken(withStills(plannedJob()))),
+    sessionId,
+    scriptId: `${sessionId}-1`,
     ...patch,
   };
 }
@@ -91,11 +59,11 @@ const segment = (patch: Partial<JobSegment> = {}): JobSegment => ({
   ...patch,
 });
 
-function dubbedRunning(): VideoJob {
+function shotsRunning(): VideoJob {
   const job = made("s1", { status: "running" });
   return {
     ...job,
-    shots: rendering(job, 1),
+    shots: rendering(job, MOVING),
     frames: job.frames.map((f, i) => (i === 0 ? { ...f, file: undefined, requestId: "f1" } : f)),
     sounds: [sound("n1")],
   };
@@ -103,47 +71,47 @@ function dubbedRunning(): VideoJob {
 
 function stoppedWithClipOut(): VideoJob {
   const job = made("s1", { status: "stopped" });
-  return { ...job, scriptId: "s1-2", shots: rendering(job, 0) };
+  return { ...job, scriptId: "s1-2", shots: rendering(job, MOVING) };
 }
 
-function nativeWaiting(): VideoJob {
-  return { ...made("s2", { status: "waiting", voiceMode: "native" }), segments: [segment()] };
+function speechWaiting(): VideoJob {
+  return { ...made("s2", { status: "waiting" }), segments: [segment()] };
 }
 
 describe("paid work in progress", () => {
   it("counts videos being made and every request still out, with its calculated cost", () => {
     const idle = made("s3", { status: "idle" });
-    const work = paidWork([dubbedRunning(), stoppedWithClipOut(), nativeWaiting(), idle]);
+    const work = paidWork([shotsRunning(), stoppedWithClipOut(), speechWaiting(), idle]);
     expect(work.videos).toBe(2);
     expect(work.requests).toBe(5);
     expect(work.usd).toBeCloseTo(
-      3 * VIDEO_USD_PER_SEC +
+      MOVING_USD +
         STILL_USD +
         2 * SOUND_EFFECT_USD_PER_SEC +
-        3 * VIDEO_USD_PER_SEC +
-        speechUsd(speechModel("wan-3"), 4),
+        MOVING_USD +
+        speechUsd(videoModel("wan-3"), 4),
     );
   });
 
   it("a result already received is no longer out", () => {
-    const job = dubbedRunning();
+    const job = shotsRunning();
     const received = {
       ...job,
-      shots: rendering(job, 1, { resultUrl: "https://result" }),
+      shots: rendering(job, MOVING, { resultUrl: "https://result" }),
       frames: job.frames.map((f) => ({ ...f, file: `${f.id}.png` })),
       sounds: [{ ...sound("n1"), resultUrl: "https://sound" }],
     };
     expect(paidWork([received])).toEqual({ videos: 1, requests: 0, usd: 0 });
-    const spoken = { ...nativeWaiting(), segments: [segment({ resultUrl: "https://clip" })] };
+    const spoken = { ...speechWaiting(), segments: [segment({ resultUrl: "https://clip" })] };
     expect(paidWork([spoken])).toEqual({ videos: 1, requests: 0, usd: 0 });
   });
 
   it("lists, per session, only the videos being made", () => {
     expect(
       videosBeingMade([
-        dubbedRunning(),
+        shotsRunning(),
         stoppedWithClipOut(),
-        nativeWaiting(),
+        speechWaiting(),
         made("s3", { status: "idle" }),
       ]),
     ).toEqual({ s1: 1, s2: 1 });

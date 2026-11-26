@@ -11,14 +11,14 @@ These documents are the lasting product reference and are tracked in git. Privat
 | Document | Owns | Status |
 | --- | --- | --- |
 | [Stack and skills](TECH_STACK_AND_SKILLS.md) | Stack, MVP architecture, data folder, bring-your-own-AI rules, code rules, project skills | Agreed |
-| [Series setup and workspace](SERIES_SETUP_DECISIONS.md) | Series as a saved record, library references, clean place photos, series page, the shell (rail, sidebar, steps, appearance) | Built; place photo check fixture only |
+| [Series setup and workspace](SERIES_SETUP_DECISIONS.md) | Series as a saved record, the direction drafted from a rough description, library references, clean place photos, series page, the shell (rail, sidebar, steps, appearance) | Built; direction tried with real AI on scripts only; place photo check fixture only |
 | [Script board](SCRIPT_BOARD_DECISIONS.md) | From a series request to approved scripts: cards, references, variants, session chat agent, Dàn dựng, product per video | Built; fixture mode for the newest parts |
-| [Scripts to videos](VIDEO_COMMIT_DECISIONS.md) | Ready check, all-in price, Quality levels, "one video first", moving between Kịch bản and Video, batch button | Built; changing Quality after scripts exist is an open design problem |
-| [Video generation](VIDEO_GENERATION_DECISIONS.md) | Recipe, shot list and build, pipeline, speaking-shot models, subtitles, stop and resume, never pay twice | Built; two videos finished live, the rest fixture mode |
+| [Scripts to videos](VIDEO_COMMIT_DECISIONS.md) | Ready check, all-in price, the series' models ("Mô hình"), "one video first", moving between Kịch bản and Video, batch button | Built |
+| [Video generation](VIDEO_GENERATION_DECISIONS.md) | Recipe, shot list and build, pipeline (the video model speaks), video models, subtitles, stop and resume, never pay twice | Built; two videos finished live, the rest fixture mode |
 | [Directing rules](DIRECTING_RULES.md) | Rules that turn a script into a shot plan, prompt building, still checks, product shots, failure table, flexible direction | Built; the 19 November changes not yet seen live |
-| [Reviewing and fixing videos](VIDEO_REVIEW_DECISIONS.md) | Fixes in place, the pause, series look, learned preferences ("Ghi nhớ"), another quality level for a finished video | Built, fixture mode only |
+| [Reviewing and fixing videos](VIDEO_REVIEW_DECISIONS.md) | Fixes in place, the pause, series look, learned preferences ("Ghi nhớ"), videos made the old way | Built, fixture mode only |
 | [Series material](SERIES_MATERIAL_DECISIONS.md) | What a series keeps from its videos ("Tư liệu"), the shared scene, when a later video reuses a picture or a moving clip, the operator's controls | Built 25 November; fixture mode and one real staging |
-| [Voices](VOICE_DECISIONS.md) | Character voice catalogue, suggestion rules, shared acoustics, open items | Built; shared room sound not built |
+| [Voices](VOICE_DECISIONS.md) | A character's voice as text, default and suggestions, the voice sample by content, the voices step, unverified points | Built 25 Nov; fixture mode only |
 | [Design lessons](DESIGN_LESSONS.md) | What repeated feedback teaches: no dead ends, primary colour, prices, holds | Current rules |
 
 ## Reading rules
@@ -26,7 +26,7 @@ These documents are the lasting product reference and are tracked in git. Privat
 - **Agreed requirement:** explicit owner direction. **Tested result:** an actual artifact and a recorded judgment; one good sample does not establish reliability.
 - **Estimate:** not a final charge; unknown cost is not zero. Prices and limits of AI models are snapshots (video models 13 November, motion and cut-out 16 November); recheck them before new paid work.
 - More recent explicit feedback takes precedence. Update the owning document instead of appending conflicting instructions across files.
-- Production retry concepts do not authorize paid experimental retries. Never make a paid fal or ElevenLabs call without the owner's approval of model, scope and estimate.
+- Production retry concepts do not authorize paid experimental retries. Never make a paid fal call (ElevenLabs is reached only through fal) without the owner's approval of model, scope and estimate.
 
 ## Local only (not published)
 

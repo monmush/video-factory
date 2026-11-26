@@ -9,6 +9,7 @@ import {
   shortestClipFrom,
   usablePicture,
 } from "./material";
+import { OUTPUT_RESOLUTION } from "./output-size";
 import type { Picture, ShotList } from "./shot-list";
 import type { PlanSeat } from "./shot-plan";
 import { frameIdFor, type JobFrame, type JobShot, liveSeconds, type VideoJob } from "./video-job";
@@ -334,9 +335,9 @@ function shotAvailability(
   const clip = picture
     ? shortestClipFrom(store.items, store.assets, {
         pictureId: picture.id,
-        seconds: liveSeconds(shot),
+        seconds: liveSeconds(job, shot),
         motion: plannedMotion(job, shot),
-        resolution: job.resolution,
+        resolution: OUTPUT_RESOLUTION,
       })
     : undefined;
   const found = clip ? { id: clip.id, file: clip.file, seconds: clip.seconds ?? 0 } : undefined;

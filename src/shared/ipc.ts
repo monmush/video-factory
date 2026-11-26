@@ -1,7 +1,9 @@
 import type { MaterialItem } from "./material";
+import type { SeriesModels } from "./models";
 import type { Note } from "./notes";
 import type { PaidWork } from "./paid-work";
 import type { ProductMix } from "./product-mix";
+import type { GuideEdit, SeriesGuide } from "./series-guide";
 import type { ExportPick } from "./video-export";
 import type { FixChange } from "./video-fix";
 import type { StepAverages, VideoJob } from "./video-job";
@@ -12,12 +14,11 @@ export interface Series {
   id: string;
   name: string;
   guidance: string;
+  guide?: SeriesGuide;
   characterIds: string[];
   productIds: string[];
   environmentIds: string[];
-  videoModel?: string;
-  resolution?: string;
-  mediaLevel?: string;
+  models?: SeriesModels;
   reuseMaterial?: boolean;
   pinnedAt?: string;
   notes?: Note[];
@@ -26,10 +27,6 @@ export interface Series {
 }
 
 export interface SessionSettings {
-  videoModel?: string;
-  resolution?: string;
-  mediaLevel?: string;
-  videoLevels?: Record<string, string>;
   productMix?: ProductMix;
 }
 
@@ -120,7 +117,6 @@ export type ChatPart =
       priceUsd: number;
       shots: number;
       stills: number;
-      voice: boolean;
       rev: number;
       applied?: boolean;
     };
@@ -253,7 +249,7 @@ export interface Asset {
   description: string;
   images: AssetImage[];
   contains?: string[];
-  voiceId?: string;
+  voice?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -264,11 +260,15 @@ export interface SeriesInput {
   characterIds: string[];
   productIds: string[];
   environmentIds: string[];
-  videoModel?: string;
-  resolution?: string;
-  mediaLevel?: string;
+  models?: SeriesModels;
   reuseMaterial?: boolean;
 }
+
+export type SeriesUpdate = {
+  id: string;
+  pinned?: boolean;
+  guide?: GuideEdit;
+} & Partial<SeriesInput>;
 
 export interface Workspace {
   version: 1;
@@ -307,7 +307,12 @@ export interface AssetInput {
   description: string;
   images: ImageRef[];
   contains?: string[];
-  voiceId?: string;
+  voice?: string;
+}
+
+export interface VoiceSuggestion {
+  label: string;
+  text: string;
 }
 
 export interface GroupedProduct {
@@ -380,9 +385,14 @@ export type BalanceResult<T> =
 
 export interface Balances {
   fal: BalanceResult<{ balance: number; currency: string }>;
-  elevenlabs: BalanceResult<{ used: number; limit: number; resetsAt: string | null; plan: string }>;
   claude: ClaudeLimits | null;
   checkedAt: string;
+}
+
+export interface VoiceSampleAsk {
+  text: string;
+  name: string;
+  description: string;
 }
 
 export const mediaUrl = {
@@ -390,6 +400,7 @@ export const mediaUrl = {
   chat: (sessionId: string, file: string) => `hyan-media://chat/${sessionId}/${file}`,
   staged: (file: string) => `hyan-media://staging/${file}`,
   material: (seriesId: string, file: string) => `hyan-media://material/${seriesId}/${file}`,
+  voice: (file: string, version: number) => `hyan-media://voice/${file}?v=${version}`,
   video: (sessionId: string, scriptId: string, file: string) =>
     `hyan-media://video/${sessionId}/${scriptId}/${file}`,
 };
@@ -399,7 +410,7 @@ export interface VideoJobs {
   averages: StepAverages;
 }
 
-export type ProviderId = "fal" | "fal-billing" | "elevenlabs";
+export type ProviderId = "fal" | "fal-billing";
 
 export interface ProviderStatus {
   id: ProviderId;
@@ -445,20 +456,23 @@ export interface IpcContract {
   "dev:create-profile": { args: [name: string]; result: DevProfiles | null };
   "dev:switch-profile": { args: [id: string]; result: null };
   "dev:delete-profile": { args: [id: string]; result: DevProfiles | null };
-  "dev:native-voice": { args: []; result: boolean | null };
-  "dev:set-native-voice": { args: [on: boolean]; result: boolean | null };
   "theme:set": { args: [preference: ThemePreference]; result: null };
   "workspace:get": { args: []; result: Workspace };
   "series:create": { args: [input: SeriesInput]; result: Series };
   "series:update": {
-    args: [input: { id: string; pinned?: boolean } & Partial<SeriesInput>];
+    args: [input: SeriesUpdate];
     result: Series;
   };
+  "series:answer-guide": {
+    args: [input: { id: string; questionId: string; option: number | null }];
+    result: Series;
+  };
+  "series:draft-guide": { args: [id: string]; result: Series };
   "series:delete": { args: [id: string]; result: null };
   "notes:update": { args: [input: { id: string; text: string }]; result: null };
   "notes:remove": { args: [id: string]; result: null };
   "session:create": {
-    args: [input: { seriesId: string; request?: string; mediaLevel?: string }];
+    args: [input: { seriesId: string; request?: string }];
     result: Session;
   };
   "session:update": {
@@ -590,6 +604,13 @@ export interface IpcContract {
       cost: number | null;
     };
   };
+  "voices:suggest": {
+    args: [input: { name: string; description: string }];
+    result: VoiceSuggestion[];
+  };
+  "voices:sample": { args: [voice: VoiceSampleAsk]; result: { url: string | null } };
+  "voices:make": { args: [voice: VoiceSampleAsk]; result: { url: string } };
+  "voices:remake": { args: [voice: VoiceSampleAsk]; result: { url: string } };
   "material:list": { args: [seriesId: string]; result: MaterialItem[] };
   "material:set-reusable": {
     args: [input: { seriesId: string; itemId: string; reusable: boolean }];
@@ -631,30 +652,19 @@ export interface IpcContract {
     result: null;
   };
   "video:fix": {
-    args: [input: { sessionId: string; scriptId: string; changes: FixChange[]; version?: string }];
+    args: [input: { sessionId: string; scriptId: string; changes: FixChange[] }];
     result: null;
   };
   "video:restore": {
-    args: [input: { sessionId: string; scriptId: string; version?: string }];
+    args: [input: { sessionId: string; scriptId: string }];
     result: null;
   };
-  "video:version": {
-    args: [
-      input: {
-        sessionId: string;
-        scriptId: string;
-        action: "start" | "use" | "delete" | "focus";
-        version: string;
-      },
-    ];
+  "video:remake": {
+    args: [input: { sessionId: string; scriptId: string }];
     result: null;
   };
   "video:fresh-picture": {
     args: [input: { sessionId: string; scriptId: string; frameId: string; fresh: boolean }];
-    result: null;
-  };
-  "video:level": {
-    args: [input: { sessionId: string; scriptId: string; level: string }];
     result: null;
   };
   "video:tempo": {
@@ -678,12 +688,12 @@ export const IPC_CHANNELS = [
   "dev:create-profile",
   "dev:switch-profile",
   "dev:delete-profile",
-  "dev:native-voice",
-  "dev:set-native-voice",
   "theme:set",
   "workspace:get",
   "series:create",
   "series:update",
+  "series:answer-guide",
+  "series:draft-guide",
   "series:delete",
   "notes:update",
   "notes:remove",
@@ -730,6 +740,10 @@ export const IPC_CHANNELS = [
   "assets:accept-place-finding",
   "assets:clean-place-photo",
   "assets:cut-out-product-photo",
+  "voices:suggest",
+  "voices:sample",
+  "voices:make",
+  "voices:remake",
   "material:list",
   "material:set-reusable",
   "material:remove",
@@ -755,9 +769,8 @@ export const IPC_CHANNELS = [
   "video:retry-shot",
   "video:fix",
   "video:restore",
-  "video:version",
+  "video:remake",
   "video:fresh-picture",
-  "video:level",
   "video:tempo",
   "video:save",
   "video:save-many",

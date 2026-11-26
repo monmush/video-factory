@@ -792,7 +792,6 @@ function FixPart({
   const job = useVideoJobs(ctx.sessionId)?.jobs.get(part.scriptId);
   const number = ctx.scripts.findIndex((s) => s.id === part.scriptId) + 1;
   const scope = [
-    part.voice ? "giọng đọc" : "",
     part.stills ? `${part.stills} khung hình` : "",
     part.shots ? `${part.shots} cảnh` : "",
   ]

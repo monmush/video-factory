@@ -1,6 +1,16 @@
 import { boardOrder } from "@shared/board";
 import type { Asset, Series, Session } from "@shared/ipc";
-import { type MediaLevelId, mediaLevel } from "@shared/media-level";
+import type { SeriesModels } from "@shared/models";
+import {
+  GUIDE_LENGTH_CHOICES,
+  GUIDE_SLOT_LABEL,
+  GUIDE_SLOTS,
+  type GuideSlot,
+  guideFromText,
+  PRODUCT_MENTION_LABEL,
+  PRODUCT_MENTIONS,
+  type SeriesGuide,
+} from "@shared/series-guide";
 import { Link, useParams } from "@tanstack/react-router";
 import { Ellipsis, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
@@ -13,9 +23,10 @@ import {
 import { Composer } from "@/components/composer";
 import { DeleteSeriesDialog } from "@/components/delete-series-dialog";
 import { useProductMention } from "@/components/mention-picker";
+import { ModelsChip } from "@/components/models-chip";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
-import { QualityChip } from "@/components/quality-chip";
+import { SeriesDirection } from "@/components/series-direction";
 import { SeriesMaterial } from "@/components/series-material";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,7 +38,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "@/components/ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "@/components/ui/menu";
+import { SettingChip } from "@/components/ui/setting-chip";
 import { Textarea } from "@/components/ui/textarea";
 import { SeriesOutputFields } from "@/components/video-model-menu";
 import { useCreateActions } from "@/lib/actions";
@@ -52,8 +71,6 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const workspace = useWorkspace();
   const { createSession } = useCreateActions();
   const [request, setRequest, clearRequest] = useDraft(`series-request:${seriesId}`, "");
-  const [nextBatchLevelOverride, setNextBatchLevelOverride, clearNextBatchLevelOverride] =
-    useDraft<MediaLevelId | null>(`series-level:${seriesId}`, null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(
     () =>
@@ -88,20 +105,24 @@ function SeriesView({ seriesId }: { seriesId: string }) {
   const sessions = workspace.sessions
     .filter((s) => s.seriesId === series.id)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const seriesLevel = mediaLevel(series.mediaLevel).id;
+
+  const setModels = async (models: SeriesModels) => {
+    setError(null);
+    try {
+      await api.invoke("series:update", { id: series.id, models });
+      await refreshWorkspace();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
 
   const start = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const own =
-        nextBatchLevelOverride && mediaLevel(nextBatchLevelOverride).id !== seriesLevel
-          ? mediaLevel(nextBatchLevelOverride).id
-          : undefined;
-      await createSession(series.id, request, own);
+      await createSession(series.id, request);
       clearRequest();
-      clearNextBatchLevelOverride();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -131,14 +152,7 @@ function SeriesView({ seriesId }: { seriesId: string }) {
           </MenuPopup>
         </Menu>
       </div>
-      <button
-        type="button"
-        className="mt-0.5 mb-5 block max-w-full cursor-pointer truncate text-left text-muted-foreground hover:text-foreground"
-        title="Sửa định hướng"
-        onClick={() => setEditing(true)}
-      >
-        {series.guidance.split("\n").find((line) => line.trim()) || "Thêm định hướng"}
-      </button>
+      <SeriesDirection series={series} onEdit={() => setEditing(true)} />
 
       <div className="relative">
         <Composer
@@ -155,11 +169,7 @@ function SeriesView({ seriesId }: { seriesId: string }) {
           submitLabel="Tạo video"
         >
           <SeriesAssetSummary series={series} onEdit={() => setEditing(true)} />
-          <QualityChip
-            value={nextBatchLevelOverride ?? seriesLevel}
-            onChange={(next) => setNextBatchLevelOverride(next === seriesLevel ? null : next)}
-            seriesDefault={seriesLevel}
-          />
+          <ModelsChip value={series.models} onChange={setModels} />
         </Composer>
         {mention.popup("inset-x-0", true)}
       </div>
@@ -414,24 +424,37 @@ function EditSeriesDialog({
 
 function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void }) {
   const [name, setName] = useState(series.name);
-  const [guidance, setGuidance] = useState(series.guidance);
+  const [startGuide] = useState(() => series.guide ?? guideFromText(series.guidance));
+  const [lines, setLines] = useState(() => guideTexts(startGuide));
+  const [productMention, setProductMention] = useState(startGuide.productMention);
+  const [targetSec, setTargetSec] = useState(startGuide.targetSec);
   const [assets, setAssets] = useState<SeriesAssetIds>({
     characterIds: series.characterIds ?? [],
     productIds: series.productIds ?? [],
     environmentIds: series.environmentIds ?? [],
   });
-  const [level, setLevel] = useState(mediaLevel(series.mediaLevel).id);
+  const [models, setModels] = useState<SeriesModels>(series.models ?? {});
   const [error, setError] = useState<string | null>(null);
   const id = useId();
 
   const save = async () => {
+    const start = guideTexts(startGuide);
     try {
       await api.invoke("series:update", {
         id: series.id,
         name,
-        guidance,
+        guide: {
+          lines: Object.fromEntries(
+            GUIDE_SLOTS.flatMap((slot) =>
+              lines[slot] === start[slot] ? [] : [[slot, lines[slot]]],
+            ),
+          ),
+          ...(productMention !== startGuide.productMention ? { productMention } : {}),
+          ...(targetSec !== startGuide.targetSec ? { targetSec } : {}),
+          confirm: true,
+        },
         ...assets,
-        mediaLevel: level,
+        models,
       });
       await refreshWorkspace();
       onDone();
@@ -452,21 +475,52 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
           </label>
           <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={`${id}-guidance`} className="text-xs font-medium">
-            Định hướng
-          </label>
-          <Textarea
-            id={`${id}-guidance`}
-            value={guidance}
-            rows={6}
-            className="field-sizing-content max-h-[40vh]"
-            placeholder="Nhân vật, bối cảnh, giọng điệu, cách nhắc đến sản phẩm…"
-            onChange={(e) => setGuidance(e.target.value)}
-          />
-        </div>
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1.5 text-xs font-medium">Định hướng</legend>
+          <div className="grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
+            {GUIDE_SLOTS.map((slot) => (
+              <div key={slot} className="contents">
+                <label
+                  htmlFor={`${id}-${slot}`}
+                  className="pt-2 text-xs leading-tight text-muted-foreground"
+                >
+                  {GUIDE_SLOT_LABEL[slot]}
+                </label>
+                <Textarea
+                  id={`${id}-${slot}`}
+                  value={lines[slot]}
+                  rows={1}
+                  className="field-sizing-content max-h-[30vh] min-h-0"
+                  onChange={(e) => setLines({ ...lines, [slot]: e.target.value })}
+                />
+              </div>
+            ))}
+            <div className="col-start-2 flex flex-wrap gap-1.5">
+              {assets.productIds.length > 0 && (
+                <ChoiceChip
+                  label="Sản phẩm"
+                  value={productMention}
+                  choices={PRODUCT_MENTIONS.map((m) => ({
+                    value: m,
+                    label: PRODUCT_MENTION_LABEL[m],
+                  }))}
+                  onChange={setProductMention}
+                />
+              )}
+              <ChoiceChip
+                label="Độ dài"
+                value={targetSec}
+                choices={lengthChoices(targetSec).map((sec) => ({
+                  value: sec,
+                  label: `${sec} giây`,
+                }))}
+                onChange={setTargetSec}
+              />
+            </div>
+          </div>
+        </fieldset>
         <SeriesAssetFields value={assets} onChange={setAssets} />
-        <SeriesOutputFields mediaLevel={level} onMediaLevel={setLevel} />
+        <SeriesOutputFields models={models} onModels={setModels} />
         {error && <p className="text-destructive-foreground">{error}</p>}
       </div>
       <DialogFooter className="justify-end">
@@ -476,5 +530,50 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
         </Button>
       </DialogFooter>
     </>
+  );
+}
+
+function guideTexts(guide: SeriesGuide): Record<GuideSlot, string> {
+  return Object.fromEntries(
+    GUIDE_SLOTS.map((slot) => [slot, guide.lines[slot]?.text ?? ""]),
+  ) as Record<GuideSlot, string>;
+}
+
+function lengthChoices(current: number): number[] {
+  const offered: number[] = [...GUIDE_LENGTH_CHOICES];
+  return offered.includes(current) ? offered : [...offered, current].sort((a, b) => a - b);
+}
+
+function ChoiceChip<T extends string | number>({
+  label,
+  value,
+  choices,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  choices: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <SettingChip
+            label={label}
+            value={choices.find((c) => c.value === value)?.label ?? String(value)}
+          />
+        }
+      />
+      <MenuPopup align="start">
+        <MenuRadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
+          {choices.map((choice) => (
+            <MenuRadioItem key={choice.value} value={choice.value}>
+              {choice.label}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
   );
 }

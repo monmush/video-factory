@@ -7,7 +7,7 @@ import {
   seatingKey,
   withMaterialAvailability,
 } from "../../shared/material-offer";
-import { mediaLevel } from "../../shared/media-level";
+import { OUTPUT_RESOLUTION } from "../../shared/output-size";
 import { castOf, seatsFor } from "../../shared/shot-plan";
 import type { VideoJob } from "../../shared/video-job";
 import { listMaterial } from "../material";
@@ -58,7 +58,6 @@ const nothingToRelease = () => undefined;
 
 export async function stagingMaterial(
   job: VideoJob,
-  level: string,
   others: () => OfferJob[],
   signal: AbortSignal,
 ): Promise<StagingMaterial> {
@@ -69,7 +68,6 @@ export async function stagingMaterial(
   }
   const seating = seatsFor(castOf(job.lines));
   const lock = `${job.seriesId}#${seatingKey(seating)}`;
-  const at = mediaLevel(level);
   for (;;) {
     if (signal.aborted) throw new StagingStopped();
     const ws = await getWorkspace();
@@ -80,7 +78,7 @@ export async function stagingMaterial(
       items: await listMaterial(job.seriesId),
       assets: ws.assets,
       others: others(),
-      clipResolution: at.motion ? at.output : null,
+      clipResolution: OUTPUT_RESOLUTION,
     });
     if (offer) return { material: { offer, newKey: randomUUID }, release: nothingToRelease };
     const making = scenesBeingMade.get(lock);
@@ -108,7 +106,7 @@ export async function storedPicture(
 }
 
 export async function storedClip(
-  job: Pick<VideoJob, "seriesId" | "resolution">,
+  job: Pick<VideoJob, "seriesId">,
   pictureKey: string,
   want: { seconds: number; motion: string },
 ): Promise<MaterialItem | undefined> {
@@ -121,6 +119,6 @@ export async function storedClip(
     pictureId: picture.id,
     seconds: want.seconds,
     motion: want.motion,
-    resolution: job.resolution,
+    resolution: OUTPUT_RESOLUTION,
   });
 }
