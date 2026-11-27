@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  access,
   constants,
   copyFile,
   link,
@@ -13,6 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { app, BrowserWindow, dialog } from "electron";
 import { jobEvents, jobRemoved } from "../../shared/activity";
+import { BOOKEND_SLOTS, type BookendSlot } from "../../shared/bookends";
 import { rejectClip, rejectSegmentClip } from "../../shared/clip-check";
 import {
   type ChargeKind,
@@ -201,7 +203,7 @@ import {
   recordUse,
 } from "../material";
 import { assetDir } from "../media";
-import { dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
+import { bookendsDir, dataFile, mediaDir, removeStaleTmp, writeJsonAtomic } from "../paths";
 import { providerMode } from "../providers";
 import { getWorkspace } from "../store";
 import { logUsage, openFalRequests } from "../usage";
@@ -220,7 +222,6 @@ import { directJob } from "./director";
 import {
   assembleOverDialogue,
   assertFfmpegBeforeAnyPaidStep,
-  atTempo,
   audible,
   exactClip,
   frameCount,
@@ -230,6 +231,7 @@ import {
   mixSoundtrack,
   probeSeconds,
   productStill,
+  renderDelivery,
   speechShotClip,
   stillClip,
 } from "./ffmpeg";
@@ -1212,6 +1214,7 @@ export async function abandonSessions(sessionIds: readonly string[]): Promise<vo
 export async function saveFinal(sessionId: string, scriptId: string): Promise<string | null> {
   const job = jobs.get(keyOf(sessionId, scriptId));
   if (!job?.final) throw new Error("Video chưa xong");
+  const delivery = await deliveryOf(job, job.final);
   const safe = (job.title || "video")
     .replace(/[\\/:*?"<>|]+/g, " ")
     .trim()
@@ -1227,11 +1230,9 @@ export async function saveFinal(sessionId: string, scriptId: string): Promise<st
     : await dialog.showSaveDialog(options);
   if (result.canceled || !result.filePath) return null;
   const destination = result.filePath;
-  const source = join(jobDir(job), job.final);
-  const tempo = jobTempo(job);
-  if (tempo === 1) await copyFile(source, destination);
+  if (isPlainCopy(delivery)) await copyFile(delivery.body, destination);
   else
-    await renderedAtTempo(source, tempo, dirname(destination), (rendered) =>
+    await renderedForDelivery(delivery, dirname(destination), (rendered) =>
       rename(rendered, destination),
     );
   try {
@@ -1244,15 +1245,36 @@ export async function saveFinal(sessionId: string, scriptId: string): Promise<st
   return result.filePath;
 }
 
-async function renderedAtTempo(
-  source: string,
-  tempo: number,
+const BOOKEND_MISSING = "Không tìm thấy intro/outro của series";
+
+type Delivery = { body: string; tempo: number } & Partial<Record<BookendSlot, string>>;
+
+const isPlainCopy = (delivery: Delivery) =>
+  delivery.tempo === 1 && BOOKEND_SLOTS.every((slot) => !delivery[slot]);
+
+async function deliveryOf(job: VideoJob, final: string): Promise<Delivery> {
+  const bookends = (await getWorkspace()).series.find((s) => s.id === job.seriesId)?.bookends;
+  const delivery: Delivery = { body: join(jobDir(job), final), tempo: jobTempo(job) };
+  for (const slot of BOOKEND_SLOTS) {
+    const bookend = bookends?.[slot];
+    if (!bookend) continue;
+    const path = join(bookendsDir(job.seriesId), bookend.file);
+    await access(path).catch(() => {
+      throw new Error(BOOKEND_MISSING);
+    });
+    delivery[slot] = path;
+  }
+  return delivery;
+}
+
+async function renderedForDelivery(
+  delivery: Delivery,
   folder: string,
   place: (rendered: string) => Promise<void>,
 ): Promise<void> {
   const rendered = join(folder, `.${randomUUID()}.mp4.tmp`);
   try {
-    await atTempo(source, tempo, rendered);
+    await renderDelivery({ ...delivery, out: rendered });
     await place(rendered);
   } finally {
     await rm(rendered, { force: true });
@@ -1260,19 +1282,18 @@ async function renderedAtTempo(
 }
 
 async function deliverWithoutOverwriting(
-  source: string,
-  tempo: number,
+  delivery: Delivery,
   folder: string,
   base: string,
   taken: Set<string>,
 ): Promise<void> {
-  if (tempo === 1) {
+  if (isPlainCopy(delivery)) {
     await placeWithoutOverwriting(folder, base, taken, (target) =>
-      copyFile(source, target, constants.COPYFILE_EXCL),
+      copyFile(delivery.body, target, constants.COPYFILE_EXCL),
     );
     return;
   }
-  await renderedAtTempo(source, tempo, folder, (rendered) =>
+  await renderedForDelivery(delivery, folder, (rendered) =>
     placeWithoutOverwriting(folder, base, taken, (target) => link(rendered, target)),
   );
 }
@@ -1337,13 +1358,7 @@ export async function saveFinals(
   for (const file of files) {
     const job = own.get(file.scriptId) as VideoJob;
     try {
-      await deliverWithoutOverwriting(
-        join(jobDir(job), file.final),
-        jobTempo(job),
-        folder,
-        file.base,
-        taken,
-      );
+      await deliverWithoutOverwriting(await deliveryOf(job, file.final), folder, file.base, taken);
       if (file.inUse) lookFrom.add(file.scriptId);
     } catch (error) {
       console.error(`[video] could not save video #${file.number}`, error);

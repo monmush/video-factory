@@ -1,3 +1,4 @@
+import type { BookendChanges, SeriesBookends, StagedBookend } from "./bookends";
 import type { MaterialItem } from "./material";
 import type { SeriesModels } from "./models";
 import type { Note } from "./notes";
@@ -21,6 +22,7 @@ export interface Series {
   environmentIds: string[];
   models?: SeriesModels;
   reuseMaterial?: boolean;
+  bookends?: SeriesBookends;
   pinnedAt?: string;
   notes?: Note[];
   createdAt: string;
@@ -269,6 +271,7 @@ export type SeriesUpdate = {
   id: string;
   pinned?: boolean;
   guide?: GuideEdit;
+  bookends?: BookendChanges;
 } & Partial<SeriesInput>;
 
 export interface Workspace {
@@ -402,6 +405,7 @@ export const mediaUrl = {
   chat: (sessionId: string, file: string) => `hyan-media://chat/${sessionId}/${file}`,
   staged: (file: string) => `hyan-media://staging/${file}`,
   material: (seriesId: string, file: string) => `hyan-media://material/${seriesId}/${file}`,
+  bookend: (seriesId: string, file: string) => `hyan-media://bookend/${seriesId}/${file}`,
   voice: (file: string, version: number) => `hyan-media://voice/${file}?v=${version}`,
   video: (sessionId: string, scriptId: string, file: string) =>
     `hyan-media://video/${sessionId}/${scriptId}/${file}`,
@@ -478,6 +482,7 @@ export interface IpcContract {
   };
   "series:draft-guide": { args: [id: string]; result: Series };
   "series:delete": { args: [id: string]; result: null };
+  "series:pick-bookend": { args: []; result: StagedBookend | null };
   "notes:update": { args: [input: { id: string; text: string }]; result: null };
   "notes:remove": { args: [id: string]; result: null };
   "session:create": {
@@ -709,6 +714,7 @@ export const IPC_CHANNELS = [
   "series:answer-guide",
   "series:draft-guide",
   "series:delete",
+  "series:pick-bookend",
   "notes:update",
   "notes:remove",
   "session:create",

@@ -66,6 +66,14 @@ From the earlier setup concept; still the target for AI-written direction. Staff
 
 Shared library, reusable across series; product name and original photos are enough. Bulk import with AI grouping and naming is built. No structured specs; spreadsheet/catalogue extraction is deferred. Scripts use only confirmed names, photos and label text, never unsupported claims. Unseen package sides stay plain rather than generated.
 
+## Intro and outro — 27 November 2026
+
+A series can have an intro clip and an outro clip, set in "Sửa series" ("Intro", "Outro", "Thêm video"). Every video of the series is delivered with them: they are joined when the video is saved ("Tải xuống", one or many), not when it is made, so the video in the app stays the body only and a changed outro applies to videos already made without remaking them. The tempo ("Tốc độ") speeds up the body only, never the intro or outro; the saved length shown is body at tempo plus intro and outro.
+
+When a clip is picked, the app converts it once to the video format (720×1280, 30 fps): fitted inside the frame with black bars, never cropped, so a logo is not cut off; its sound is levelled to the same loudness as the videos, and a clip without sound gets silence. Clips longer than 60 seconds are refused. The choice is kept only when the dialog is saved ("Lưu"); "Hủy" discards it. Sharing a setup carries the clips with the series. If a saved clip is missing on disk, saving that video fails rather than delivering it without the clip.
+
+Not yet: switching the intro or outro off for one video, a preview of the joined video in the app, and setting them when the series is created.
+
 ## Open
 
 - Whether a sample video is required before the first real batch.

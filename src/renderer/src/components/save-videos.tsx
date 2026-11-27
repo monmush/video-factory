@@ -15,6 +15,7 @@ import { useBoard } from "@/lib/board";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
+import { useSessionBookends } from "@/lib/workspace";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import {
@@ -29,9 +30,10 @@ import {
 export function SaveVideosButton({ sessionId }: { sessionId: string }) {
   const board = useBoard(sessionId);
   const state = useVideoJobs(sessionId);
+  const bookends = useSessionBookends(sessionId);
   const [open, setOpen] = useState(false);
   if (!board || !state) return null;
-  const videos = exportableVideos(board.scripts, state.jobs);
+  const videos = exportableVideos(board.scripts, state.jobs, bookends);
   if (offeredFiles(videos) < 2) return null;
   return (
     <>

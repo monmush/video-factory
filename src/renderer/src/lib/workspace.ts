@@ -1,3 +1,4 @@
+import type { SeriesBookends } from "@shared/bookends";
 import type { Workspace } from "@shared/ipc";
 import { seriesTargetSec } from "@shared/series-guide";
 import { useSyncExternalStore } from "react";
@@ -33,4 +34,10 @@ export function useSeriesTargetSec(sessionId: string): number {
   const { sessions, series } = useWorkspace();
   const session = sessions.find((s) => s.id === sessionId);
   return seriesTargetSec(series.find((s) => s.id === session?.seriesId) ?? {});
+}
+
+export function useSessionBookends(sessionId: string): SeriesBookends | undefined {
+  const { sessions, series } = useWorkspace();
+  const session = sessions.find((s) => s.id === sessionId);
+  return series.find((s) => s.id === session?.seriesId)?.bookends;
 }

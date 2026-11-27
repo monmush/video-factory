@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { BrowserWindow, shell } from "electron";
+import { type Bookend, type BookendSlot, seriesBookends } from "../shared/bookends";
 import {
   type AssetKind,
   SERIES_ASSET_FIELD,
@@ -138,6 +139,32 @@ export function updateSeries(input: SeriesUpdate): Promise<Series> {
     }
     series.updatedAt = now();
     return series;
+  });
+}
+
+export type PlacedBookends = Partial<Record<BookendSlot, Bookend | null>>;
+
+export function setSeriesBookends(
+  id: string,
+  placed: PlacedBookends,
+): Promise<{ series: Series; replaced: string[] }> {
+  return mutate((ws) => {
+    const series = ws.series.find((s) => s.id === id);
+    if (!series) throw new Error(`Series not found: ${id}`);
+    const before = series.bookends ?? {};
+    const next = { ...before };
+    const replaced: string[] = [];
+    for (const [slot, bookend] of Object.entries(placed) as [BookendSlot, Bookend | null][]) {
+      const old = before[slot];
+      if (old && old.file !== bookend?.file) replaced.push(old.file);
+      if (bookend) next[slot] = bookend;
+      else delete next[slot];
+    }
+    const kept = seriesBookends(next);
+    if (kept) series.bookends = kept;
+    else delete series.bookends;
+    series.updatedAt = now();
+    return { series, replaced };
   });
 }
 

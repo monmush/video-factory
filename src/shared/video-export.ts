@@ -1,6 +1,7 @@
 import { boardOrder } from "./board";
+import { deliveredSec, type SeriesBookends } from "./bookends";
 import type { Script } from "./ipc";
-import { finalSecAtTempo } from "./tempo";
+import { jobTempo } from "./tempo";
 import type { VideoJob } from "./video-job";
 
 export interface ExportVersion {
@@ -35,7 +36,7 @@ export const pickKey = (pick: ExportPick) => `${pick.scriptId}|${pick.version}`;
 
 const VERSION_IN_USE = "in-use";
 
-const finishedVersions = (job: VideoJob): ExportVersion[] =>
+const finishedVersions = (job: VideoJob, bookends?: SeriesBookends): ExportVersion[] =>
   job.status === "done" && job.final
     ? [
         {
@@ -43,7 +44,8 @@ const finishedVersions = (job: VideoJob): ExportVersion[] =>
           label: "Bản đang dùng",
           inUse: true,
           final: job.final,
-          seconds: finalSecAtTempo(job),
+          seconds:
+            job.finalSec === undefined ? null : deliveredSec(job.finalSec, jobTempo(job), bookends),
         },
       ]
     : [];
@@ -54,11 +56,12 @@ const firstChoice = (video: ExportVideo) =>
 export function exportableVideos(
   scripts: Script[],
   jobs: ReadonlyMap<string, VideoJob>,
+  bookends?: SeriesBookends,
 ): ExportVideo[] {
   return boardOrder(scripts).flatMap((script, i) => {
     const job = jobs.get(script.id);
     if (script.status !== "ready" || !job) return [];
-    const finished = finishedVersions(job);
+    const finished = finishedVersions(job, bookends);
     if (!finished.length) return [];
     const video: ExportVideo = {
       scriptId: script.id,

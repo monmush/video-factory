@@ -68,7 +68,7 @@ import {
   useVideoJobs,
   useVideoJobsError,
 } from "@/lib/video-jobs";
-import { useSeriesTargetSec, useWorkspace } from "@/lib/workspace";
+import { useSeriesTargetSec, useSessionBookends, useWorkspace } from "@/lib/workspace";
 import { agentWork } from "@/lib/wow-mode";
 import { ImageViewer, type ViewerImage } from "./image-viewer";
 import { LivePlanFold } from "./live-plan";
@@ -82,7 +82,7 @@ import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { VideoLength } from "./video-length";
+import { BookendsNote, VideoLength } from "./video-length";
 
 const STOP_HOLD_MS = 1200;
 
@@ -415,6 +415,7 @@ function VideoCard({
   const { error, run } = useAction();
   const navigate = useNavigate();
   const seriesTargetSec = useSeriesTargetSec(sessionId);
+  const bookends = useSessionBookends(sessionId);
   const job = saved && followSeriesModels(saved, make.models);
   const active = job?.status === "running" || job?.status === "waiting";
   const now = useNow(job?.status === "running");
@@ -575,6 +576,7 @@ function VideoCard({
         )}
         {job?.status === "done" && <MakingTime job={job} />}
         {length && <VideoLength length={length} />}
+        {length && <BookendsNote bookends={bookends} />}
         {(job?.final || job?.previous?.final) && (
           <TempoMenu
             value={job.tempo}

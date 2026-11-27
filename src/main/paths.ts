@@ -46,3 +46,5 @@ export async function removeStaleTmp(dir: string): Promise<void> {
 }
 
 export const materialDir = (seriesId: string) => join(mediaDir(seriesId), "_material");
+
+export const bookendsDir = (seriesId: string) => join(mediaDir(seriesId), "_bookends");

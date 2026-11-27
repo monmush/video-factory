@@ -85,6 +85,15 @@ describe("parseShare", () => {
     expect(parsed.series[0]).toMatchObject({ futureField: 1, characterIds: [] });
     expect(parsed.series[0]).not.toHaveProperty("videoModel");
   });
+
+  it("keeps a series' intro and outro but drops one whose file name leaves its folder", () => {
+    const bookends = {
+      intro: { file: "../../secrets.json", seconds: 4 },
+      outro: { file: "outro-1.mp4", seconds: 9 },
+    };
+    const parsed = parseShare({ ...valid(), series: [series("s", { bookends })] });
+    expect(parsed.series[0]?.bookends).toEqual({ outro: { file: "outro-1.mp4", seconds: 9 } });
+  });
 });
 
 describe("buildShare", () => {

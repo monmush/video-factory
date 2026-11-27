@@ -22,7 +22,7 @@ import {
 export const SETUP_EXTENSION = "vfsetup";
 export const MAX_SETUP_BYTES = 3.5 * 1024 ** 3;
 export const TOO_LARGE_MESSAGE = "Thiết lập quá lớn để xuất thành một tệp.";
-const SERIES_FOLDERS = ["_material", "_look"];
+const SERIES_FOLDERS = ["_material", "_look", "_bookends"];
 
 async function filesIn(dataDir: string, folder: string[]): Promise<ZipSource[]> {
   const dir = childPath(dataDir, ...folder);

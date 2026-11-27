@@ -26,6 +26,11 @@ import { useProductMention } from "@/components/mention-picker";
 import { ModelsChip } from "@/components/models-chip";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
+import {
+  bookendChanges,
+  SeriesBookendFields,
+  unchangedBookends,
+} from "@/components/series-bookends";
 import { SeriesDirection } from "@/components/series-direction";
 import { SeriesMaterial } from "@/components/series-material";
 import { Button } from "@/components/ui/button";
@@ -415,7 +420,7 @@ function EditSeriesDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-2xl">
+      <DialogPopup className="max-w-5xl">
         <EditSeriesForm series={series} onDone={() => onOpenChange(false)} />
       </DialogPopup>
     </Dialog>
@@ -434,11 +439,13 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
     environmentIds: series.environmentIds ?? [],
   });
   const [models, setModels] = useState<SeriesModels>(series.models ?? {});
+  const [bookends, setBookends] = useState(unchangedBookends);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
 
   const save = async () => {
     const start = guideTexts(startGuide);
+    const changedBookends = bookendChanges(bookends);
     try {
       await api.invoke("series:update", {
         id: series.id,
@@ -455,6 +462,7 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
         },
         ...assets,
         models,
+        ...(changedBookends ? { bookends: changedBookends } : {}),
       });
       await refreshWorkspace();
       onDone();
@@ -468,60 +476,77 @@ function EditSeriesForm({ series, onDone }: { series: Series; onDone: () => void
       <DialogHeader>
         <DialogTitle>Sửa series</DialogTitle>
       </DialogHeader>
-      <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-5">
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={`${id}-name`} className="text-xs font-medium">
-            Tên
-          </label>
-          <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1.5 text-xs font-medium">Định hướng</legend>
-          <div className="grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
-            {GUIDE_SLOTS.map((slot) => (
-              <div key={slot} className="contents">
-                <label
-                  htmlFor={`${id}-${slot}`}
-                  className="pt-2 text-xs leading-tight text-muted-foreground"
-                >
-                  {GUIDE_SLOT_LABEL[slot]}
-                </label>
-                <Textarea
-                  id={`${id}-${slot}`}
-                  value={lines[slot]}
-                  rows={1}
-                  className="field-sizing-content max-h-[30vh] min-h-0"
-                  onChange={(e) => setLines({ ...lines, [slot]: e.target.value })}
+      <div className="grid min-h-0 gap-x-8 gap-y-5 overflow-y-auto p-5 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor={`${id}-name`} className="text-xs font-medium">
+              Tên
+            </label>
+            <Input id={`${id}-name`} value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1.5 text-xs font-medium">Định hướng</legend>
+            <div className="grid w-full grid-cols-[5.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
+              {GUIDE_SLOTS.map((slot) => (
+                <div key={slot} className="contents">
+                  <label
+                    htmlFor={`${id}-${slot}`}
+                    className="pt-2 text-xs leading-tight text-muted-foreground"
+                  >
+                    {GUIDE_SLOT_LABEL[slot]}
+                  </label>
+                  <Textarea
+                    id={`${id}-${slot}`}
+                    value={lines[slot]}
+                    rows={1}
+                    className="field-sizing-content max-h-[30vh] min-h-0"
+                    onChange={(e) => setLines({ ...lines, [slot]: e.target.value })}
+                  />
+                </div>
+              ))}
+              <div className="col-start-2 flex flex-wrap gap-1.5">
+                {assets.productIds.length > 0 && (
+                  <ChoiceChip
+                    label="Sản phẩm"
+                    value={productMention}
+                    choices={PRODUCT_MENTIONS.map((m) => ({
+                      value: m,
+                      label: PRODUCT_MENTION_LABEL[m],
+                    }))}
+                    onChange={setProductMention}
+                  />
+                )}
+                <ChoiceChip
+                  label="Độ dài"
+                  value={targetSec}
+                  choices={lengthChoices(targetSec).map((sec) => ({
+                    value: sec,
+                    label: `${sec} giây`,
+                  }))}
+                  onChange={setTargetSec}
                 />
               </div>
-            ))}
-            <div className="col-start-2 flex flex-wrap gap-1.5">
-              {assets.productIds.length > 0 && (
-                <ChoiceChip
-                  label="Sản phẩm"
-                  value={productMention}
-                  choices={PRODUCT_MENTIONS.map((m) => ({
-                    value: m,
-                    label: PRODUCT_MENTION_LABEL[m],
-                  }))}
-                  onChange={setProductMention}
-                />
-              )}
-              <ChoiceChip
-                label="Độ dài"
-                value={targetSec}
-                choices={lengthChoices(targetSec).map((sec) => ({
-                  value: sec,
-                  label: `${sec} giây`,
-                }))}
-                onChange={setTargetSec}
-              />
             </div>
-          </div>
-        </fieldset>
-        <SeriesAssetFields value={assets} onChange={setAssets} />
-        <SeriesOutputFields models={models} onModels={setModels} />
-        {error && <p className="text-destructive-foreground">{error}</p>}
+          </fieldset>
+        </div>
+        <div className="flex min-w-0 flex-col gap-5 md:border-l md:pl-8">
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1.5 text-xs font-medium">Thành phần</legend>
+            <SeriesAssetFields value={assets} onChange={setAssets} />
+          </fieldset>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1.5 text-xs font-medium">Video</legend>
+            <SeriesOutputFields models={models} onModels={setModels} />
+            <SeriesBookendFields
+              seriesId={series.id}
+              saved={series.bookends}
+              value={bookends}
+              onChange={setBookends}
+              onError={setError}
+            />
+          </fieldset>
+          {error && <p className="text-destructive-foreground">{error}</p>}
+        </div>
       </div>
       <DialogFooter className="justify-end">
         <DialogClose render={<Button variant="ghost" />}>Hủy</DialogClose>

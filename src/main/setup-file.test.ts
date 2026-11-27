@@ -77,6 +77,7 @@ async function senderFolder(): Promise<{ dataDir: string; ws: Workspace }> {
   await put(dataDir, "media/series-1/_material/clip.mp4", "clip bytes");
   await put(dataDir, "media/series-1/_look/look.json", "{}");
   await put(dataDir, "media/series-1/_look/still.png", "still bytes");
+  await put(dataDir, "media/series-1/_bookends/outro-1.mp4", "outro bytes");
   await put(dataDir, "media/series-1/batch-1/videos/v/final.mp4", "video bytes");
   return { dataDir, ws };
 }
@@ -125,6 +126,7 @@ describe("share a setup", () => {
       "assets/hero/photo.png",
       "assets/shop/photo.png",
       "assets/soap/photo.png",
+      "media/series-1/_bookends/outro-1.mp4",
       "media/series-1/_look/look.json",
       "media/series-1/_look/still.png",
       "media/series-1/_material/clip.mp4",
@@ -140,6 +142,7 @@ describe("share a setup", () => {
       "assets/hero/photo.png",
       "assets/shop/photo.png",
       "assets/soap/photo.png",
+      "media/series-1/_bookends/outro-1.mp4",
       "media/series-1/_look/look.json",
       "media/series-1/_look/still.png",
       "media/series-1/_material/clip.mp4",

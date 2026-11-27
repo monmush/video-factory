@@ -18,6 +18,7 @@ import { estimateAngles, generateAngles } from "./angles";
 import { createAsset, createProductBatch, deleteAsset, refPaths, updateAsset } from "./assets";
 import { balances, readMediaBalance } from "./balances";
 import * as board from "./board";
+import { pickBookend, saveSeriesBookends } from "./bookends";
 import { CHAT_FILE_EXTENSIONS, stageChatFiles } from "./chat/files";
 import { chatInfo, rememberChoice } from "./chat/models";
 import * as chat from "./chat/runtime";
@@ -185,8 +186,10 @@ export function registerIpc() {
     return series;
   });
   handle("series:draft-guide", draftGuide);
+  handle("series:pick-bookend", pickBookend);
   handle("series:answer-guide", answerSeriesQuestion);
-  handle("series:update", async (input) => {
+  handle("series:update", async ({ bookends, ...input }) => {
+    if (bookends) await saveSeriesBookends(input.id, bookends);
     const series = await updateSeries(input);
     recordDerived(() => [seriesSaved(series, false)]);
     if (input.models !== undefined) {

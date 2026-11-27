@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { access, constants, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { app } from "electron";
+import { type DeliveryInput, deliveryGraph } from "../../shared/bookends";
 import { MIX, type MixInput, mixGraph, type SoundRole } from "../../shared/sound";
 
 const EXTRA_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
@@ -430,18 +431,31 @@ export async function assembleOverDialogue(
   );
 }
 
-export async function atTempo(source: string, tempo: number, out: string): Promise<void> {
+export async function renderDelivery(input: {
+  body: string;
+  tempo: number;
+  intro?: string;
+  outro?: string;
+  out: string;
+}): Promise<void> {
+  const { filter, inputs } = deliveryGraph({
+    tempo: input.tempo,
+    intro: Boolean(input.intro),
+    outro: Boolean(input.outro),
+  });
+  const paths: Record<DeliveryInput, string | undefined> = {
+    intro: input.intro,
+    body: input.body,
+    outro: input.outro,
+  };
   await ffmpeg([
-    "-i",
-    source,
+    ...inputs.flatMap((role) => ["-i", paths[role] as string]),
+    "-filter_complex",
+    filter,
     "-map",
-    "0:v:0",
+    "[v]",
     "-map",
-    "0:a:0",
-    "-vf",
-    `setpts=PTS/${tempo},fps=${OUTPUT.fps}`,
-    "-af",
-    `atempo=${tempo},aresample=${OUTPUT.sampleRate}`,
+    "[a]",
     "-c:v",
     "libx264",
     "-preset",
@@ -458,6 +472,65 @@ export async function atTempo(source: string, tempo: number, out: string): Promi
     "+faststart",
     "-f",
     "mp4",
+    input.out,
+  ]);
+}
+
+export async function probeStreams(path: string): Promise<{ video: boolean; audio: boolean }> {
+  const out = await run(await find("ffprobe"), [
+    "-v",
+    "error",
+    "-show_entries",
+    "stream=codec_type",
+    "-of",
+    "csv=p=0",
+    path,
+  ]);
+  const kinds = out.split("\n").map((line) => line.trim());
+  return { video: kinds.includes("video"), audio: kinds.includes("audio") };
+}
+
+export async function bookendClip(source: string, out: string, size: Size): Promise<void> {
+  const { width, height } = size;
+  const seconds = (await probeSeconds(source)).toFixed(3);
+  const { audio } = await probeStreams(source);
+  const level = audio && audible(await integratedLufs(source)) ? await finalLevel(source) : null;
+  const picture =
+    `[0:v:0]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${OUTPUT.fps},setsar=1,format=yuv420p,` +
+    `tpad=stop_mode=clone:stop_duration=${seconds}[v]`;
+  const stereo = `aresample=${OUTPUT.sampleRate},aformat=sample_fmts=fltp:channel_layouts=stereo,apad[a]`;
+  const sound = level ? `[0:a:0]${level},${stereo}` : `[1:a]${stereo}`;
+  await ffmpeg([
+    "-i",
+    source,
+    ...(level
+      ? []
+      : ["-f", "lavfi", "-t", seconds, "-i", `anullsrc=r=${OUTPUT.sampleRate}:cl=stereo`]),
+    "-filter_complex",
+    `${picture};${sound}`,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-t",
+    seconds,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "18",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "160k",
+    "-ar",
+    String(OUTPUT.sampleRate),
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
     out,
   ]);
 }
@@ -557,17 +630,24 @@ export async function mixSoundtrack(input: {
   await normaliseLoudness(mixed, input.out);
 }
 
+const FINAL_LEVEL = `I=${MIX.finalLufs}:TP=${MIX.finalTruePeak}:LRA=${MIX.finalLra}`;
+
+async function finalLevel(source: string): Promise<string> {
+  const measured = await loudnessOf(
+    ["-i", source, "-vn"],
+    `loudnorm=${FINAL_LEVEL}:print_format=json`,
+  );
+  return measured
+    ? `loudnorm=${FINAL_LEVEL}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`
+    : `loudnorm=${FINAL_LEVEL}`;
+}
+
 async function normaliseLoudness(source: string, out: string): Promise<void> {
-  const target = `I=${MIX.finalLufs}:TP=${MIX.finalTruePeak}:LRA=${MIX.finalLra}`;
-  const measured = await loudnessOf(["-i", source], `loudnorm=${target}:print_format=json`);
-  const second = measured
-    ? `loudnorm=${target}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`
-    : `loudnorm=${target}`;
   await ffmpeg([
     "-i",
     source,
     "-af",
-    `${second},aresample=${OUTPUT.sampleRate}`,
+    `${await finalLevel(source)},aresample=${OUTPUT.sampleRate}`,
     "-ac",
     "2",
     "-c:a",
