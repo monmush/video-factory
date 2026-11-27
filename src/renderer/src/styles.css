@@ -33,6 +33,7 @@
   --warning: #fe9a00;
   --warning-foreground: #bb4d00;
   --warning-surface: #fcf4e8;
+  --success-foreground: #00875a;
 
   --sidebar: #f4f4f5;
   --sidebar-foreground: #27272a;
@@ -42,6 +43,15 @@
   --sidebar-row-selected: #ffffff;
 
   --scrollbar-thumb: rgb(217 217 217);
+
+  --chart-1: #27272a;
+  --chart-2: #71717a;
+  --chart-3: #a1a1aa;
+  --chart-4: #52525b;
+  --chart-5: #d4d4d8;
+  --chart-6: #3f3f46;
+  --chart-7: #8b8b93;
+  --chart-8: #e4e4e7;
 }
 
 .dark {
@@ -71,6 +81,7 @@
   --warning: #fe9a00;
   --warning-foreground: #ffb900;
   --warning-surface: #312108;
+  --success-foreground: #34d399;
 
   --sidebar: #000000;
   --sidebar-foreground: #f1f3f7;
@@ -80,6 +91,15 @@
   --sidebar-row-selected: #111111;
 
   --scrollbar-thumb: rgb(255 255 255 / 8%);
+
+  --chart-1: #f4f4f5;
+  --chart-2: #a1a1aa;
+  --chart-3: #71717a;
+  --chart-4: #d4d4d8;
+  --chart-5: #52525b;
+  --chart-6: #e4e4e7;
+  --chart-7: #8b8b93;
+  --chart-8: #3f3f46;
 }
 
 @theme {
@@ -121,12 +141,21 @@
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning-surface: var(--warning-surface);
+  --color-success-foreground: var(--success-foreground);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-row-hover: var(--sidebar-row-hover);
   --color-sidebar-row-selected: var(--sidebar-row-selected);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

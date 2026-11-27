@@ -13,6 +13,7 @@ import {
   resolveChoice,
 } from "../../shared/ipc";
 import { NOTE_AREAS } from "../../shared/notes";
+import { record } from "../activity";
 import * as board from "../board";
 import * as writer from "../script-writer";
 import { textAiMode } from "../text-ai";
@@ -286,6 +287,7 @@ async function drain(sessionId: string) {
 }
 
 async function runTurn(sessionId: string, user: ChatMessage, touched: Set<string>) {
+  const turnStarted = Date.now();
   const s = state(sessionId);
   const mode = chatMode();
   const current = await board.getBoard(sessionId);
@@ -497,6 +499,12 @@ async function runTurn(sessionId: string, user: ChatMessage, touched: Set<string
   board.runningRequests.delete(reply.id);
   s.turn = null;
   sendLive(sessionId, null);
+  record({
+    name: "chat-turn",
+    sessionId,
+    ms: Date.now() - turnStarted,
+    outcome: result.outcome === "failed" ? "error" : result.outcome,
+  });
 }
 
 export async function send(input: {
@@ -507,6 +515,12 @@ export async function send(input: {
 }): Promise<null> {
   const text = input.text.trim();
   if (!text && !input.attachments.length) return null;
+  record({
+    name: "chat-message",
+    sessionId: input.sessionId,
+    text,
+    attachments: input.attachments.length,
+  });
   const mode = chatMode();
   if (mode === "pipeline") {
     if (input.attachments.length) {

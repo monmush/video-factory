@@ -1,7 +1,8 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { release } from "node:os";
 import { join, posix, relative, sep } from "node:path";
-import { type Zippable, zip } from "fflate";
+import type { Zippable } from "fflate";
+import { dateStamp, jsonBytes, writeZipUnderFreeName, zipped } from "./zip-file";
 
 const TOP_LEVEL_FILES = new Set([
   "workspace.json",
@@ -13,8 +14,9 @@ const TOP_LEVEL_FILES = new Set([
   "feedback.jsonl",
 ]);
 const LOG_FILES = new Set(["logs/app.log", "logs/app.previous.log"]);
+const ACTIVITY_FILES = new Set(["activity/events.jsonl"]);
 const MEDIA_TEXT_EXTENSIONS = new Set([".json", ".md", ".jsonl", ".txt", ".srt", ".ass", ".vtt"]);
-const WALKED_FOLDERS = ["logs", "media"];
+const WALKED_FOLDERS = ["logs", "activity", "media"];
 const LARGEST_FILE_BYTES = 5 * 1024 * 1024;
 
 export interface ReportCandidate {
@@ -28,7 +30,7 @@ export interface ReportSelection {
 }
 
 function belongsInReport(path: string): boolean {
-  if (TOP_LEVEL_FILES.has(path) || LOG_FILES.has(path)) return true;
+  if (TOP_LEVEL_FILES.has(path) || LOG_FILES.has(path) || ACTIVITY_FILES.has(path)) return true;
   return path.startsWith("media/") && MEDIA_TEXT_EXTENSIONS.has(posix.extname(path).toLowerCase());
 }
 
@@ -63,31 +65,6 @@ async function listCandidates(dataDir: string): Promise<ReportCandidate[]> {
   return candidates.filter((candidate) => candidate !== null);
 }
 
-const pad = (n: number) => String(n).padStart(2, "0");
-
-function reportFileName(now: Date, attempt: number): string {
-  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-  return `bao-loi-${stamp}${attempt > 1 ? `-${attempt}` : ""}.zip`;
-}
-
-async function writeUnderFreeName(destination: string, now: Date, bytes: Uint8Array) {
-  await mkdir(destination, { recursive: true });
-  for (let attempt = 1; ; attempt++) {
-    const file = join(destination, reportFileName(now, attempt));
-    try {
-      await writeFile(file, bytes, { flag: "wx" });
-      return file;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-  }
-}
-
-const zipped = (files: Zippable) =>
-  new Promise<Uint8Array>((resolve, reject) =>
-    zip(files, (error, data) => (error ? reject(error) : resolve(data))),
-  );
-
 export async function writeProblemReport(input: {
   dataDir: string;
   destination: string;
@@ -109,6 +86,6 @@ export async function writeProblemReport(input: {
     packaged: input.about.packaged,
     leftOutForSize: { count: selection.leftOutForSize.length, files: selection.leftOutForSize },
   };
-  files["report.json"] = new TextEncoder().encode(`${JSON.stringify(report, null, 2)}\n`);
-  return writeUnderFreeName(input.destination, now, await zipped(files));
+  files["report.json"] = jsonBytes(report);
+  return writeZipUnderFreeName(input.destination, `bao-loi-${dateStamp(now)}`, await zipped(files));
 }

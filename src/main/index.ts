@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, nativeTheme, shell } from "electron";
+import { startActivity } from "./activity";
 import { registerIpc } from "./ipc";
 import { startLog } from "./log";
 import { clearStaging, handleMediaProtocol, registerMediaSchemeBeforeAppReady } from "./media";
@@ -79,6 +80,7 @@ function startApp() {
   startLog();
   allowOneRunningCopyPerDataFolder();
   loadOptionalDevelopmentKeys();
+  startActivity();
   registerMediaSchemeBeforeAppReady();
 
   app.whenReady().then(() => {

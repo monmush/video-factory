@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
+import { scriptEvents } from "../shared/activity";
 import { boardOrder, clearMarks } from "../shared/board";
 import {
   type Board,
@@ -10,6 +11,7 @@ import {
   type Script,
   type Series,
   type Session,
+  type Workspace,
 } from "../shared/ipc";
 import {
   applyLineEdit,
@@ -27,6 +29,7 @@ import {
   seriesTargetSec,
 } from "../shared/series-guide";
 import { copyScript } from "../shared/versions";
+import { recordDerived } from "./activity";
 import { applyUndo, dropTouch, recordTouch, type TurnLog, turnUndo } from "./board-undo";
 import { mediaDir, writeJsonAtomic } from "./paths";
 import * as writer from "./script-writer";
@@ -150,13 +153,22 @@ export function onBoardChanged(listener: BoardListener): () => void {
   return () => boardListeners.delete(listener);
 }
 
+function recordScriptChanges(ws: Workspace, session: Session, before: Board, after: Board) {
+  const series = ws.series.find((x) => x.id === session.seriesId);
+  recordDerived(() =>
+    scriptEvents(session.id, before.scripts, after.scripts, seriesTargetSec(series ?? {})),
+  );
+}
+
 export function mutateBoard<T>(sessionId: string, change: (board: Board) => T): Promise<T> {
   const run = (writesInOrderPerSession.get(sessionId) ?? Promise.resolve()).then(async () => {
-    const { session } = await findSession(sessionId);
-    const board = structuredClone(await load(sessionId));
+    const { ws, session } = await findSession(sessionId);
+    const before = await load(sessionId);
+    const board = structuredClone(before);
     const result = change(board);
     await writeJsonAtomic(join(mediaDir(session.seriesId, session.id), FILE), board);
     cache.set(sessionId, board);
+    recordScriptChanges(ws, session, before, board);
     broadcast(sessionId, board);
     for (const listener of boardListeners) {
       try {

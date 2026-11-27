@@ -8,6 +8,36 @@ import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "./ui/dialog";
+import { Tabs, TabsList, TabsPanel, TabsTab } from "./ui/tabs";
+import { UsageStatsView } from "./usage-stats-view";
+
+type UsageTab = "balances" | "stats";
+
+function useLoaded<T>(load: () => Promise<T>, active: boolean) {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(false);
+  const refresh = useCallback(async () => {
+    setAsked(true);
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await load());
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [load]);
+  useEffect(() => {
+    if (active && !asked) void refresh();
+  }, [active, asked, refresh]);
+  return { data, loading: loading || (active && !asked), error, refresh };
+}
+
+const loadBalances = () => api.invoke("usage:balances");
+const loadStats = () => api.invoke("usage:stats");
 
 export function UsageDialog({
   open,
@@ -18,117 +48,108 @@ export function UsageDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-3xl">
-        {open && <BalancesContent onNavigate={() => onOpenChange(false)} />}
+      <DialogPopup className="h-[88dvh] max-h-[88dvh] w-[90vw] max-w-[1200px]">
+        {open && <UsageContent onNavigate={() => onOpenChange(false)} />}
       </DialogPopup>
     </Dialog>
   );
 }
 
-function BalancesContent({ onNavigate }: { onNavigate: () => void }) {
-  const [data, setData] = useState<Balances | null>(null);
-  const [showsProviders, setShowsProviders] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [balances, app] = await Promise.all([
-        api.invoke("usage:balances"),
-        api.invoke("app:info"),
-      ]);
-      setData(balances);
-      setShowsProviders(app.devFeatures);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+function UsageContent({ onNavigate }: { onNavigate: () => void }) {
+  const [tab, setTab] = useState<UsageTab>("balances");
+  const balances = useLoaded(loadBalances, tab === "balances");
+  const stats = useLoaded(loadStats, tab === "stats");
+  const shown = tab === "balances" ? balances : stats;
 
   return (
-    <>
-      <DialogHeader className="flex-row items-center gap-2 pr-14">
-        <DialogTitle className="flex-1">Số dư và hạn mức</DialogTitle>
-        {data && (
-          <span className="text-xs text-muted-foreground">Cập nhật {time(data.checkedAt)}</span>
-        )}
-        <Button
-          variant="ghost-muted"
-          size="icon-sm"
-          aria-label="Làm mới"
-          title="Làm mới"
-          disabled={loading}
-          onClick={refresh}
-        >
-          <RefreshCw className={cn(loading && "animate-spin")} />
-        </Button>
+    <Tabs
+      value={tab}
+      onValueChange={(value) => setTab(value === "stats" ? "stats" : "balances")}
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      <DialogHeader className="gap-3 pr-14">
+        <div className="flex items-center gap-2">
+          <DialogTitle className="flex-1">Mức sử dụng</DialogTitle>
+          <Button
+            variant="ghost-muted"
+            size="icon-sm"
+            aria-label="Làm mới"
+            title="Làm mới"
+            disabled={shown.loading}
+            onClick={shown.refresh}
+          >
+            <RefreshCw className={cn(shown.loading && "animate-spin")} />
+          </Button>
+        </div>
+        <TabsList>
+          <TabsTab value="balances">Số dư</TabsTab>
+          <TabsTab value="stats">Thống kê</TabsTab>
+        </TabsList>
       </DialogHeader>
 
-      {error && (
+      {shown.error && (
         <p className="px-6 pt-4 text-center text-destructive-foreground">
-          Không kiểm tra được: {error}
+          Không kiểm tra được: {shown.error}
         </p>
       )}
-      {!data ? (
-        !error && <p className="px-6 py-10 text-center text-muted-foreground">Đang kiểm tra…</p>
-      ) : (
-        <div className="flex min-h-0 flex-col gap-8 overflow-y-auto px-6 py-6">
-          {showsProviders && (
-            <Section title="fal.ai" hint="Tạo ảnh và video. Trả trước, trừ dần theo mỗi lần tạo.">
-              <Status result={data.fal} onNavigate={onNavigate}>
-                {(fal) => (
-                  <Card>
-                    <div className="text-muted-foreground">Số dư</div>
-                    <div className="mt-1 text-3xl font-semibold tabular-nums">
-                      {fal.currency === "USD"
-                        ? formatCost(fal.balance)
-                        : `${fal.balance} ${fal.currency}`}
-                    </div>
-                  </Card>
-                )}
-              </Status>
-            </Section>
-          )}
+      <TabsPanel value="balances" className="flex min-h-0 flex-1 flex-col">
+        {balances.data ? (
+          <BalancesBody data={balances.data} onNavigate={onNavigate} />
+        ) : (
+          !balances.error && <Checking />
+        )}
+      </TabsPanel>
+      <TabsPanel value="stats" className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+        {stats.data ? <UsageStatsView data={stats.data} /> : !stats.error && <Checking />}
+      </TabsPanel>
+    </Tabs>
+  );
+}
 
-          <Section
-            title="Claude trên máy này"
-            hint="Hạn mức của cả gói Claude, gồm cả lúc bạn dùng Claude ở nơi khác."
-          >
-            {data.claude ? (
-              <>
-                {data.claude.session && (
-                  <Meter
-                    label="Phiên (5 giờ)"
-                    used={data.claude.session.utilization}
-                    detail={`Đặt lại ${untilText(data.claude.session.resetsAt)}`}
-                  />
-                )}
-                {data.claude.weekly && (
-                  <Meter
-                    label="Tuần"
-                    used={data.claude.weekly.utilization}
-                    detail={`Đặt lại ${untilText(data.claude.weekly.resetsAt)}`}
-                  />
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Claude không có API xem hạn mức; số liệu đến kèm mỗi lần ứng dụng gọi Claude. Lần
-                  cuối: {dateTime(data.claude.capturedAt)}.
-                </p>
-              </>
-            ) : (
-              <p className="text-muted-foreground">
-                Chưa có số liệu. Hạn mức sẽ hiện sau lần đầu ứng dụng dùng Claude.
-              </p>
+function Checking() {
+  return <p className="px-6 py-10 text-center text-muted-foreground">Đang kiểm tra…</p>;
+}
+
+function BalancesBody({ data, onNavigate }: { data: Balances; onNavigate: () => void }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-6">
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-8">
+        <Section title="Số dư AI">
+          <Status result={data.media} onNavigate={onNavigate}>
+            {(media) => (
+              <div className="text-3xl font-semibold tabular-nums">
+                {media.currency === "USD"
+                  ? formatCost(media.balance)
+                  : `${media.balance} ${media.currency}`}
+              </div>
             )}
-          </Section>
-        </div>
-      )}
-    </>
+          </Status>
+        </Section>
+
+        <Section title="Claude">
+          {data.claude ? (
+            <>
+              {data.claude.session && (
+                <Meter
+                  label="Phiên (5 giờ)"
+                  used={data.claude.session.utilization}
+                  detail={`Đặt lại ${untilText(data.claude.session.resetsAt)}`}
+                />
+              )}
+              {data.claude.weekly && (
+                <Meter
+                  label="Tuần"
+                  used={data.claude.weekly.utilization}
+                  detail={`Đặt lại ${untilText(data.claude.weekly.resetsAt)}`}
+                />
+              )}
+            </>
+          ) : (
+            <p className="text-muted-foreground">Chưa có số liệu.</p>
+          )}
+        </Section>
+      </div>
+    </div>
   );
 }
 
@@ -149,14 +170,8 @@ function Status<T>({
   );
   return (
     <Card className="text-muted-foreground">
-      {result.status === "no-key" && <>Chưa có khóa API. Thêm khóa trong {toSettings}.</>}
-      {result.status === "no-permission" && (
-        <>
-          Khóa fal hiện tại chỉ dùng để tạo, không được xem số dư. Tạo thêm một khóa loại{" "}
-          <b className="font-medium text-foreground">Read-only</b> trên fal.ai (mục API Keys), rồi
-          dán vào {toSettings} → “fal.ai · xem số dư”.
-        </>
-      )}
+      {result.status === "no-key" && <>Chưa có khóa. Thêm trong {toSettings}.</>}
+      {result.status === "no-permission" && <>Khóa không được xem số dư.</>}
       {result.status === "error" && <>Không đọc được số dư: {result.message}</>}
     </Card>
   );
@@ -201,28 +216,14 @@ function Card({ className, children }: { className?: string; children: ReactNode
   return <div className={cn("rounded-xl border px-5 py-4", className)}>{children}</div>;
 }
 
-function Section({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-3">
-      <div>
-        <h3 className="font-semibold">{title}</h3>
-        <p className="text-xs text-muted-foreground">{hint}</p>
-      </div>
+      <h3 className="font-semibold">{title}</h3>
       {children}
     </section>
   );
 }
-
-const time = (iso: string) =>
-  new Date(iso).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
-
-const dateTime = (iso: string) =>
-  new Date(iso).toLocaleString("vi-VN", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 
 function untilText(iso: string) {
   const ms = Date.parse(iso) - Date.now();

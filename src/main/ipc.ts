@@ -1,13 +1,19 @@
 import { chmod, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
+import type { ActivityEvent } from "../shared/activity";
 import {
   type IpcChannel,
   type IpcContract,
   MAX_IMPORT_PHOTOS,
   mediaUrl,
+  type Series,
   type VoiceSampleAsk,
 } from "../shared/ipc";
+import { directionText, seriesTargetSec } from "../shared/series-guide";
+import { usageData } from "../shared/usage-stats";
 import { guessVoiceTraits } from "../shared/voices";
+import { appAbout, installId, record, recordDerived } from "./activity";
+import { readCostReport, writeActivityExport } from "./activity-export";
 import { estimateAngles, generateAngles } from "./angles";
 import { createAsset, createProductBatch, deleteAsset, refPaths, updateAsset } from "./assets";
 import { balances } from "./balances";
@@ -19,6 +25,7 @@ import { claudeCodeStatus, findClaude, installClaude } from "./claude-code";
 import { advanceFakeClaude, fakeClaudeActive } from "./claude-fake";
 import { describeAsset } from "./describe";
 import { devFeatures } from "./dev";
+import { actionEvent, QUIET_CHANNELS } from "./ipc-activity";
 import { editLine, removeLine } from "./line-edit";
 import {
   addMaterialToCharacter,
@@ -69,8 +76,36 @@ type Handler<C extends IpcChannel> = (
 ) => IpcContract[C]["result"] | Promise<IpcContract[C]["result"]>;
 
 function handle<C extends IpcChannel>(channel: C, handler: Handler<C>) {
-  ipcMain.handle(channel, (_event, ...args) => handler(...(args as IpcContract[C]["args"])));
+  if (QUIET_CHANNELS.has(channel)) {
+    ipcMain.handle(channel, (_event, ...args) => handler(...(args as IpcContract[C]["args"])));
+    return;
+  }
+  ipcMain.handle(channel, async (_event, ...args) => {
+    const started = Date.now();
+    try {
+      const result = await handler(...(args as IpcContract[C]["args"]));
+      record(actionEvent(channel, args, Date.now() - started, null));
+      return result;
+    } catch (error) {
+      record(actionEvent(channel, args, Date.now() - started, { error }));
+      throw error;
+    }
+  });
 }
+
+const seriesSaved = (series: Series, created: boolean): ActivityEvent => ({
+  name: "series-saved",
+  created,
+  seriesId: series.id,
+  seriesName: series.name,
+  guidance: series.guidance,
+  direction: directionText(series),
+  targetSec: seriesTargetSec(series),
+  ...(series.models ? { models: series.models } : {}),
+  characters: series.characterIds.length,
+  products: series.productIds.length,
+  places: series.environmentIds.length,
+});
 
 export function registerIpc() {
   handle("app:info", () => ({
@@ -117,6 +152,20 @@ export function registerIpc() {
     if (result.canceled || !file) return null;
     return mutate((ws) => importSetup({ file, dataDir: dataDir(), ws }));
   });
+  handle("app:activity-export", async () => {
+    const file = await writeActivityExport({
+      dataDir: dataDir(),
+      destination: app.getPath("downloads"),
+      about: { install: installId(), ...appAbout() },
+      workspace: await getWorkspace(),
+    });
+    shell.showItemInFolder(file);
+    return { file };
+  });
+  handle("activity:screen", ({ route, params }) => {
+    record({ name: "screen", route, params });
+    return null;
+  });
   handle("dev:profiles", listProfiles);
   handle("dev:create-profile", createProfile);
   handle("dev:switch-profile", switchProfile);
@@ -131,6 +180,7 @@ export function registerIpc() {
   handle("workspace:get", getWorkspace);
   handle("series:create", async (input) => {
     const series = await createSeries(input);
+    recordDerived(() => [seriesSaved(series, true)]);
     void draftGuide(series.id).catch((e) => console.warn("[series] draft failed:", e.message));
     return series;
   });
@@ -138,6 +188,7 @@ export function registerIpc() {
   handle("series:answer-guide", answerSeriesQuestion);
   handle("series:update", async (input) => {
     const series = await updateSeries(input);
+    recordDerived(() => [seriesSaved(series, false)]);
     if (input.models !== undefined) {
       void video.followModels(series.id).catch((e) => console.warn("[video] models:", e.message));
     }
@@ -161,6 +212,13 @@ export function registerIpc() {
   });
   handle("session:create", async (input) => {
     const session = await createSession(input);
+    record({
+      name: "session-created",
+      sessionId: session.id,
+      seriesId: session.seriesId,
+      sessionName: session.name,
+      request: session.request ?? "",
+    });
     if (session.request) await chat.startFromRequest(session.id);
     return session;
   });
@@ -400,6 +458,9 @@ export function registerIpc() {
   });
 
   handle("usage:balances", balances);
+  handle("usage:stats", async () =>
+    usageData(await readCostReport(dataDir(), await getWorkspace())),
+  );
 
   handle("providers:status", providersInfo);
   handle("providers:set-key", setKey);

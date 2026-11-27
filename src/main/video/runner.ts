@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { app, BrowserWindow, dialog } from "electron";
+import { jobEvents, jobRemoved } from "../../shared/activity";
 import { rejectClip, rejectSegmentClip } from "../../shared/clip-check";
 import {
   type ChargeKind,
@@ -187,6 +188,7 @@ import {
   defaultVoiceText,
   guessVoiceTraits,
 } from "../../shared/voices";
+import { record, recordDerived } from "../activity";
 import { getBoard, onBoardChanged } from "../board";
 import { type Canceller, falCancel, falCancelUnlessStarted } from "../fal";
 import { type CancelOutcome, mayStillBeBilled } from "../fal-queue";
@@ -351,6 +353,7 @@ async function update(key: string, change: (job: VideoJob) => VideoJob): Promise
   }
   const next = clocked(current, settle({ ...change(current), updatedAt: nowIso() }), Date.now());
   jobs.set(key, next);
+  recordDerived(() => jobEvents(current, next));
   await save(key, next);
   emit(next);
   schedule();
@@ -631,6 +634,7 @@ async function createJob(
     job.rev = current.rev;
   }
   jobs.set(key, job);
+  recordDerived(() => jobEvents(current ?? null, job));
   await save(key, job);
   emit(job);
   return job;
@@ -867,6 +871,7 @@ async function removeJob(key: string) {
   const job = jobs.get(key);
   if (!job || !unstarted(job)) return;
   jobs.delete(key);
+  record(jobRemoved(job));
   await writes.get(key)?.catch(() => undefined);
   writes.delete(key);
   await rm(job.oldFiles ? join(jobDir(job), JOB_FILE) : jobDir(job), {
@@ -1061,11 +1066,9 @@ export async function remake(sessionId: string, scriptId: string): Promise<null>
   await assertHasPlace(sessionId);
   await writes.get(keyOf(sessionId, scriptId))?.catch(() => undefined);
   await copyFile(join(jobDir(old), JOB_FILE), join(jobDir(old), OLD_JOB_FILE));
-  jobs.set(keyOf(sessionId, scriptId), {
-    ...old,
-    oldFiles: true,
-    rev: (old.rev ?? 0) + 1,
-  });
+  const bumped: VideoJob = { ...old, oldFiles: true, rev: (old.rev ?? 0) + 1 };
+  jobs.set(keyOf(sessionId, scriptId), bumped);
+  recordDerived(() => jobEvents(old, bumped));
   const direction = anchoredDirection(old.direction, old.lines);
   await createJob(sessionId, scriptId, true, "idle", direction, (current) =>
     Boolean(current?.dubbed),
@@ -1189,7 +1192,10 @@ export async function abandonSessions(sessionIds: readonly string[]): Promise<vo
   await settledWithin(ABANDON_WAIT_MS, withdrawals);
   for (const key of keys) {
     const job = jobs.get(key);
-    if (job) abandoned.set(key, job);
+    if (job) {
+      abandoned.set(key, job);
+      record(jobRemoved(job));
+    }
     jobs.delete(key);
   }
   await settledWithin(

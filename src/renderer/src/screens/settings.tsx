@@ -33,7 +33,6 @@ const THEMES: { value: ThemePreference; label: string }[] = [
 
 const PROVIDER_NAMES: Record<ProviderId, string> = {
   fal: "fal.ai",
-  "fal-billing": "fal.ai · xem số dư (không bắt buộc)",
 };
 
 export function SettingsPage() {
@@ -131,6 +130,8 @@ export function SettingsPage() {
 
       <ProblemReportSection />
 
+      <ActivityExportSection />
+
       {info && (
         <Section title="Dữ liệu">
           <div className="flex items-center gap-3">
@@ -222,6 +223,37 @@ function ProblemReportSection() {
     <Section title="Báo lỗi">
       <Button variant="outline" size="sm" disabled={creating} onClick={() => void create()}>
         Tạo tệp báo lỗi
+      </Button>
+      {saved && <p className="mt-2 text-xs text-muted-foreground">Đã lưu vào thư mục Tải về.</p>}
+      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
+    </Section>
+  );
+}
+
+function ActivityExportSection() {
+  const [exporting, setExporting] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const { error, run } = useAction();
+
+  const exportActivity = async () => {
+    setExporting(true);
+    setSaved(false);
+    setSaved(await run(() => api.invoke("app:activity-export")));
+    setExporting(false);
+  };
+
+  return (
+    <Section title="Dữ liệu sử dụng">
+      <p className="mb-3 text-xs text-muted-foreground">
+        Gồm thao tác, yêu cầu, kịch bản, chi phí và lỗi. Không gồm ảnh hay video.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={exporting}
+        onClick={() => void exportActivity()}
+      >
+        Xuất dữ liệu sử dụng
       </Button>
       {saved && <p className="mt-2 text-xs text-muted-foreground">Đã lưu vào thư mục Tải về.</p>}
       {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}

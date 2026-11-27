@@ -5,7 +5,6 @@ import { dataFile, writeJsonAtomic } from "./paths";
 
 const ENV_NAMES: Record<ProviderId, string> = {
   fal: "FAL_KEY",
-  "fal-billing": "FAL_BILLING_KEY",
 };
 const PROVIDERS = Object.keys(ENV_NAMES) as ProviderId[];
 const SECRETS_FILE = "secrets.json";

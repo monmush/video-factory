@@ -6,6 +6,7 @@ import {
   redirect,
 } from "@tanstack/react-router";
 import { AppShell } from "./components/app-shell";
+import { api } from "./lib/api";
 import { AssetsPage } from "./screens/assets";
 import { HomePage } from "./screens/home";
 import { NotFound } from "./screens/not-found";
@@ -105,6 +106,14 @@ const routeTree = rootRoute.addChildren([
 ]);
 
 export const router = createRouter({ routeTree, history: createHashHistory() });
+
+router.subscribe("onResolved", () => {
+  const match = router.state.matches.at(-1);
+  if (!match) return;
+  void api
+    .invoke("activity:screen", { route: match.fullPath, params: match.params })
+    .catch(() => undefined);
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

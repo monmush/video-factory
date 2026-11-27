@@ -19,7 +19,7 @@ function DialogPopup({
       <DialogPrimitive.Viewport className="fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-6 app-no-drag">
         <DialogPrimitive.Popup
           className={cn(
-            "relative row-start-2 flex max-h-full w-full max-w-lg min-w-0 flex-col rounded-2xl border bg-popover text-popover-foreground shadow-2xl outline-none transition-[scale,opacity] duration-200 ease-out data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0",
+            "relative row-start-2 flex max-h-[calc(100dvh-3rem)] w-full max-w-lg min-w-0 flex-col rounded-2xl border bg-popover text-popover-foreground shadow-2xl outline-none transition-[scale,opacity] duration-200 ease-out data-ending-style:scale-98 data-ending-style:opacity-0 data-starting-style:scale-98 data-starting-style:opacity-0",
             className,
           )}
           data-slot="dialog-popup"

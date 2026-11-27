@@ -4,6 +4,7 @@ import type { Note } from "./notes";
 import type { PaidWork } from "./paid-work";
 import type { ProductMix } from "./product-mix";
 import type { GuideEdit, SeriesGuide } from "./series-guide";
+import type { UsageData } from "./usage-stats";
 import type { ExportPick } from "./video-export";
 import type { FixChange } from "./video-fix";
 import type { StepAverages, VideoJob } from "./video-job";
@@ -384,9 +385,8 @@ export type BalanceResult<T> =
   | { status: "error"; message: string };
 
 export interface Balances {
-  fal: BalanceResult<{ balance: number; currency: string }>;
+  media: BalanceResult<{ balance: number; currency: string }>;
   claude: ClaudeLimits | null;
-  checkedAt: string;
 }
 
 export interface VoiceSampleAsk {
@@ -410,7 +410,7 @@ export interface VideoJobs {
   averages: StepAverages;
 }
 
-export type ProviderId = "fal" | "fal-billing";
+export type ProviderId = "fal";
 
 export interface ProviderStatus {
   id: ProviderId;
@@ -454,6 +454,11 @@ export interface IpcContract {
   "app:problem-report": { args: []; result: { file: string } };
   "setup:export": { args: []; result: { file: string } };
   "setup:import": { args: []; result: { series: number; assets: number; skipped: number } | null };
+  "app:activity-export": { args: []; result: { file: string } };
+  "activity:screen": {
+    args: [input: { route: string; params: Record<string, string> }];
+    result: null;
+  };
   "dev:profiles": { args: []; result: DevProfiles | null };
   "dev:create-profile": { args: [name: string]; result: DevProfiles | null };
   "dev:switch-profile": { args: [id: string]; result: null };
@@ -624,6 +629,7 @@ export interface IpcContract {
     result: Asset;
   };
   "usage:balances": { args: []; result: Balances };
+  "usage:stats": { args: []; result: UsageData };
   "providers:status": { args: []; result: ProvidersInfo };
   "providers:set-key": { args: [id: ProviderId, key: string]; result: ProvidersInfo };
   "providers:clear-key": { args: [id: ProviderId]; result: ProvidersInfo };
@@ -688,6 +694,8 @@ export const IPC_CHANNELS = [
   "app:problem-report",
   "setup:export",
   "setup:import",
+  "app:activity-export",
+  "activity:screen",
   "dev:profiles",
   "dev:create-profile",
   "dev:switch-profile",
@@ -753,6 +761,7 @@ export const IPC_CHANNELS = [
   "material:remove",
   "material:add-to-character",
   "usage:balances",
+  "usage:stats",
   "providers:status",
   "providers:set-key",
   "providers:clear-key",
