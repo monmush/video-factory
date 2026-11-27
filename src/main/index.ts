@@ -10,6 +10,12 @@ import { confirmBeforeClosing, confirmBeforeQuitting, quitWithoutAskingOnSignals
 import { readSettings } from "./settings";
 import { startRunner } from "./video/runner";
 
+function showAppIconInDevelopmentDock() {
+  if (app.isPackaged) return;
+  const icon = join(app.getAppPath(), "build/icon.png");
+  if (existsSync(icon)) app.dock?.setIcon(icon);
+}
+
 function allowOneRunningCopyPerDataFolder() {
   if (!app.requestSingleInstanceLock()) {
     app.quit();
@@ -98,6 +104,7 @@ function startApp() {
 
   app.whenReady().then(() => {
     quitWithoutAskingOnSignals();
+    showAppIconInDevelopmentDock();
     describeAppInAboutPanel();
     nativeTheme.themeSource = readSettings().theme;
     handleMediaProtocol();

@@ -1,23 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
     <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#262b38"/>
-      <stop offset="1" stop-color="#0d0f14"/>
+      <stop offset="0" stop-color="#2b3040"/>
+      <stop offset="1" stop-color="#0b0d12"/>
     </linearGradient>
-    <linearGradient id="copper" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#a23c00"/>
-      <stop offset=".22" stop-color="#ff8424"/>
-      <stop offset=".4" stop-color="#ffd7a6"/>
-      <stop offset=".6" stop-color="#ff7a1a"/>
-      <stop offset="1" stop-color="#8f3200"/>
+    <radialGradient id="light" cx="512" cy="100" r="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".13"/>
+      <stop offset=".55" stop-color="#ffffff" stop-opacity=".03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".16"/>
+      <stop offset=".3" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ink)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#light)"/>
+  <rect x="103" y="103" width="818" height="818" rx="182" fill="none" stroke="url(#rim)" stroke-width="6"/>
   <g fill="#fff">
     <rect x="222" y="300" width="84" height="424" rx="42"/>
     <rect x="346" y="424" width="84" height="300" rx="42"/>
+    <rect x="470" y="534" width="84" height="190" rx="42"/>
     <rect x="594" y="424" width="84" height="300" rx="42"/>
     <rect x="718" y="300" width="84" height="424" rx="42"/>
   </g>
-  <rect x="470" y="534" width="84" height="190" rx="42" fill="url(#copper)"/>
 </svg>
