@@ -2,6 +2,7 @@ import type { ClaudeCodeStatus, ProductKeyStatus } from "@shared/ipc";
 import { Check, LoaderCircle } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import heroPhoto from "@/assets/start/hero.webp";
+import { BrandMark } from "@/components/brand-mark";
 import { ActiveProfileLabel } from "@/components/profile-label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,7 @@ export function OnboardingScreen() {
   const [error, setError] = useState<string | null>(null);
   const [waitingForLogin, setWaitingForLogin] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const [version, setVersion] = useState<string | null>(null);
   const { installing, error: installError, install, openTerminal } = useClaudeInstall(setStatus);
   const checking = useRef(false);
 
@@ -41,6 +43,10 @@ export function OnboardingScreen() {
       .invoke("product-key:status")
       .then(setProductKey)
       .catch((e) => setError(errorMessage(e)));
+    api
+      .invoke("app:info")
+      .then((info) => setVersion(info.version))
+      .catch(() => setVersion(null));
   }, [check]);
 
   const ready = Boolean(status?.installed && status.loggedIn);
@@ -88,8 +94,12 @@ export function OnboardingScreen() {
         <ActiveProfileLabel className="text-muted-foreground" />
       </div>
       <div className="flex min-h-0 flex-1 gap-2 pr-2 pb-2">
-        <main className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 pb-[var(--titlebar-height)]">
-          <div className="w-full max-w-md">
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6">
+          <div className="m-auto w-full max-w-md py-4">
+            <div className="mb-6 flex items-center justify-center gap-3">
+              <BrandMark className="size-10" />
+              <span className="select-none font-semibold text-2xl tracking-tight">M5 Studio</span>
+            </div>
             <div className="rounded-2xl border bg-background p-8 shadow-xs">
               <h1 className="text-xl font-semibold">Thiết lập</h1>
               <p className="mt-2 text-muted-foreground">
@@ -163,6 +173,9 @@ export function OnboardingScreen() {
               </button>
             </div>
           </div>
+          <footer className="flex h-[var(--titlebar-height)] shrink-0 items-center justify-center text-muted-foreground text-xs tabular-nums">
+            {version && `Phiên bản ${version}`}
+          </footer>
         </main>
         <img
           src={heroPhoto}

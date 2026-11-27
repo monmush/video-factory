@@ -37,9 +37,9 @@ const SUGGESTED_ORDER: AssetKind[] = ["product", "character"];
 const CELLS_SHOWN = 3;
 
 const STOCK_PHOTO: Record<AssetKind, { src: string; position: string }> = {
-  product: { src: productPhoto, position: "object-[15%_65%]" },
-  character: { src: characterPhoto, position: "object-[68%_22%]" },
-  environment: { src: placePhoto, position: "object-[30%_55%]" },
+  product: { src: productPhoto, position: "object-[75%_45%]" },
+  character: { src: characterPhoto, position: "object-[65%_30%]" },
+  environment: { src: placePhoto, position: "object-[35%_60%]" },
 };
 
 const CELL_FIT: Record<AssetKind, string> = {
