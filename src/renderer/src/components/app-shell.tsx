@@ -19,6 +19,7 @@ import { usePersistentNumber, usePersistentToggle } from "@/lib/shell-state";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
 import { OnboardingScreen } from "@/screens/onboarding";
+import { AgentCursors } from "./agent-cursors";
 import { AssetsSidebar } from "./assets-sidebar";
 import { Breadcrumb } from "./breadcrumb";
 import { ActiveProfileLabel } from "./profile-label";
@@ -108,6 +109,7 @@ function Shell() {
 
       <NavRail active={section} onUsage={() => setUsageOpen(true)} />
       <UsageDialog open={usageOpen} onOpenChange={setUsageOpen} />
+      <AgentCursors />
 
       <aside
         className={cn("relative min-h-0", !showSidebar && "invisible")}

@@ -13,6 +13,7 @@ import { DeleteProfileDialog } from "@/components/delete-profile-dialog";
 import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
@@ -21,6 +22,7 @@ import { useTheme } from "@/lib/theme";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
+import { setWowMode, useWowMode } from "@/lib/wow-mode";
 
 const THEMES: { value: ThemePreference; label: string }[] = [
   { value: "light", label: "Sáng" },
@@ -30,6 +32,7 @@ const THEMES: { value: ThemePreference; label: string }[] = [
 
 export function SettingsPage() {
   const { preference, setPreference } = useTheme();
+  const wowMode = useWowMode();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const notes = useWorkspace().notes ?? [];
   const { run } = useAction();
@@ -83,6 +86,12 @@ export function SettingsPage() {
           )}
 
           <ShareSetupSection />
+
+          <Section title="Tính năng thử nghiệm">
+            <Checkbox checked={wowMode} onChange={(e) => setWowMode(e.target.checked)}>
+              Chế độ wow
+            </Checkbox>
+          </Section>
         </TabsPanel>
 
         <TabsPanel value="system">

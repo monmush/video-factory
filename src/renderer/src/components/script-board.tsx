@@ -62,6 +62,7 @@ import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
+import { agentWork } from "@/lib/wow-mode";
 import { BoardToast } from "./board-notice";
 import { ProductPicker } from "./product-picker";
 import { Button } from "./ui/button";
@@ -529,6 +530,10 @@ function ListView({
                     )}
                   </span>
                   <span
+                    {...agentWork(
+                      `script:${script.id}`,
+                      script.status === "writing" && "Viết kịch bản",
+                    )}
                     className={cn(
                       "mt-0.5 block truncate text-xs text-muted-foreground",
                       script.status === "writing" && "shimmer",
@@ -658,6 +663,7 @@ function ScriptCard({
         data-card={inGallery || undefined}
         data-reader={inGallery ? undefined : true}
         data-script-id={inGallery ? script.id : undefined}
+        {...agentWork(`script:${script.id}`, writing && "Viết kịch bản")}
         tabIndex={inGallery ? 0 : undefined}
         className={cn(
           "group relative flex flex-col rounded-xl border bg-card p-4 shadow-xs/5 outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",

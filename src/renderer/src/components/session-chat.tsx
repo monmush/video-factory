@@ -45,6 +45,7 @@ import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { useVideoJobs } from "@/lib/video-jobs";
 import { useWorkspace } from "@/lib/workspace";
+import { agentWork } from "@/lib/wow-mode";
 import { Composer } from "./composer";
 import { PickerList, usePicker, useProductMention } from "./mention-picker";
 import { Button } from "./ui/button";
@@ -671,7 +672,9 @@ function AssistantMessage({
       )}
       {thinking && (
         <p className="flex items-center gap-2 text-muted-foreground">
-          <span className="shimmer-text">Đang nghĩ</span>
+          <span className="shimmer-text" {...agentWork("chat", "Suy nghĩ")}>
+            Đang nghĩ
+          </span>
           <Elapsed since={message.at} />
         </p>
       )}

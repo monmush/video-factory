@@ -29,6 +29,7 @@ import { type ScriptStaging, useHasPlace } from "@/lib/staging";
 import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { refreshWorkspace, useSeriesTargetSec } from "@/lib/workspace";
+import { agentWork } from "@/lib/wow-mode";
 import { AssetPicker } from "./asset-picker";
 import { BoardToast } from "./board-notice";
 import { LayoutToggle } from "./layout-toggle";
@@ -317,7 +318,13 @@ function StagingCard({
   }
 
   return (
-    <li className="rounded-xl border bg-card p-4">
+    <li
+      className="rounded-xl border bg-card p-4"
+      {...agentWork(
+        `staging:${script.id}`,
+        staging.status === "staging" && (job?.planningSteps?.at(-1) ?? "Đọc kịch bản"),
+      )}
+    >
       <div className="flex min-h-9 items-center gap-2.5">
         <button
           type="button"

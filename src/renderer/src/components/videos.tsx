@@ -69,6 +69,7 @@ import {
   useVideoJobsError,
 } from "@/lib/video-jobs";
 import { useSeriesTargetSec, useWorkspace } from "@/lib/workspace";
+import { agentWork } from "@/lib/wow-mode";
 import { ImageViewer, type ViewerImage } from "./image-viewer";
 import { LivePlanFold } from "./live-plan";
 import { MakeAll, priceOfThisHold, useBatch } from "./make-all";
@@ -502,7 +503,13 @@ function VideoCard({
   const fixOrTalk = Boolean(job && !oldWay && job.status !== "idle" && job.status !== "waiting");
   const restorable = Boolean(job && canRestore(job));
   return (
-    <li className="rounded-xl border bg-card p-4">
+    <li
+      className="rounded-xl border bg-card p-4"
+      {...agentWork(
+        `staging:${script.id}`,
+        staging.status === "staging" && (job?.planningSteps?.at(-1) ?? "Đọc kịch bản"),
+      )}
+    >
       <div className="flex min-h-9 items-center gap-2.5">
         <span className="w-5 text-xs text-muted-foreground tabular-nums">#{number}</span>
         <h3 className="min-w-0 flex-1 truncate font-semibold">
@@ -907,6 +914,7 @@ function ShotTile({
     (s) => s.state === "rendering" && segmentAnchor(s) === shot.index,
   );
   const rendering = shot.state === "rendering" || speaking;
+  const shotWork = `shot:${job.scriptId}:${shot.index}`;
   const number = (
     <span
       className={cn(
@@ -1003,7 +1011,10 @@ function ShotTile({
 
   if (!image) {
     return (
-      <div className={cn(base, shot.end === undefined && "border-dashed", drawing && "shimmer")}>
+      <div
+        className={cn(base, shot.end === undefined && "border-dashed", drawing && "shimmer")}
+        {...agentWork(shotWork, drawing && `Vẽ cảnh ${shot.index + 1}`)}
+      >
         {number}
         <span className="absolute inset-0 overflow-hidden px-1.5 pt-5 pb-1.5 text-2xs leading-snug text-muted-foreground">
           {shot.text}
@@ -1036,7 +1047,10 @@ function ShotTile({
 
   return (
     <Viewable onView={onView}>
-      <div className={cn(base, shot.state === "stopped" && "opacity-40")}>
+      <div
+        className={cn(base, shot.state === "stopped" && "opacity-40")}
+        {...agentWork(shotWork, rendering && `Quay cảnh ${shot.index + 1}`)}
+      >
         <img
           ref={thumbRef}
           src={image}
