@@ -5,7 +5,6 @@ import type {
   DevProfile,
   DevProfiles,
   ProductKeyStatus,
-  TextProvider,
   ThemePreference,
 } from "@shared/ipc";
 import { LoaderCircle, Trash2 } from "lucide-react";
@@ -17,7 +16,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { refreshChatInfo } from "@/lib/chat";
 import { useClaudeInstall } from "@/lib/claude-setup";
 import { useTheme } from "@/lib/theme";
 import { useAction } from "@/lib/use-action";
@@ -74,7 +72,7 @@ export function SettingsPage() {
 
           <ProductKeySection />
 
-          <TextAiSection offersPaidText={devFeatures} />
+          <TextAiSection />
 
           {notes.length > 0 && (
             <Section title="Ghi nhớ cho mọi series">
@@ -341,7 +339,7 @@ function DevProfilesSection() {
   );
 }
 
-function TextAiSection({ offersPaidText }: { offersPaidText: boolean }) {
+function TextAiSection() {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const { error, run } = useAction();
@@ -376,59 +374,17 @@ function TextAiSection({ offersPaidText }: { offersPaidText: boolean }) {
   }
   const cc = status.claudeCode;
   const ccReady = cc.installed && cc.loggedIn;
-  const paidOption = {
-    value: "fal" as const,
-    label: "fal.ai",
-    detail: "Dùng mã sản phẩm ở trên. Mỗi lần gọi tính phí nhỏ vào tài khoản fal.",
-  };
-  const options: { value: TextProvider; label: string; detail: string; disabled?: boolean }[] = [
-    ...(offersPaidText ? [paidOption] : []),
-    {
-      value: "claude-code",
-      label: "Claude trên máy này",
-      detail: ccReady
-        ? `Claude Code ${cc.version ?? ""} đã đăng nhập${cc.plan ? ` · gói ${cc.plan.charAt(0).toUpperCase()}${cc.plan.slice(1)}` : ""}. Tính vào gói Claude của bạn.`
-        : cc.installed
-          ? "Claude Code đã cài nhưng chưa đăng nhập."
-          : "Chưa cài Claude Code trên máy này.",
-      disabled: !ccReady,
-    },
-  ];
+  const claudeState = ccReady
+    ? `Claude Code ${cc.version ?? ""} đã đăng nhập${cc.plan ? ` · gói ${cc.plan.charAt(0).toUpperCase()}${cc.plan.slice(1)}` : ""}.`
+    : cc.installed
+      ? "Claude Code đã cài nhưng chưa đăng nhập."
+      : "Chưa cài Claude Code trên máy này.";
 
   return (
     <Section title="AI viết văn bản">
-      <p className="mb-3 text-muted-foreground">
-        Dùng để mô tả ảnh, viết kịch bản và trả lời trong khung chat.
+      <p className="text-muted-foreground" data-selectable>
+        {claudeState}
       </p>
-      <fieldset className="flex flex-col gap-2">
-        <legend className="sr-only">AI viết văn bản</legend>
-        {options.map((option) => {
-          const selected = status.textProvider === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={selected}
-              disabled={option.disabled && !selected}
-              onClick={() =>
-                run(async () => {
-                  setStatus(await api.invoke("ai:set-text-provider", option.value));
-                  void refreshChatInfo();
-                })
-              }
-              className={cn(
-                "flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-4 py-3 text-left disabled:cursor-default",
-                selected ? "border-ring bg-accent" : "hover:bg-accent/50",
-              )}
-            >
-              <span className="font-medium">{option.label}</span>
-              <span className="text-xs text-muted-foreground" data-selectable>
-                {option.detail}
-              </span>
-            </button>
-          );
-        })}
-      </fieldset>
       <div className="mt-2 flex gap-1.5">
         {!ccReady &&
           (cc.installed ? (
