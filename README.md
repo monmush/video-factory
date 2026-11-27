@@ -12,7 +12,7 @@ Requires Node 22.12+ and pnpm 10 (`corepack enable`). macOS is the primary targe
 pnpm install
 pnpm dev            # app with hot reload; reads keys from .env.local; fixture mode
 pnpm check          # typecheck, lint, comment check, tests, build
-pnpm package:mac    # unsigned arm64 .dmg in dist/
+pnpm package:mac    # unsigned .dmg files in dist/: arm64 (Apple silicon) and x64 (Intel)
 ```
 
 `HYAN_DATA_DIR=/some/folder pnpm dev` points the app at a disposable data folder. Fixture mode makes no paid calls; `HYAN_PROVIDER_MODE=live` allows real fal.ai and ElevenLabs requests, which cost money.

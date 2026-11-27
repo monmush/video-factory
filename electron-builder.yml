@@ -16,11 +16,11 @@ mac:
   category: public.app-category.video
   target:
     - target: dmg
-      arch: [arm64]
+      arch: [arm64, x64]
   identity: "-"
   hardenedRuntime: false
   extraResources:
-    - from: resources/bin/darwin-arm64
+    - from: resources/bin/darwin-${arch}
       to: bin
 dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
