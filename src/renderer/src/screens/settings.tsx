@@ -15,6 +15,7 @@ import { NotesList } from "@/components/notes-list";
 import { Page } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { refreshChatInfo } from "@/lib/chat";
 import { useClaudeInstall } from "@/lib/claude-setup";
@@ -42,66 +43,108 @@ export function SettingsPage() {
 
   return (
     <Page className="max-w-2xl">
-      <h1 className="mb-8 text-2xl font-semibold">Cài đặt</h1>
+      <Tabs defaultValue="general">
+        <h1 className="mb-4 text-2xl font-semibold">Cài đặt</h1>
+        <TabsList className="mb-8">
+          <TabsTab value="general">Chung</TabsTab>
+          <TabsTab value="system">Hệ thống</TabsTab>
+          {devFeatures && <TabsTab value="developer">Nhà phát triển</TabsTab>}
+        </TabsList>
 
-      <Section title="Giao diện">
-        <fieldset className="inline-flex rounded-lg border p-0.5">
-          <legend className="sr-only">Giao diện</legend>
-          {THEMES.map((theme) => (
-            <button
-              key={theme.value}
-              type="button"
-              aria-pressed={preference === theme.value}
-              onClick={() => setPreference(theme.value)}
-              className={cn(
-                "rounded-md px-3 py-1 text-muted-foreground",
-                preference === theme.value && "bg-accent text-foreground",
-              )}
-            >
-              {theme.label}
-            </button>
-          ))}
-        </fieldset>
-      </Section>
+        <TabsPanel value="general">
+          <Section title="Giao diện">
+            <fieldset className="inline-flex rounded-lg border p-0.5">
+              <legend className="sr-only">Giao diện</legend>
+              {THEMES.map((theme) => (
+                <button
+                  key={theme.value}
+                  type="button"
+                  aria-pressed={preference === theme.value}
+                  onClick={() => setPreference(theme.value)}
+                  className={cn(
+                    "rounded-md px-3 py-1 text-muted-foreground",
+                    preference === theme.value && "bg-accent text-foreground",
+                  )}
+                >
+                  {theme.label}
+                </button>
+              ))}
+            </fieldset>
+          </Section>
 
-      <ProductKeySection devFeatures={devFeatures} />
+          <ProductKeySection />
 
-      <TextAiSection offersPaidText={devFeatures} />
+          <TextAiSection offersPaidText={devFeatures} />
 
-      {notes.length > 0 && (
-        <Section title="Ghi nhớ cho mọi series">
-          <div className="-mx-3">
-            <NotesList notes={notes} />
-          </div>
-        </Section>
-      )}
+          {notes.length > 0 && (
+            <Section title="Ghi nhớ cho mọi series">
+              <div className="-mx-3">
+                <NotesList notes={notes} />
+              </div>
+            </Section>
+          )}
 
-      <ShareSetupSection />
+          <ShareSetupSection />
+        </TabsPanel>
 
-      <ProblemReportSection />
+        <TabsPanel value="system">
+          <ProblemReportSection />
 
-      <ActivityExportSection />
+          <ActivityExportSection />
 
-      {info && (
-        <Section title="Dữ liệu">
-          <div className="flex items-center gap-3">
-            <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-selectable>
-              {info.dataDir}
-            </code>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => run(() => api.invoke("app:open-data-dir"))}
-            >
-              Mở thư mục
-            </Button>
-          </div>
-          <p className="mt-3 text-xs text-muted-foreground">Phiên bản {info.version}</p>
-        </Section>
-      )}
+          {info && (
+            <Section title="Dữ liệu">
+              <div className="flex items-center gap-3">
+                <code
+                  className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+                  data-selectable
+                >
+                  {info.dataDir}
+                </code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => run(() => api.invoke("app:open-data-dir"))}
+                >
+                  Mở thư mục
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">Phiên bản {info.version}</p>
+            </Section>
+          )}
+        </TabsPanel>
 
-      <DevProfilesSection />
+        {devFeatures && (
+          <TabsPanel value="developer">
+            <ProviderModeSection />
+
+            <DevProfilesSection />
+          </TabsPanel>
+        )}
+      </Tabs>
     </Page>
+  );
+}
+
+function ProviderModeSection() {
+  const [status, setStatus] = useState<ProductKeyStatus | null>(null);
+  const { error, run } = useAction();
+
+  useEffect(() => {
+    void run(async () => setStatus(await api.invoke("product-key:status")));
+  }, [run]);
+
+  return (
+    <Section title="Chế độ">
+      {status && (
+        <p className="text-muted-foreground">
+          {status.mode === "fixture"
+            ? "Chế độ thử: dùng kết quả mẫu, không gọi API trả phí."
+            : "Gọi API thật: mỗi lần tạo có thể tốn phí."}
+        </p>
+      )}
+      {error && <p className="text-xs text-destructive-foreground">{error}</p>}
+    </Section>
   );
 }
 
@@ -419,7 +462,7 @@ function TextAiSection({ offersPaidText }: { offersPaidText: boolean }) {
   );
 }
 
-function ProductKeySection({ devFeatures }: { devFeatures: boolean }) {
+function ProductKeySection() {
   const [status, setStatus] = useState<ProductKeyStatus | null>(null);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
@@ -466,59 +509,46 @@ function ProductKeySection({ devFeatures }: { devFeatures: boolean }) {
         </div>
       )}
       {status && (
-        <>
-          {devFeatures && (
-            <p className="mb-4 text-muted-foreground">
-              {status.mode === "fixture"
-                ? "Chế độ thử: dùng kết quả mẫu, không gọi API trả phí."
-                : "Gọi API thật: mỗi lần tạo có thể tốn phí."}
-            </p>
-          )}
-          <div className="rounded-lg border px-4 py-3">
-            <div className="flex items-center gap-3">
-              <span className={cn("flex-1 tabular-nums", !status.tail && "text-muted-foreground")}>
-                {status.tail ?? "Chưa nhập"}
-              </span>
-              {status.source === "env" ? (
-                <span className="text-xs text-muted-foreground">Đặt bởi .env.local</span>
-              ) : (
-                !editing && (
-                  <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-                    {status.present ? "Đổi mã" : "Nhập mã"}
-                  </Button>
-                )
-              )}
-            </div>
-            {editing && status.source !== "env" && (
-              <form
-                className="mt-3 flex gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void save();
-                }}
-              >
-                <Input
-                  type="password"
-                  placeholder="Dán mã sản phẩm"
-                  value={value}
-                  onValueChange={setValue}
-                  autoComplete="off"
-                  autoFocus
-                />
-                <Button type="submit" variant="outline" disabled={saving || !value.trim()}>
-                  {saving && <LoaderCircle className="animate-spin" />}
-                  Lưu
-                </Button>
-                <Button type="button" variant="ghost-muted" disabled={saving} onClick={close}>
-                  Hủy
-                </Button>
-              </form>
-            )}
-            {(saveError ?? loadError) && (
-              <p className="mt-2 text-xs text-destructive-foreground">{saveError ?? loadError}</p>
+        <div className="rounded-lg border px-4 py-3">
+          <div className="flex items-center gap-3">
+            <span className={cn("flex-1 tabular-nums", !status.tail && "text-muted-foreground")}>
+              {status.tail ?? "Chưa nhập"}
+            </span>
+            {status.source !== "env" && !editing && (
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                {status.present ? "Đổi mã" : "Nhập mã"}
+              </Button>
             )}
           </div>
-        </>
+          {editing && status.source !== "env" && (
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void save();
+              }}
+            >
+              <Input
+                type="password"
+                placeholder="Dán mã sản phẩm"
+                value={value}
+                onValueChange={setValue}
+                autoComplete="off"
+                autoFocus
+              />
+              <Button type="submit" variant="outline" disabled={saving || !value.trim()}>
+                {saving && <LoaderCircle className="animate-spin" />}
+                Lưu
+              </Button>
+              <Button type="button" variant="ghost-muted" disabled={saving} onClick={close}>
+                Hủy
+              </Button>
+            </form>
+          )}
+          {(saveError ?? loadError) && (
+            <p className="mt-2 text-xs text-destructive-foreground">{saveError ?? loadError}</p>
+          )}
+        </div>
       )}
     </Section>
   );

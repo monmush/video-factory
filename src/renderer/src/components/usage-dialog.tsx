@@ -201,7 +201,7 @@ function Meter({ label, used, detail }: { label: string; used: number; detail: s
           <div
             className={cn(
               "h-full rounded-full",
-              left <= 10 ? "bg-destructive" : left <= 30 ? "bg-warning" : "bg-primary",
+              left <= 10 ? "bg-destructive" : left <= 30 ? "bg-warning" : "bg-foreground/60",
             )}
             style={{ width: `${(1 - share) * 100}%` }}
           />

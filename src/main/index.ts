@@ -75,6 +75,19 @@ function createWindow() {
   }
 }
 
+const PRODUCT_DESCRIPTION =
+  "Sản xuất hàng loạt video ngắn kể chuyện bằng AI: dựng series, viết kịch bản cùng trợ lý AI, quản lý thư viện nhân vật, sản phẩm và bối cảnh.";
+
+function describeAppInAboutPanel() {
+  app.setAboutPanelOptions({
+    applicationName: app.getName(),
+    applicationVersion: app.getVersion(),
+    version: "",
+    credits: PRODUCT_DESCRIPTION,
+    copyright: `© ${new Date().getFullYear()} M5 Studio`,
+  });
+}
+
 function startApp() {
   chooseDataFolder();
   startLog();
@@ -85,6 +98,7 @@ function startApp() {
 
   app.whenReady().then(() => {
     quitWithoutAskingOnSignals();
+    describeAppInAboutPanel();
     nativeTheme.themeSource = readSettings().theme;
     handleMediaProtocol();
     registerIpc();

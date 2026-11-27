@@ -84,6 +84,7 @@ function Shell() {
             <PanelLeft />
           </Button>
         )}
+        <span className="shrink-0 select-none px-1.5 font-semibold text-sm">M5 Studio</span>
         <Breadcrumb />
         <span className="flex-1" />
         <ActiveProfileLabel className="px-2 text-sidebar-muted-foreground" />

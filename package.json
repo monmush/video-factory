@@ -3,15 +3,15 @@
   "productName": "M5 Studio",
   "version": "0.1.0",
   "private": true,
-  "description": "Desktop app for producing product videos in batches",
+  "description": "Sản xuất hàng loạt video ngắn kể chuyện bằng AI: dựng series, viết kịch bản cùng trợ lý AI, quản lý thư viện nhân vật, sản phẩm và bối cảnh.",
   "main": "./out/main/index.js",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "electron-vite dev --watch",
-    "dev:fresh": "HYAN_DATA_DIR=$(mktemp -d -t hyan-fresh) electron-vite dev --watch",
+    "dev": "ELECTRON_EXEC_PATH=\"$(node scripts/brand-dev-electron.mjs)\" electron-vite dev --watch",
+    "dev:fresh": "ELECTRON_EXEC_PATH=\"$(node scripts/brand-dev-electron.mjs)\" HYAN_DATA_DIR=$(mktemp -d -t hyan-fresh) electron-vite dev --watch",
     "build": "electron-vite build",
     "build:package": "electron-vite build --outDir out-package",
     "preview": "electron-vite preview",
