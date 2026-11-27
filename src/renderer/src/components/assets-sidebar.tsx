@@ -8,7 +8,9 @@ import {
   Palette,
   UserRound,
 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { ASSET_CATEGORIES, type AssetCategoryId } from "@/lib/asset-categories";
+import { CATEGORY_KIND } from "@/lib/asset-kinds";
 
 const ICONS: Record<AssetCategoryId, LucideIcon> = {
   characters: UserRound,
@@ -18,8 +20,11 @@ const ICONS: Record<AssetCategoryId, LucideIcon> = {
   scenes: Clapperboard,
 };
 
-const row =
-  "flex items-center gap-2.5 rounded-[var(--control-radius)] px-2.5 py-1.5 text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground [&.active]:bg-sidebar-row-selected [&.active]:text-sidebar-foreground";
+const rowLayout = "flex items-center gap-2.5 rounded-[var(--control-radius)] px-2.5 py-1.5";
+
+const row = `${rowLayout} text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground [&.active]:bg-sidebar-row-selected [&.active]:text-sidebar-foreground`;
+
+const comingSoonRow = `${rowLayout} text-sidebar-muted-foreground/60`;
 
 export function AssetsSidebar() {
   return (
@@ -32,6 +37,15 @@ export function AssetsSidebar() {
       <div className="px-2.5 pt-4 pb-1 text-xs text-sidebar-muted-foreground">Danh mục</div>
       {ASSET_CATEGORIES.map((category) => {
         const Icon = ICONS[category.id];
+        if (!CATEGORY_KIND[category.id]) {
+          return (
+            <div key={category.id} className={comingSoonRow}>
+              <Icon className="size-4" />
+              <span className="flex-1">{category.label}</span>
+              <Badge>Sắp có</Badge>
+            </div>
+          );
+        }
         return (
           <Link
             key={category.id}

@@ -103,7 +103,7 @@ export function AssetsPage() {
       )}
 
       {!implemented ? (
-        <Placeholder title={`Chưa có ${found?.label.toLowerCase()}`} />
+        <Placeholder title="Sắp có" />
       ) : assets.length === 0 ? (
         kind ? (
           <EmptyKind
