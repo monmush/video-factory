@@ -2,7 +2,7 @@
 
 Updated 23 November 2026. The Electron app under `src/` covers series, the shared library, the script board with a session chat agent, a staged plan per script ("Dàn dựng"), and video generation (voice, stills, speaking and motion shots, local assembly with subtitles, fixes in place). Two videos were finished live on 13 November and three more on 21 November, when a future operator went from first launch to a finished video in 27 minutes; parts built since 16 November have still run in fixture mode only. No video has been accepted by the pilot client, and repeatable economics are not validated.
 
-These documents are the lasting product reference and are tracked in git. Private material (business context, client observations, expenses, research) is kept locally in `docs/private/` and `docs/archive/`, which are not published. `PROJECT_CONTEXT.md` and `project/TODO.md` are also private local files.
+These documents are the lasting product reference and are tracked in git. Private material (business context, client observations, expenses, research) is kept in `local/`, which git ignores and is never published.
 
 **Start here:** read [video generation](VIDEO_GENERATION_DECISIONS.md) for how a script becomes a video, then the document for the area you are changing. Agreed technology: [stack and skills](TECH_STACK_AND_SKILLS.md).
 
@@ -28,9 +28,9 @@ These documents are the lasting product reference and are tracked in git. Privat
 - More recent explicit feedback takes precedence. Update the owning document instead of appending conflicting instructions across files.
 - Production retry concepts do not authorize paid experimental retries. Never make a paid fal call (ElevenLabs is reached only through fal) without the owner's approval of model, scope and estimate.
 
-## Local only (not published)
+## Local only (`local/`, not published)
 
-- `docs/private/`: users and goals (read first: who we build for, the product goals in order, the current project goal), the product brief, feasibility results, the two user sessions at the pilot client and the observation guide, the pilot's script reference and the expense log.
-- `docs/archive/`: finished one-time material, by date (`2026-11-19/README.md` says what each item was and where its content went).
-- `PROJECT_CONTEXT.md`, `project/TODO.md`, `assets/`, `experiments/`, `prototypes/`, `references/hyan/`, `references/ui-patterns/`.
+- `local/docs/`: users and goals (read first: who we build for, the product goals in order, the current project goal), the product brief, feasibility results, the two user sessions at the pilot client and the observation guide, the pilot's script reference and the expense log.
+- `local/archive/`: finished one-time material, by date (`2026-11-19/README.md` says what each item was and where its content went).
+- `local/PROJECT_CONTEXT.md` (the pilot's terms and constraints), `local/TODO.md` (the task list), `local/assets/`, `local/experiments/`, `local/prototypes/`, `local/references/hyan/`, `local/references/ui-patterns/`.
 - Tracked reference: [T3 Code reference pack](../references/t3code/README.md), the source of the ported UI primitives.

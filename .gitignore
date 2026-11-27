@@ -13,17 +13,9 @@
 *.tmp
 .DS_Store
 
-# Local only: business context, client material and research.
-# Kept on this machine, never published.
-/PROJECT_CONTEXT.md
-/project/
-/docs/private/
-/docs/archive/
-/assets/
-/experiments/
-/prototypes/
-/references/hyan/
-/references/ui-patterns/
+# Local only: business context, task list, client material, research,
+# experiments and prototypes. Kept on this machine, never published.
+/local/
 /.agents/skills/sources.json
 /.agents/skills/make-interfaces-feel-better/
 *.tsbuildinfo

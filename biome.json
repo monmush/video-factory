@@ -8,10 +8,7 @@
       "*.ts",
       "*.json",
       "!references",
-      "!prototypes",
-      "!experiments",
-      "!assets",
-      "!templates",
+      "!local",
       "!out",
       "!dist",
       "!pnpm-lock.yaml"

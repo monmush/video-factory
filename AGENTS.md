@@ -1,6 +1,6 @@
 # M5 Studio
 
-Read `docs/private/USERS_AND_GOALS.md` first (private, local): who the users are, the product goals in order and the current project goal. Every design or product decision is checked against it. Then `PROJECT_CONTEXT.md` (a private local file, not in the repository) for the pilot's terms and constraints, `docs/README.md` for the product reference and `docs/TECH_STACK_AND_SKILLS.md` for agreed technology choices. `docs/private/`, `docs/archive/`, `project/`, `prototypes/` and `experiments/` are private and local only; never publish or copy their content into tracked files. Research recommendations are not automatically agreed decisions.
+Read `local/docs/USERS_AND_GOALS.md` first (private, local): who the users are, the product goals in order and the current project goal. Every design or product decision is checked against it. Then `local/PROJECT_CONTEXT.md` (a private local file, not in the repository) for the pilot's terms and constraints, `docs/README.md` for the product reference and `docs/TECH_STACK_AND_SKILLS.md` for agreed technology choices. Everything under `local/` (task list, private docs, archive, client assets, experiments, prototypes, private references) is ignored by git and stays on this machine; never publish or copy its content into tracked files. Research recommendations are not automatically agreed decisions.
 
 Keep the solo workflow lean. Do not introduce a full CI, review orchestration, or project-management framework by default. Use checks appropriate to the actual change. Providers (fal.ai, ElevenLabs) and the MVP architecture (Electron, macOS first, single machine, no backend or database) are agreed. Detailed screen design, job execution and deployment details remain open; do not settle them during unrelated work.
 
@@ -8,7 +8,7 @@ Ask the user only one question at a time, including during grilling sessions. Co
 
 ## Project tracking
 
-Work is tracked in `project/TODO.md` (a private local file). Read it at the start of a task. When you finish, start or change a piece of work, update it (move items to Done with the date). Keep it a short list; detail belongs in `docs/`.
+Work is tracked in `local/TODO.md` (a private local file). Read it at the start of a task. When you finish, start or change a piece of work, update it (move items to Done with the date). Keep it a short list; detail belongs in `docs/`.
 
 ## App development
 
@@ -22,7 +22,7 @@ Work is tracked in `project/TODO.md` (a private local file). Read it at the star
 - Every paid fal call goes through `falCall` (`src/main/fal.ts`); provider clients refuse to exist in fixture mode.
 - Renderer code never imports Node or Electron. Add a channel to `src/shared/ipc.ts`, handle it in `src/main/ipc.ts`; the preload allow-list comes from the same file.
 - Use the semantic tokens in `src/renderer/src/styles.css` and the `components/ui` primitives; port further primitives from `references/t3code/` rather than restyling ad hoc. UI copy is Vietnamese.
-- `<Placeholder` marks reserved screen regions still to build. Interaction references: `prototypes/` (local) and the not-yet-built video-stage concepts listed in `project/TODO.md`.
+- `<Placeholder` marks reserved screen regions still to build. Interaction references: `local/prototypes/` and the not-yet-built video-stage concepts listed in `local/TODO.md`.
 - Never make a paid fal/ElevenLabs call without Minh's explicit approval of model, scope and estimate.
 
 ## Project-local skills

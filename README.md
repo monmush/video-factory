@@ -2,7 +2,7 @@
 
 A macOS desktop app (Electron) for producing short AI-generated storytelling videos in batches: series setup, a script board with an AI chat agent, a character/product/environment library, and generation through fal.ai and ElevenLabs. Work in progress.
 
-Start with [docs/README.md](docs/README.md) for the product reference and decisions. Business context, research and the task list are kept in private local files and are not published.
+Start with [docs/README.md](docs/README.md) for the product reference and decisions. Business context, research and the task list are kept in `local/`, which is not published.
 
 ## Develop
 
@@ -11,7 +11,7 @@ Requires Node 22.12+ and pnpm 10 (`corepack enable`). macOS is the primary targe
 ```sh
 pnpm install
 pnpm dev            # app with hot reload; reads keys from .env.local; fixture mode
-pnpm check          # typecheck + lint + build
+pnpm check          # typecheck, lint, comment check, tests, build
 pnpm package:mac    # unsigned arm64 .dmg in dist/
 ```
 
