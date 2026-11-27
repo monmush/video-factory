@@ -384,8 +384,10 @@ export type BalanceResult<T> =
   | { status: "no-permission" }
   | { status: "error"; message: string };
 
+export type MediaBalance = BalanceResult<{ balance: number; currency: string }>;
+
 export interface Balances {
-  media: BalanceResult<{ balance: number; currency: string }>;
+  media: MediaBalance;
   claude: ClaudeLimits | null;
 }
 
@@ -629,6 +631,7 @@ export interface IpcContract {
     result: Asset;
   };
   "usage:balances": { args: []; result: Balances };
+  "usage:media-balance": { args: []; result: MediaBalance };
   "usage:stats": { args: []; result: UsageData };
   "product-key:status": { args: []; result: ProductKeyStatus };
   "product-key:save": { args: [key: string]; result: ProductKeySaveResult };
@@ -760,6 +763,7 @@ export const IPC_CHANNELS = [
   "material:remove",
   "material:add-to-character",
   "usage:balances",
+  "usage:media-balance",
   "usage:stats",
   "product-key:status",
   "product-key:save",
@@ -795,6 +799,7 @@ export interface IpcEvents {
   "video:job-removed": { sessionId: string; scriptId: string };
   "video:making": VideosBeingMade;
   "material:changed": { seriesId: string };
+  "usage:media-balance": MediaBalance;
 }
 
 export type IpcEvent = keyof IpcEvents;
@@ -807,6 +812,7 @@ export const IPC_EVENTS = [
   "video:job-removed",
   "video:making",
   "material:changed",
+  "usage:media-balance",
 ] as const satisfies readonly IpcEvent[];
 
 type UnlistedAtCompileTime<All, Listed> =

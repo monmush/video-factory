@@ -1,4 +1,5 @@
-import type { Balances } from "../shared/ipc";
+import { BrowserWindow } from "electron";
+import type { Balances, MediaBalance } from "../shared/ipc";
 import { fetchBalance } from "./fal-balance";
 import { getKey } from "./providers";
 import { readClaudeLimits } from "./usage";
@@ -9,10 +10,10 @@ function parseBalance(body: string): number | null {
   return text !== "" && Number.isFinite(value) ? value : null;
 }
 
-async function mediaBalance(): Promise<Balances["media"]> {
-  const key = await getKey();
-  if (!key) return { status: "no-key" };
+async function mediaBalance(): Promise<MediaBalance> {
   try {
+    const key = await getKey();
+    if (!key) return { status: "no-key" };
     const res = await fetchBalance(key);
     if (res.status === 401 || res.status === 403) return { status: "no-permission" };
     if (!res.ok) return { status: "error", message: `Lỗi ${res.status}` };
@@ -24,7 +25,26 @@ async function mediaBalance(): Promise<Balances["media"]> {
   }
 }
 
+export async function readMediaBalance(): Promise<MediaBalance> {
+  const result = await mediaBalance();
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("usage:media-balance", result);
+  }
+  return result;
+}
+
+const REFRESH_AFTER_CHARGE_MS = 5_000;
+let refreshPending: ReturnType<typeof setTimeout> | null = null;
+
+export function refreshMediaBalanceSoon(): void {
+  if (refreshPending) return;
+  refreshPending = setTimeout(() => {
+    refreshPending = null;
+    void readMediaBalance();
+  }, REFRESH_AFTER_CHARGE_MS);
+}
+
 export async function balances(): Promise<Balances> {
-  const [media, claude] = await Promise.all([mediaBalance(), readClaudeLimits()]);
+  const [media, claude] = await Promise.all([readMediaBalance(), readClaudeLimits()]);
   return { media, claude };
 }

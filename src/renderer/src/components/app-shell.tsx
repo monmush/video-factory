@@ -1,3 +1,4 @@
+import { formatCost } from "@shared/credits";
 import { Link, Outlet, useMatches, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   Gauge,
@@ -12,6 +13,7 @@ import { type PointerEvent, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { onChatFocusRequest } from "@/lib/board";
 import { useOnboarded } from "@/lib/claude-setup";
+import { useMediaBalance } from "@/lib/media-balance";
 import { lastPath, type Section, TABS, useSection } from "@/lib/sections";
 import { usePersistentNumber, usePersistentToggle } from "@/lib/shell-state";
 import { cn } from "@/lib/utils";
@@ -87,6 +89,7 @@ function Shell() {
         <span className="shrink-0 select-none px-1.5 font-semibold text-sm">M5 Studio</span>
         <Breadcrumb />
         <span className="flex-1" />
+        <BalanceChip onOpen={() => setUsageOpen(true)} />
         <ActiveProfileLabel className="px-2 text-sidebar-muted-foreground" />
         {panel && (
           <Button
@@ -226,6 +229,23 @@ function ResizeHandle({
         onCommit(bounds.initial);
       }}
     />
+  );
+}
+
+function BalanceChip({ onOpen }: { onOpen: () => void }) {
+  const balance = useMediaBalance();
+  if (!balance) return null;
+  const amount = formatCost(balance.usd);
+  return (
+    <button
+      type="button"
+      className="app-no-drag inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full px-2 text-sm text-sidebar-muted-foreground tabular-nums outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring"
+      title="Số dư AI"
+      aria-label={`Số dư AI: ${amount}`}
+      onClick={onOpen}
+    >
+      {amount}
+    </button>
   );
 }
 

@@ -13,6 +13,7 @@ export const QUIET_CHANNELS: ReadonlySet<IpcChannel> = new Set<IpcChannel>([
   "assets:estimate-angles",
   "assets:estimate-clean",
   "usage:balances",
+  "usage:media-balance",
   "usage:stats",
   "product-key:status",
   "ai:status",

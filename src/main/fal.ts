@@ -1,5 +1,6 @@
 import { listUnitPriceUsd, type ResultCost, resultCost } from "../shared/cost/rates";
 import { isNetworkError } from "../shared/net-error";
+import { refreshMediaBalanceSoon } from "./balances";
 import {
   billableUnits,
   type CancelOutcome,
@@ -142,6 +143,7 @@ async function callAndWait<T>(
     ...usageCost(charged, Boolean(costIsEstimate)),
     ...extra,
   });
+  refreshMediaBalanceSoon();
   return { data, requestId, cost: charged };
 }
 
@@ -193,8 +195,8 @@ export async function falPoll<T>(
   const data = result.data as T;
   const { cost, purpose, keep, ...extra } = log;
   const charged = await costOf(endpoint, cost(data), result.billedUnits);
-  const logCharge = () =>
-    logUsage({
+  const logCharge = async () => {
+    await logUsage({
       provider: "fal",
       endpoint,
       purpose,
@@ -202,6 +204,8 @@ export async function falPoll<T>(
       ...usageCost(charged, true),
       ...extra,
     });
+    refreshMediaBalanceSoon();
+  };
   try {
     await keep?.(data);
   } catch (error) {

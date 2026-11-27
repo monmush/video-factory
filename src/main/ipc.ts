@@ -16,7 +16,7 @@ import { appAbout, installId, record, recordDerived } from "./activity";
 import { readCostReport, writeActivityExport } from "./activity-export";
 import { estimateAngles, generateAngles } from "./angles";
 import { createAsset, createProductBatch, deleteAsset, refPaths, updateAsset } from "./assets";
-import { balances } from "./balances";
+import { balances, readMediaBalance } from "./balances";
 import * as board from "./board";
 import { CHAT_FILE_EXTENSIONS, stageChatFiles } from "./chat/files";
 import { chatInfo, rememberChoice } from "./chat/models";
@@ -458,6 +458,7 @@ export function registerIpc() {
   });
 
   handle("usage:balances", balances);
+  handle("usage:media-balance", readMediaBalance);
   handle("usage:stats", async () =>
     usageData(await readCostReport(dataDir(), await getWorkspace())),
   );
@@ -467,7 +468,9 @@ export function registerIpc() {
     if (video.isMakingVideo() && (await productKeyStatus()).present) {
       return { ok: false, error: "Đang tạo video. Đợi xong rồi đổi mã." };
     }
-    return saveKey(typeof key === "string" ? key : "");
+    const saved = await saveKey(typeof key === "string" ? key : "");
+    if (saved.ok) void readMediaBalance();
+    return saved;
   });
 
   const aiStatus = async () => ({
