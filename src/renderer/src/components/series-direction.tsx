@@ -165,7 +165,7 @@ function MissingCast({
 function GuessedTag() {
   return (
     <span className="mt-0.5 shrink-0 rounded border px-1 text-2xs leading-4 text-muted-foreground">
-      Tự điền
+      Tự động
     </span>
   );
 }
@@ -291,7 +291,7 @@ function GuideCard({
           Sửa
         </Button>
         <Button ref={confirmRef} variant="outline" size="sm" disabled={busy} onClick={onConfirm}>
-          Đúng rồi
+          Xác nhận
         </Button>
       </div>
     </section>
