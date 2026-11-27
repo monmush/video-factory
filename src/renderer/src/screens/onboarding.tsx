@@ -1,9 +1,10 @@
-import type { ClaudeCodeStatus } from "@shared/ipc";
+import type { ClaudeCodeStatus, ProductKeyStatus } from "@shared/ipc";
 import { Check, LoaderCircle } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import heroPhoto from "@/assets/start/hero.webp";
 import { ActiveProfileLabel } from "@/components/profile-label";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { finishOnboarding, isPaidPlan, planLabel, useClaudeInstall } from "@/lib/claude-setup";
 import { errorMessage } from "@/lib/errors";
@@ -15,6 +16,7 @@ type StepState = "done" | "current" | "pending";
 
 export function OnboardingScreen() {
   const [status, setStatus] = useState<ClaudeCodeStatus | null>(null);
+  const [productKey, setProductKey] = useState<ProductKeyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [waitingForLogin, setWaitingForLogin] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -35,6 +37,10 @@ export function OnboardingScreen() {
 
   useEffect(() => {
     void check();
+    api
+      .invoke("product-key:status")
+      .then(setProductKey)
+      .catch((e) => setError(errorMessage(e)));
   }, [check]);
 
   const ready = Boolean(status?.installed && status.loggedIn);
@@ -72,7 +78,7 @@ export function OnboardingScreen() {
 
   const installed = Boolean(status?.installed);
   const stepState = (index: number): StepState => {
-    const current = !installed ? 0 : !ready ? 1 : 2;
+    const current = !productKey?.present ? 0 : !installed ? 1 : !ready ? 2 : 3;
     return index < current ? "done" : index === current ? "current" : "pending";
   };
 
@@ -85,15 +91,18 @@ export function OnboardingScreen() {
         <main className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 pb-[var(--titlebar-height)]">
           <div className="w-full max-w-md">
             <div className="rounded-2xl border bg-background p-8 shadow-xs">
-              <h1 className="text-xl font-semibold">Kết nối Claude của bạn</h1>
+              <h1 className="text-xl font-semibold">Thiết lập</h1>
               <p className="mt-2 text-muted-foreground">
-                Ứng dụng dùng tài khoản Claude của bạn để viết kịch bản và trò chuyện. Cần gói Pro
+                Nhập mã sản phẩm, rồi kết nối Claude của bạn để viết kịch bản. Claude cần gói Pro
                 hoặc Max.
               </p>
 
-              {status ? (
+              {status && productKey ? (
                 <ol className="mt-7 flex flex-col">
-                  <Step index={0} title="Cài Claude" state={stepState(0)}>
+                  <Step index={0} title="Mã sản phẩm" state={stepState(0)}>
+                    <ProductKeyForm onSaved={setProductKey} />
+                  </Step>
+                  <Step index={1} title="Cài Claude" state={stepState(1)}>
                     {installing ? (
                       <div className="flex items-center gap-3">
                         <Button disabled>
@@ -116,14 +125,14 @@ export function OnboardingScreen() {
                       </>
                     )}
                   </Step>
-                  <Step index={1} title="Đăng nhập" state={stepState(1)}>
+                  <Step index={2} title="Đăng nhập" state={stepState(2)}>
                     <Hint>Đăng nhập trên trình duyệt rồi quay lại đây.</Hint>
                     <Button className="mt-3" onClick={login}>
                       {waitingForLogin && <LoaderCircle className="animate-spin" />}
                       Đăng nhập
                     </Button>
                   </Step>
-                  <Step index={2} title="Sẵn sàng" state={stepState(2)} last>
+                  <Step index={3} title="Sẵn sàng" state={stepState(3)} last>
                     {status.plan && isPaidPlan(status.plan) ? (
                       <Hint>{planLabel(status.plan)}</Hint>
                     ) : (
@@ -163,6 +172,51 @@ export function OnboardingScreen() {
         />
       </div>
     </div>
+  );
+}
+
+function ProductKeyForm({ onSaved }: { onSaved: (status: ProductKeyStatus) => void }) {
+  const [value, setValue] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      const saved = await api.invoke("product-key:save", value);
+      if (saved.ok) onSaved(saved.status);
+      else setError(saved.error);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <div className="flex gap-2">
+        <Input
+          type="password"
+          placeholder="Dán mã sản phẩm"
+          value={value}
+          onValueChange={setValue}
+          autoComplete="off"
+          autoFocus
+        />
+        <Button type="submit" disabled={checking || !value.trim()}>
+          {checking && <LoaderCircle className="animate-spin" />}
+          Tiếp tục
+        </Button>
+      </div>
+      {error && <ErrorLine>{error}</ErrorLine>}
+    </form>
   );
 }
 

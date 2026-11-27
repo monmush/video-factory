@@ -1,16 +1,26 @@
 import { readFile } from "node:fs/promises";
 import { app, safeStorage } from "electron";
-import type { ProviderId, ProviderMode, ProviderStatus, ProvidersInfo } from "../shared/ipc";
+import type {
+  ProductKeySaveResult,
+  ProductKeySource,
+  ProductKeyStatus,
+  ProviderMode,
+} from "../shared/ipc";
+import { devFeatures } from "./dev";
+import { fetchBalance } from "./fal-balance";
 import { dataFile, writeJsonAtomic } from "./paths";
+import {
+  cleanPastedKey,
+  type KeyVerdict,
+  maskedTail,
+  verdictOfBalanceStatus,
+} from "./product-key-rules";
 
-const ENV_NAMES: Record<ProviderId, string> = {
-  fal: "FAL_KEY",
-};
-const PROVIDERS = Object.keys(ENV_NAMES) as ProviderId[];
+const ENV_NAME = "FAL_KEY";
 const SECRETS_FILE = "secrets.json";
 
 type Base64Ciphertext = string;
-type StoredSecrets = Partial<Record<ProviderId, Base64Ciphertext>>;
+type StoredSecrets = { fal?: Base64Ciphertext };
 
 async function readStored(): Promise<StoredSecrets> {
   try {
@@ -20,26 +30,38 @@ async function readStored(): Promise<StoredSecrets> {
   }
 }
 
-const bundledKey = (id: ProviderId): string | null => __BUNDLED_KEYS__[ENV_NAMES[id]] || null;
-
 const storedKeysInUse = new Set<string>();
 
 export function knownKeyValues(): string[] {
-  const fromEnv = PROVIDERS.map((id) => process.env[ENV_NAMES[id]] ?? "");
-  const bundled = Object.values(__BUNDLED_KEYS__).filter((value) => value !== undefined);
-  return [...fromEnv, ...bundled, ...storedKeysInUse];
+  return [process.env[ENV_NAME] ?? "", ...storedKeysInUse];
 }
 
-export async function getKey(id: ProviderId): Promise<string | null> {
-  const fromEnv = process.env[ENV_NAMES[id]];
-  if (fromEnv) return fromEnv;
-  const stored = (await readStored())[id];
-  if (stored && safeStorage.isEncryptionAvailable()) {
+const envKeyIgnored = () => devFeatures() && process.env.HYAN_FAKE_PRODUCT_KEY === "missing";
+
+const envKey = (): string | null => (envKeyIgnored() ? null : process.env[ENV_NAME] || null);
+
+async function storedKey(): Promise<string | null> {
+  const stored = (await readStored()).fal;
+  if (!stored || !safeStorage.isEncryptionAvailable()) return null;
+  try {
     const key = safeStorage.decryptString(Buffer.from(stored, "base64"));
+    if (!key) return null;
     storedKeysInUse.add(key);
     return key;
+  } catch {
+    return null;
   }
-  return bundledKey(id);
+}
+
+async function currentKey(): Promise<{ key: string; source: ProductKeySource } | null> {
+  const fromEnv = envKey();
+  if (fromEnv) return { key: fromEnv, source: "env" };
+  const stored = await storedKey();
+  return stored ? { key: stored, source: "stored" } : null;
+}
+
+export async function getKey(): Promise<string | null> {
+  return (await currentKey())?.key ?? null;
 }
 
 export function providerMode(): ProviderMode {
@@ -48,38 +70,43 @@ export function providerMode(): ProviderMode {
   return app.isPackaged ? "live" : "fixture";
 }
 
-export async function providersInfo(): Promise<ProvidersInfo> {
-  const stored = await readStored();
-  const providers: ProviderStatus[] = PROVIDERS.map((id) => {
-    const source = process.env[ENV_NAMES[id]]
-      ? "env"
-      : stored[id]
-        ? "stored"
-        : bundledKey(id)
-          ? "bundled"
-          : null;
-    return { id, configured: source !== null, source };
-  });
-  return { mode: providerMode(), canStoreKeys: safeStorage.isEncryptionAvailable(), providers };
+export async function productKeyStatus(): Promise<ProductKeyStatus> {
+  const current = await currentKey();
+  return {
+    mode: providerMode(),
+    present: current !== null,
+    source: current?.source ?? null,
+    tail: current ? maskedTail(current.key) : null,
+    canStore: safeStorage.isEncryptionAvailable(),
+  };
 }
 
-export async function setKey(id: ProviderId, key: string): Promise<ProvidersInfo> {
-  if (!PROVIDERS.includes(id)) throw new Error(`Unknown provider: ${id}`);
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("OS encryption is unavailable");
-  const trimmed = key.trim();
-  if (!trimmed) throw new Error("Key is empty");
-  storedKeysInUse.add(trimmed);
-  const stored = await readStored();
-  stored[id] = safeStorage.encryptString(trimmed).toString("base64");
-  await writeJsonAtomic(dataFile(SECRETS_FILE), stored);
-  return providersInfo();
+async function checkKey(key: string): Promise<KeyVerdict> {
+  try {
+    return verdictOfBalanceStatus((await fetchBalance(key)).status);
+  } catch {
+    return "unreachable";
+  }
 }
 
-export async function clearKey(id: ProviderId): Promise<ProvidersInfo> {
+const VERDICT_ERRORS: Record<Exclude<KeyVerdict, "ok">, string> = {
+  rejected: "Mã không đúng.",
+  unreachable: "Không kiểm tra được mã. Kiểm tra mạng rồi thử lại.",
+};
+
+export async function saveKey(input: string): Promise<ProductKeySaveResult> {
+  const key = cleanPastedKey(input);
+  if (!key) return { ok: false, error: VERDICT_ERRORS.rejected };
+  if (!safeStorage.isEncryptionAvailable()) {
+    return { ok: false, error: "Máy này không lưu được mã." };
+  }
+  const verdict = await checkKey(key);
+  if (verdict !== "ok") return { ok: false, error: VERDICT_ERRORS[verdict] };
+  storedKeysInUse.add(key);
   const stored = await readStored();
-  delete stored[id];
+  stored.fal = safeStorage.encryptString(key).toString("base64");
   await writeJsonAtomic(dataFile(SECRETS_FILE), stored);
-  return providersInfo();
+  return { ok: true, status: await productKeyStatus() };
 }
 
 function refuseClientInFixtureMode(provider: string) {
@@ -90,8 +117,8 @@ function refuseClientInFixtureMode(provider: string) {
 
 export async function falClient() {
   refuseClientInFixtureMode("fal");
-  const credentials = await getKey("fal");
-  if (!credentials) throw new Error("Chưa có khóa fal. Thêm khóa trong Cài đặt.");
+  const credentials = await getKey();
+  if (!credentials) throw new Error("Chưa có mã sản phẩm. Nhập mã trong Cài đặt.");
   const { createFalClient } = await import("@fal-ai/client");
   return createFalClient({ credentials });
 }

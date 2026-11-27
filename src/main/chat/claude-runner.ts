@@ -142,7 +142,7 @@ export async function createClaudeRunner(options: {
       ...(options.resume ? { resume: options.sessionId } : { sessionId: options.sessionId }),
       env: {
         ...claudeEnv(),
-        CLAUDE_AGENT_SDK_CLIENT_APP: `hyan-video-factory/${app.getVersion()}`,
+        CLAUDE_AGENT_SDK_CLIENT_APP: `m5-studio/${app.getVersion()}`,
       },
       stderr: (data) => console.error("[chat] claude:", data.trim().slice(0, 500)),
     },

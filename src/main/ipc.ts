@@ -48,7 +48,7 @@ import * as products from "./product-change";
 import { cutOutProductPhoto } from "./product-cutout";
 import { groupProducts } from "./product-grouping";
 import { createProfile, deleteProfile, listProfiles, switchProfile } from "./profiles";
-import { clearKey, providersInfo, setKey } from "./providers";
+import { productKeyStatus, saveKey } from "./providers";
 import { childPath } from "./safe-path";
 import { draftGuide } from "./series-guide";
 import { readSettings, writeSettings } from "./settings";
@@ -462,9 +462,13 @@ export function registerIpc() {
     usageData(await readCostReport(dataDir(), await getWorkspace())),
   );
 
-  handle("providers:status", providersInfo);
-  handle("providers:set-key", setKey);
-  handle("providers:clear-key", clearKey);
+  handle("product-key:status", productKeyStatus);
+  handle("product-key:save", async (key) => {
+    if (video.isMakingVideo() && (await productKeyStatus()).present) {
+      return { ok: false, error: "Đang tạo video. Đợi xong rồi đổi mã." };
+    }
+    return saveKey(typeof key === "string" ? key : "");
+  });
 
   const aiStatus = async () => ({
     textProvider: readSettings().textProvider,

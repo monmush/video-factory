@@ -1,4 +1,4 @@
-# Hy An Video Factory — docs
+# M5 Studio — docs
 
 Updated 23 November 2026. The Electron app under `src/` covers series, the shared library, the script board with a session chat agent, a staged plan per script ("Dàn dựng"), and video generation (voice, stills, speaking and motion shots, local assembly with subtitles, fixes in place). Two videos were finished live on 13 November and three more on 21 November, when a future operator went from first launch to a finished video in 27 minutes; parts built since 16 November have still run in fixture mode only. No video has been accepted by the pilot client, and repeatable economics are not validated.
 

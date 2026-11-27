@@ -1,4 +1,4 @@
-# Hy An Video Factory
+# M5 Studio
 
 A macOS desktop app (Electron) for producing short AI-generated storytelling videos in batches: series setup, a script board with an AI chat agent, a character/product/environment library, and generation through fal.ai and ElevenLabs. Work in progress.
 

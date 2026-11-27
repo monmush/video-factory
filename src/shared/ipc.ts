@@ -410,21 +410,21 @@ export interface VideoJobs {
   averages: StepAverages;
 }
 
-export type ProviderId = "fal";
-
-export interface ProviderStatus {
-  id: ProviderId;
-  configured: boolean;
-  source: "env" | "stored" | "bundled" | null;
-}
-
 export type ProviderMode = "fixture" | "live";
 
-export interface ProvidersInfo {
+export type ProductKeySource = "env" | "stored";
+
+export interface ProductKeyStatus {
   mode: ProviderMode;
-  canStoreKeys: boolean;
-  providers: ProviderStatus[];
+  present: boolean;
+  source: ProductKeySource | null;
+  tail: string | null;
+  canStore: boolean;
 }
+
+export type ProductKeySaveResult =
+  | { ok: true; status: ProductKeyStatus }
+  | { ok: false; error: string };
 
 export interface AppInfo {
   version: string;
@@ -630,9 +630,8 @@ export interface IpcContract {
   };
   "usage:balances": { args: []; result: Balances };
   "usage:stats": { args: []; result: UsageData };
-  "providers:status": { args: []; result: ProvidersInfo };
-  "providers:set-key": { args: [id: ProviderId, key: string]; result: ProvidersInfo };
-  "providers:clear-key": { args: [id: ProviderId]; result: ProvidersInfo };
+  "product-key:status": { args: []; result: ProductKeyStatus };
+  "product-key:save": { args: [key: string]; result: ProductKeySaveResult };
   "ai:status": { args: []; result: AiStatus };
   "ai:set-text-provider": { args: [provider: TextProvider]; result: AiStatus };
   "ai:install-claude": { args: []; result: ClaudeCodeStatus };
@@ -762,9 +761,8 @@ export const IPC_CHANNELS = [
   "material:add-to-character",
   "usage:balances",
   "usage:stats",
-  "providers:status",
-  "providers:set-key",
-  "providers:clear-key",
+  "product-key:status",
+  "product-key:save",
   "ai:status",
   "ai:set-text-provider",
   "ai:install-claude",

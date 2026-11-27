@@ -170,8 +170,8 @@ function Status<T>({
   );
   return (
     <Card className="text-muted-foreground">
-      {result.status === "no-key" && <>Chưa có khóa. Thêm trong {toSettings}.</>}
-      {result.status === "no-permission" && <>Khóa không được xem số dư.</>}
+      {result.status === "no-key" && <>Chưa có mã sản phẩm. Nhập trong {toSettings}.</>}
+      {result.status === "no-permission" && <>Mã này không xem được số dư.</>}
       {result.status === "error" && <>Không đọc được số dư: {result.message}</>}
     </Card>
   );

@@ -1,9 +1,7 @@
 import type { Balances } from "../shared/ipc";
+import { fetchBalance } from "./fal-balance";
 import { getKey } from "./providers";
 import { readClaudeLimits } from "./usage";
-
-const TIMEOUT_MS = 10_000;
-const BALANCE_URL = "https://rest.alpha.fal.ai/billing/user_balance";
 
 function parseBalance(body: string): number | null {
   const text = body.trim();
@@ -12,13 +10,10 @@ function parseBalance(body: string): number | null {
 }
 
 async function mediaBalance(): Promise<Balances["media"]> {
-  const key = await getKey("fal");
+  const key = await getKey();
   if (!key) return { status: "no-key" };
   try {
-    const res = await fetch(BALANCE_URL, {
-      headers: { Authorization: `Key ${key}` },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    const res = await fetchBalance(key);
     if (res.status === 401 || res.status === 403) return { status: "no-permission" };
     if (!res.ok) return { status: "error", message: `Lỗi ${res.status}` };
     const balance = parseBalance(await res.text());

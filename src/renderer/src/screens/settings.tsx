@@ -4,9 +4,7 @@ import type {
   ClaudeCodeStatus,
   DevProfile,
   DevProfiles,
-  ProviderId,
-  ProviderStatus,
-  ProvidersInfo,
+  ProductKeyStatus,
   TextProvider,
   ThemePreference,
 } from "@shared/ipc";
@@ -31,33 +29,16 @@ const THEMES: { value: ThemePreference; label: string }[] = [
   { value: "system", label: "Theo hệ thống" },
 ];
 
-const PROVIDER_NAMES: Record<ProviderId, string> = {
-  fal: "fal.ai",
-};
-
 export function SettingsPage() {
   const { preference, setPreference } = useTheme();
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [providers, setProviders] = useState<ProvidersInfo | null>(null);
   const notes = useWorkspace().notes ?? [];
-  const { error, run } = useAction();
+  const { run } = useAction();
   const devFeatures = info?.devFeatures === true;
 
-  const load = useCallback(
-    () =>
-      run(async () => {
-        const [app, keys] = await Promise.all([
-          api.invoke("app:info"),
-          api.invoke("providers:status"),
-        ]);
-        setInfo(app);
-        setProviders(keys);
-      }),
-    [run],
-  );
   useEffect(() => {
-    void load();
-  }, [load]);
+    void run(async () => setInfo(await api.invoke("app:info")));
+  }, [run]);
 
   return (
     <Page className="max-w-2xl">
@@ -83,6 +64,8 @@ export function SettingsPage() {
         </fieldset>
       </Section>
 
+      <ProductKeySection devFeatures={devFeatures} />
+
       <TextAiSection offersPaidText={devFeatures} />
 
       {notes.length > 0 && (
@@ -90,39 +73,6 @@ export function SettingsPage() {
           <div className="-mx-3">
             <NotesList notes={notes} />
           </div>
-        </Section>
-      )}
-
-      {devFeatures && (
-        <Section title="Khóa API">
-          {error && (
-            <div className="mb-3 flex items-center gap-2">
-              <span className="text-xs text-destructive-foreground">{error}</span>
-              <Button variant="ghost-muted" size="sm" onClick={load}>
-                Thử lại
-              </Button>
-            </div>
-          )}
-          {providers && (
-            <>
-              <p className="mb-4 text-muted-foreground">
-                {providers.mode === "fixture"
-                  ? "Chế độ thử: dùng kết quả mẫu, không gọi API trả phí."
-                  : "Gọi API thật: mỗi lần tạo có thể tốn phí."}
-              </p>
-              <div className="flex flex-col gap-3">
-                {providers.providers.map((p) => (
-                  <ProviderKeyRow
-                    key={p.id}
-                    id={p.id}
-                    source={p.source}
-                    canStore={providers.canStoreKeys}
-                    onChange={setProviders}
-                  />
-                ))}
-              </div>
-            </>
-          )}
         </Section>
       )}
 
@@ -386,7 +336,7 @@ function TextAiSection({ offersPaidText }: { offersPaidText: boolean }) {
   const paidOption = {
     value: "fal" as const,
     label: "fal.ai",
-    detail: "Dùng khóa fal ở trên. Mỗi lần gọi tính phí nhỏ vào tài khoản fal.",
+    detail: "Dùng mã sản phẩm ở trên. Mỗi lần gọi tính phí nhỏ vào tài khoản fal.",
   };
   const options: { value: TextProvider; label: string; detail: string; disabled?: boolean }[] = [
     ...(offersPaidText ? [paidOption] : []),
@@ -469,68 +419,108 @@ function TextAiSection({ offersPaidText }: { offersPaidText: boolean }) {
   );
 }
 
-function ProviderKeyRow(props: {
-  id: ProviderId;
-  source: ProviderStatus["source"];
-  canStore: boolean;
-  onChange: (info: ProvidersInfo) => void;
-}) {
+function ProductKeySection({ devFeatures }: { devFeatures: boolean }) {
+  const [status, setStatus] = useState<ProductKeyStatus | null>(null);
+  const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
-  const { error, run } = useAction();
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const { error: loadError, run } = useAction();
 
-  const save = () =>
-    run(async () => {
-      props.onChange(await api.invoke("providers:set-key", props.id, value));
-      setValue("");
+  const load = useCallback(
+    () => run(async () => setStatus(await api.invoke("product-key:status"))),
+    [run],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const close = () => {
+    setEditing(false);
+    setValue("");
+    setSaveError(null);
+  };
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    await run(async () => {
+      const saved = await api.invoke("product-key:save", value);
+      if (!saved.ok) {
+        setSaveError(saved.error);
+        return;
+      }
+      setStatus(saved.status);
+      close();
     });
+    setSaving(false);
+  };
 
   return (
-    <div className="rounded-lg border px-4 py-3">
-      <div className="flex items-center gap-3">
-        <span className="flex-1 font-medium">{PROVIDER_NAMES[props.id]}</span>
-        <span className="text-xs text-muted-foreground">
-          {props.source === "env"
-            ? "Đã cấu hình (.env.local)"
-            : props.source === "stored"
-              ? "Đã lưu"
-              : props.source === "bundled"
-                ? "Có sẵn"
-                : "Chưa cấu hình"}
-        </span>
-        {props.source === "stored" && (
-          <Button
-            variant="ghost-muted"
-            size="xs"
-            onClick={() =>
-              run(async () => props.onChange(await api.invoke("providers:clear-key", props.id)))
-            }
-          >
-            Xóa
+    <Section title="Mã sản phẩm">
+      {loadError && !status && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-destructive-foreground">{loadError}</span>
+          <Button variant="ghost-muted" size="sm" onClick={load}>
+            Thử lại
           </Button>
-        )}
-      </div>
-      {props.source !== "env" && props.canStore && (
-        <form
-          className="mt-3 flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save();
-          }}
-        >
-          <Input
-            type="password"
-            placeholder={props.source === "stored" ? "Thay khóa" : "Dán khóa API"}
-            value={value}
-            onValueChange={setValue}
-            autoComplete="off"
-          />
-          <Button type="submit" variant="outline" disabled={!value.trim()}>
-            Lưu
-          </Button>
-        </form>
+        </div>
       )}
-      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
-    </div>
+      {status && (
+        <>
+          {devFeatures && (
+            <p className="mb-4 text-muted-foreground">
+              {status.mode === "fixture"
+                ? "Chế độ thử: dùng kết quả mẫu, không gọi API trả phí."
+                : "Gọi API thật: mỗi lần tạo có thể tốn phí."}
+            </p>
+          )}
+          <div className="rounded-lg border px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className={cn("flex-1 tabular-nums", !status.tail && "text-muted-foreground")}>
+                {status.tail ?? "Chưa nhập"}
+              </span>
+              {status.source === "env" ? (
+                <span className="text-xs text-muted-foreground">Đặt bởi .env.local</span>
+              ) : (
+                !editing && (
+                  <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                    {status.present ? "Đổi mã" : "Nhập mã"}
+                  </Button>
+                )
+              )}
+            </div>
+            {editing && status.source !== "env" && (
+              <form
+                className="mt-3 flex gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void save();
+                }}
+              >
+                <Input
+                  type="password"
+                  placeholder="Dán mã sản phẩm"
+                  value={value}
+                  onValueChange={setValue}
+                  autoComplete="off"
+                  autoFocus
+                />
+                <Button type="submit" variant="outline" disabled={saving || !value.trim()}>
+                  {saving && <LoaderCircle className="animate-spin" />}
+                  Lưu
+                </Button>
+                <Button type="button" variant="ghost-muted" disabled={saving} onClick={close}>
+                  Hủy
+                </Button>
+              </form>
+            )}
+            {(saveError ?? loadError) && (
+              <p className="mt-2 text-xs text-destructive-foreground">{saveError ?? loadError}</p>
+            )}
+          </div>
+        </>
+      )}
+    </Section>
   );
 }
 

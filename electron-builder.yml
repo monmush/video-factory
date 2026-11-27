@@ -1,5 +1,5 @@
-appId: vn.hyan.videofactory
-productName: Hy An Video Factory
+appId: com.m5studio.app
+productName: M5 Studio
 directories:
   output: dist
   buildResources: build

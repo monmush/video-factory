@@ -22,8 +22,8 @@ const PRICE_TIMEOUT_MS = 10_000;
 const CANCEL_TIMEOUT_MS = 15_000;
 
 async function falKey(): Promise<string> {
-  const key = await getKey("fal");
-  if (!key) throw new Error("Chưa có khóa fal. Thêm khóa trong Cài đặt.");
+  const key = await getKey();
+  if (!key) throw new Error("Chưa có mã sản phẩm. Nhập mã trong Cài đặt.");
   return key;
 }
 

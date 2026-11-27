@@ -40,7 +40,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    title: "Hy An Video Factory",
+    title: "M5 Studio",
     backgroundColor: nativeTheme.shouldUseDarkColors
       ? SIDEBAR_COLOR_BEHIND_CONTENT.dark
       : SIDEBAR_COLOR_BEHIND_CONTENT.light,

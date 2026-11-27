@@ -1,9 +1,9 @@
 {
-  "name": "hyan-video-factory",
-  "productName": "Hy An Video Factory",
+  "name": "m5-studio",
+  "productName": "M5 Studio",
   "version": "0.1.0",
   "private": true,
-  "description": "Desktop app for producing Hy An tea videos in batches",
+  "description": "Desktop app for producing product videos in batches",
   "main": "./out/main/index.js",
   "packageManager": "pnpm@10.33.0",
   "engines": {
@@ -20,9 +20,8 @@
     "format": "biome check --write .",
     "check": "pnpm typecheck && pnpm lint && pnpm check:comments && pnpm test && pnpm build",
     "check:comments": "node scripts/check-comments.mjs",
-    "package:mac": "node scripts/fetch-ffmpeg.mjs && HYAN_BUNDLE_KEYS=1 pnpm build:package && electron-builder --mac",
-    "package:mac:dir": "node scripts/fetch-ffmpeg.mjs && HYAN_BUNDLE_KEYS=1 pnpm build:package && electron-builder --mac --dir",
-    "package:mac:nokeys": "node scripts/fetch-ffmpeg.mjs && pnpm build:package && electron-builder --mac",
+    "package:mac": "node scripts/fetch-ffmpeg.mjs && pnpm build:package && electron-builder --mac",
+    "package:mac:dir": "node scripts/fetch-ffmpeg.mjs && pnpm build:package && electron-builder --mac --dir",
     "package:win": "pnpm build:package && electron-builder --win",
     "test": "vitest run"
   },

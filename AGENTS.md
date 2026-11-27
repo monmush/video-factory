@@ -1,4 +1,4 @@
-# Hy An Video Factory
+# M5 Studio
 
 Read `docs/private/USERS_AND_GOALS.md` first (private, local): who the users are, the product goals in order and the current project goal. Every design or product decision is checked against it. Then `PROJECT_CONTEXT.md` (a private local file, not in the repository) for the pilot's terms and constraints, `docs/README.md` for the product reference and `docs/TECH_STACK_AND_SKILLS.md` for agreed technology choices. `docs/private/`, `docs/archive/`, `project/`, `prototypes/` and `experiments/` are private and local only; never publish or copy their content into tracked files. Research recommendations are not automatically agreed decisions.
 
@@ -14,7 +14,7 @@ Work is tracked in `project/TODO.md` (a private local file). Read it at the star
 
 - `pnpm dev` runs the app (fixture mode, keys from `.env.local`). It restarts the app when main-process or preload code changes (`--watch`); renderer changes hot-reload. Use `HYAN_DATA_DIR=<tmp folder>` to avoid touching real data.
 - Test profiles (dev, or a packaged build launched with `HYAN_DEV=1`): Settings → "Hồ sơ thử nghiệm" creates empty data folders and restarts into one. `HYAN_PROFILES_ROOT=<tmp folder>` moves the default and test profiles there; `HYAN_DATA_DIR` turns profiles off.
-- `pnpm dev:fresh` starts with a new empty data folder (first-run onboarding). `HYAN_FAKE_CLAUDE=missing` or `signed-out` fakes the Claude install/login state in development; install and login then advance it without touching the real Claude.
+- `pnpm dev:fresh` starts with a new empty data folder (first-run onboarding). `HYAN_FAKE_CLAUDE=missing` or `signed-out` fakes the Claude install/login state in development; install and login then advance it without touching the real Claude. `HYAN_FAKE_PRODUCT_KEY=missing` ignores `FAL_KEY` from `.env.local`, so the product key step in onboarding and Settings can be tried; the key check stays real (it is free).
 - Run `pnpm check` (typecheck, Biome, comment check, Vitest, build) before handing work back. `pnpm format` fixes formatting.
 - No comments in code. The code is the single source of truth: carry intent in names, small functions, types and tests. `pnpm check` fails on any comment (`pnpm check:comments [paths]`).
 - No workaround explained by a comment. Implement it the correct way, even when that is more effort.

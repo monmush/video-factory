@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { app } from "electron";
 import type { DevProfiles } from "../shared/ipc";
 import { devFeatures } from "./dev";
+import { adoptFormerFolder } from "./former-data-folder";
 import { writeJsonAtomic } from "./paths";
 import {
   activeProfile,
@@ -42,7 +43,11 @@ function locateFolders(): Folders {
   }
   const base = app.getPath("userData");
   const defaultDir = app.isPackaged ? base : `${base} (dev)`;
-  return { defaultDir, profilesDir: `${defaultDir} profiles` };
+  const found = { defaultDir, profilesDir: `${defaultDir} profiles` };
+  for (const folder of [found.defaultDir, found.profilesDir]) {
+    adoptFormerFolder(folder, app.getName());
+  }
+  return found;
 }
 
 function requireFolders(): Folders {

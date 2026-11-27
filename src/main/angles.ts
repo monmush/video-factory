@@ -37,7 +37,7 @@ function prompt(angle: CoreAngle, description: string) {
 
 export async function estimateAngles(model: AngleModel, count: number): Promise<{ cost: number }> {
   const { endpoint, fallbackUsd } = MODELS[model];
-  const key = await getKey("fal");
+  const key = await getKey();
   if (!key || count <= 0) return { cost: fallbackUsd * Math.max(count, 0) };
   try {
     const res = await fetch("https://api.fal.ai/v1/models/pricing/estimate", {

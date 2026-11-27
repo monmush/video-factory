@@ -16,9 +16,9 @@ describe("actionEvent", () => {
       ok: true,
       sessionId: "s",
     });
-    expect(actionEvent("providers:set-key", ["fal", "fal-sk-secret"], 3, null)).toEqual({
+    expect(actionEvent("product-key:save", ["fal-sk-secret"], 3, null)).toEqual({
       name: "action",
-      channel: "providers:set-key",
+      channel: "product-key:save",
       ms: 3,
       ok: true,
     });
