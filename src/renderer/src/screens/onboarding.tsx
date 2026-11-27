@@ -185,8 +185,8 @@ function Step({
         <span
           className={cn(
             "grid size-6 shrink-0 place-items-center rounded-full border font-medium text-xs tabular-nums",
-            state === "done" && "border-primary bg-primary text-primary-foreground",
-            state === "current" && "border-primary text-primary",
+            state === "done" && "border-transparent bg-muted text-muted-foreground",
+            state === "current" && "border-foreground text-foreground",
             state === "pending" && "text-muted-foreground",
           )}
         >

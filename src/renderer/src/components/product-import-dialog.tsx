@@ -140,8 +140,12 @@ function ImportBoard({
 
   const room = MAX_IMPORT_PHOTOS - photos.size;
 
-  const addPhotos = (staged: StagedImage[], offered: number) => {
+  const addPhotos = (staged: StagedImage[], offered: number, into?: string) => {
     const accepted = staged.slice(0, Math.max(0, room));
+    const target = groups.find((g) => g.key === into);
+    const fits = accepted
+      .slice(0, target ? Math.max(0, MAX_CHARACTER_IMAGES - target.photos.length) : 0)
+      .map((s) => s.id);
     const notes = [
       offered > staged.length ? `Bỏ qua ${offered - staged.length} tệp không phải ảnh.` : null,
       accepted.length < staged.length
@@ -154,7 +158,13 @@ function ImportBoard({
       for (const s of accepted) next.set(s.id, { key: s.id, url: s.url });
       return next;
     });
-    setUnassigned((current) => [...current, ...accepted.map((s) => s.id)]);
+    setGroups((current) =>
+      current.map((g) => (g.key === into ? { ...g, photos: [...g.photos, ...fits] } : g)),
+    );
+    setUnassigned((current) => [
+      ...current,
+      ...accepted.map((s) => s.id).filter((id) => !fits.includes(id)),
+    ]);
   };
 
   const withAdding = async (task: () => Promise<void>) => {
@@ -169,19 +179,19 @@ function ImportBoard({
     }
   };
 
-  const pickPhotos = () =>
+  const pickPhotos = (into?: string) =>
     withAdding(async () => {
       const staged = await api.invoke("assets:pick-images");
-      addPhotos(staged, staged.length);
+      addPhotos(staged, staged.length, into);
     });
 
-  const dropFiles = (event: DragEvent) => {
+  const dropFiles = (event: DragEvent, into?: string) => {
     const files = [...event.dataTransfer.files];
     if (files.length === 0 || adding || busy || room <= 0) return false;
     const paths = api.pathsForFiles(files);
     if (paths.length) {
       void withAdding(async () =>
-        addPhotos(await api.invoke("assets:stage-paths", paths), paths.length),
+        addPhotos(await api.invoke("assets:stage-paths", paths), paths.length, into),
       );
     }
     return true;
@@ -196,10 +206,19 @@ function ImportBoard({
       applyGrouping(result, keys);
       setPhase("review");
     } catch (e) {
-      setError(`Không xếp nhóm được: ${errorMessage(e)}`);
+      setError(`Không đọc được ảnh: ${errorMessage(e)}`);
     } finally {
       setGrouping(false);
     }
+  };
+
+  const fillInByHand = () => {
+    setNote(null);
+    if (photos.size <= MAX_CHARACTER_IMAGES) {
+      setGroups([emptyGroup([...photos.keys()])]);
+      setUnassigned([]);
+    }
+    setPhase("review");
   };
 
   const applyGrouping = (result: ProductGroupingResult, keys: string[]) => {
@@ -324,7 +343,7 @@ function ImportBoard({
   const dropTarget = (handlers: {
     photo?: (key: string) => void;
     group?: (key: string) => void;
-    files?: boolean;
+    files?: boolean | string;
   }) => ({
     onDragOver: (event: DragEvent) => {
       const types = event.dataTransfer.types;
@@ -345,7 +364,8 @@ function ImportBoard({
       const group = event.dataTransfer.getData(GROUP);
       if (photo && handlers.photo) handlers.photo(photo);
       else if (group && handlers.group) handlers.group(group);
-      else if (handlers.files) dropFiles(event);
+      else if (handlers.files)
+        dropFiles(event, typeof handlers.files === "string" ? handlers.files : undefined);
     },
   });
 
@@ -412,11 +432,13 @@ function ImportBoard({
   };
 
   const topLevel = groups.filter((g) => g.parent === null);
+  const only = groups.length === 1 ? groups[0] : undefined;
+  const single = only?.include === true && unassigned.length === 0 && skipped.length === 0;
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Nhập nhiều sản phẩm</DialogTitle>
+        <DialogTitle>Thêm sản phẩm</DialogTitle>
       </DialogHeader>
 
       {phase === "pick" ? (
@@ -430,7 +452,7 @@ function ImportBoard({
                 <ImagePlus className="size-5" />
               </div>
               <div className="font-medium">Thả ảnh sản phẩm vào đây</div>
-              <p className="text-xs text-muted-foreground">Tối đa {MAX_IMPORT_PHOTOS} ảnh</p>
+              <p className="text-xs text-muted-foreground">Một hay nhiều sản phẩm đều được</p>
             </div>
           ) : (
             <div className="grid max-h-full w-full grid-cols-[repeat(auto-fill,minmax(168px,1fr))] content-start gap-3 overflow-y-auto">
@@ -451,15 +473,29 @@ function ImportBoard({
             </div>
           )}
           <div className="flex items-center gap-2">
-            <Button variant="outline" disabled={adding || busy || room <= 0} onClick={pickPhotos}>
+            <Button
+              variant="outline"
+              disabled={adding || busy || room <= 0}
+              onClick={() => pickPhotos()}
+            >
               {adding ? <LoaderCircle className="animate-spin" /> : <ImagePlus />}
               {photos.size ? `Thêm ảnh (${photos.size}/${MAX_IMPORT_PHOTOS})` : "Chọn ảnh"}
             </Button>
           </div>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_260px] overflow-hidden">
-          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto p-4">
+        <div
+          className={cn(
+            "grid min-h-0 flex-1 overflow-hidden",
+            single ? "grid-cols-1" : "grid-cols-[minmax(0,1fr)_260px]",
+          )}
+        >
+          <div
+            className={cn(
+              "flex min-h-0 flex-col gap-3 overflow-y-auto p-4",
+              single && "mx-auto w-full max-w-2xl",
+            )}
+          >
             {dragKind === "group" && (
               <DropZone
                 label="Thả vào đây để tách khỏi bộ"
@@ -472,6 +508,10 @@ function ImportBoard({
                   group={group}
                   problem={group.include ? problems.get(group.key) : undefined}
                   busy={busy}
+                  alone={single}
+                  onAddPhotos={
+                    single && room > 0 && !adding ? () => pickPhotos(group.key) : undefined
+                  }
                   thumb={thumb}
                   onChange={(patch) => updateGroup(group.key, patch)}
                   onRemove={() => removeGroup(group.key)}
@@ -480,6 +520,7 @@ function ImportBoard({
                   dropProps={dropTarget({
                     photo: (p) => movePhotoToGroup(p, group.key),
                     group: (g) => nestGroup(g, group.key),
+                    files: single ? group.key : undefined,
                   })}
                   onPhotoOut={unassignPhoto}
                 />
@@ -518,8 +559,13 @@ function ImportBoard({
             </button>
           </div>
 
-          <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto border-l p-4">
-            <Tray title="Chưa xếp nhóm" {...dropTarget({ photo: unassignPhoto, files: true })}>
+          <aside
+            className={cn(
+              "flex min-h-0 flex-col gap-4 overflow-y-auto border-l p-4",
+              single && "hidden",
+            )}
+          >
+            <Tray title="Ảnh chưa dùng" {...dropTarget({ photo: unassignPhoto, files: true })}>
               {unassigned.map((key) =>
                 thumb(
                   key,
@@ -530,7 +576,7 @@ function ImportBoard({
                 <button
                   type="button"
                   disabled={adding || busy}
-                  onClick={pickPhotos}
+                  onClick={() => pickPhotos()}
                   className="grid size-20 cursor-pointer place-items-center rounded-lg border border-dashed text-muted-foreground hover:bg-accent/50"
                   aria-label="Thêm ảnh"
                   title="Thêm ảnh"
@@ -577,7 +623,7 @@ function ImportBoard({
       {confirmDiscard && dirty && !busy ? (
         <DialogFooter className="bg-warning-surface">
           <span className="flex-1 text-warning-foreground">
-            Đóng sẽ bỏ {photos.size} ảnh và cách xếp nhóm hiện tại. Chưa có sản phẩm nào được tạo.
+            Đóng sẽ bỏ {photos.size} ảnh. Chưa có sản phẩm nào được tạo.
           </span>
           <Button variant="outline" onClick={() => setConfirmDiscard(false)}>
             Ở lại
@@ -594,36 +640,33 @@ function ImportBoard({
               <Button
                 variant="ghost-muted"
                 disabled={photos.size === 0 || busy || adding}
-                onClick={() => {
-                  setNote(null);
-                  setPhase("review");
-                }}
+                onClick={fillInByHand}
               >
-                Tự xếp nhóm
+                Tự nhập tên
               </Button>
               {paidText ? (
                 <HoldButton disabled={photos.size === 0 || busy || adding} onHold={autoGroup}>
                   {grouping ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                  {grouping ? "Đang xếp nhóm…" : "Giữ để xếp nhóm tự động"}
+                  {grouping ? "Đang đọc ảnh…" : "Giữ để AI đọc ảnh"}
                 </HoldButton>
               ) : (
                 <Button disabled={photos.size === 0 || busy || adding} onClick={autoGroup}>
                   {grouping ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                  {grouping ? "Đang xếp nhóm…" : "Xếp nhóm tự động"}
+                  {grouping ? "Đang đọc ảnh…" : "Tiếp tục"}
                 </Button>
               )}
             </>
           ) : (
             <>
               <span className="flex-1 text-xs text-muted-foreground">
-                {problems.size > 0 ? `${problems.size} sản phẩm cần sửa` : null}
+                {problems.size > 0 && !single ? `${problems.size} sản phẩm cần sửa` : null}
               </span>
               <Button variant="outline" disabled={busy} onClick={cancel}>
                 Hủy
               </Button>
               <Button disabled={!canCreate} onClick={create}>
                 {saving && <LoaderCircle className="animate-spin" />}
-                Tạo {included.length} sản phẩm
+                {included.length === 1 ? "Tạo sản phẩm" : `Tạo ${included.length} sản phẩm`}
               </Button>
             </>
           )}
@@ -637,6 +680,8 @@ function GroupRow({
   group,
   problem,
   busy,
+  alone = false,
+  onAddPhotos,
   thumb,
   onChange,
   onRemove,
@@ -648,6 +693,8 @@ function GroupRow({
   group: Group;
   problem?: string;
   busy: boolean;
+  alone?: boolean;
+  onAddPhotos?: () => void;
   thumb: (key: string, extra?: ReactNode) => ReactNode;
   onChange: (patch: Partial<Group>) => void;
   onRemove: () => void;
@@ -674,7 +721,7 @@ function GroupRow({
         dropProps.onDrop(e);
       }}
     >
-      <div className="flex flex-col items-center gap-2 pt-1">
+      <div className={cn("flex flex-col items-center gap-2 pt-1", alone && "hidden")}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer drag-and-drop on the review board; every item also has buttons */}
         <span
           draggable={!busy}
@@ -718,8 +765,9 @@ function GroupRow({
           <Button
             variant="ghost-muted"
             size="icon-xs"
-            aria-label="Bỏ nhóm này"
-            title="Bỏ nhóm"
+            aria-label="Bỏ sản phẩm này"
+            title="Bỏ sản phẩm này"
+            className={cn(alone && "hidden")}
             disabled={busy}
             onClick={onRemove}
           >
@@ -741,6 +789,18 @@ function GroupRow({
                 <X className="size-3.5" />
               </button>,
             ),
+          )}
+          {onAddPhotos && group.photos.length > 0 && group.photos.length < MAX_CHARACTER_IMAGES && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onAddPhotos}
+              className="grid size-28 cursor-pointer place-items-center rounded-lg border border-dashed text-muted-foreground hover:bg-accent/50"
+              aria-label="Thêm ảnh"
+              title="Thêm ảnh"
+            >
+              <ImagePlus className="size-4" />
+            </button>
           )}
           {group.photos.length === 0 && (
             <div className="grid h-20 flex-1 place-items-center rounded-lg border border-dashed text-xs text-muted-foreground">
