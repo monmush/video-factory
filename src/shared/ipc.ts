@@ -452,6 +452,8 @@ export interface IpcContract {
   "app:info": { args: []; result: AppInfo };
   "app:open-data-dir": { args: []; result: null };
   "app:problem-report": { args: []; result: { file: string } };
+  "setup:export": { args: []; result: { file: string } };
+  "setup:import": { args: []; result: { series: number; assets: number; skipped: number } | null };
   "dev:profiles": { args: []; result: DevProfiles | null };
   "dev:create-profile": { args: [name: string]; result: DevProfiles | null };
   "dev:switch-profile": { args: [id: string]; result: null };
@@ -684,6 +686,8 @@ export const IPC_CHANNELS = [
   "app:info",
   "app:open-data-dir",
   "app:problem-report",
+  "setup:export",
+  "setup:import",
   "dev:profiles",
   "dev:create-profile",
   "dev:switch-profile",

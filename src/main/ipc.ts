@@ -45,6 +45,7 @@ import { clearKey, providersInfo, setKey } from "./providers";
 import { childPath } from "./safe-path";
 import { draftGuide } from "./series-guide";
 import { readSettings, writeSettings } from "./settings";
+import { exportSetup, importSetup, SETUP_EXTENSION } from "./setup-file";
 import {
   answerSeriesQuestion,
   approveSession,
@@ -53,6 +54,7 @@ import {
   deleteSeries,
   deleteSession,
   getWorkspace,
+  mutate,
   removeNote,
   updateNote,
   updateSeries,
@@ -90,6 +92,30 @@ export function registerIpc() {
     });
     shell.showItemInFolder(file);
     return { file };
+  });
+  handle("setup:export", async () => {
+    const file = await exportSetup({
+      dataDir: dataDir(),
+      destination: app.getPath("downloads"),
+      ws: await getWorkspace(),
+      appVersion: app.getVersion(),
+    });
+    shell.showItemInFolder(file);
+    return { file };
+  });
+  handle("setup:import", async () => {
+    const options: Electron.OpenDialogOptions = {
+      title: "Nhập thiết lập",
+      properties: ["openFile"],
+      filters: [{ name: "Thiết lập", extensions: [SETUP_EXTENSION, "zip"] }],
+    };
+    const win = BrowserWindow.getFocusedWindow();
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    const file = result.filePaths[0];
+    if (result.canceled || !file) return null;
+    return mutate((ws) => importSetup({ file, dataDir: dataDir(), ws }));
   });
   handle("dev:profiles", listProfiles);
   handle("dev:create-profile", createProfile);

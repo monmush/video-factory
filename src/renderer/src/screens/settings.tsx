@@ -127,6 +127,8 @@ export function SettingsPage() {
         </Section>
       )}
 
+      <ShareSetupSection />
+
       <ProblemReportSection />
 
       {info && (
@@ -149,6 +151,58 @@ export function SettingsPage() {
 
       <DevProfilesSection />
     </Page>
+  );
+}
+
+function importOutcome(added: { series: number; assets: number; skipped: number }): string {
+  if (added.series === 0 && added.assets === 0) return "Mọi thứ trong tệp đã có sẵn.";
+  const kept = added.skipped > 0 ? ` ${added.skipped} mục đã có, giữ nguyên.` : "";
+  return `Đã thêm ${added.series} series, ${added.assets} mục thư viện.${kept}`;
+}
+
+function ShareSetupSection() {
+  const ws = useWorkspace();
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<string | null>(null);
+  const { error, run } = useAction();
+  const empty = ws.series.length === 0 && ws.assets.length === 0;
+
+  const act = async (action: () => Promise<string | null>) => {
+    setBusy(true);
+    setOutcome(null);
+    await run(async () => setOutcome(await action()));
+    setBusy(false);
+  };
+  const exportSetup = () =>
+    act(async () => {
+      await api.invoke("setup:export");
+      return "Đã lưu vào thư mục Tải về.";
+    });
+  const importSetup = () =>
+    act(async () => {
+      const added = await api.invoke("setup:import");
+      return added ? importOutcome(added) : null;
+    });
+
+  return (
+    <Section title="Chia sẻ thiết lập">
+      <p className="mb-3 text-muted-foreground">Series và thư viện, không gồm video.</p>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || empty}
+          onClick={() => void exportSetup()}
+        >
+          Xuất
+        </Button>
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => void importSetup()}>
+          Nhập
+        </Button>
+      </div>
+      {outcome && <p className="mt-2 text-xs text-muted-foreground">{outcome}</p>}
+      {error && <p className="mt-2 text-xs text-destructive-foreground">{error}</p>}
+    </Section>
   );
 }
 

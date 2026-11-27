@@ -14,6 +14,7 @@ import {
 import { seriesModels } from "../shared/models";
 import { MAX_NOTE_LENGTH, type Note, type NoteArea, putNote } from "../shared/notes";
 import { mixProblem, type ProductMix } from "../shared/product-mix";
+import { withoutOldSeriesFields } from "../shared/saved-series";
 import {
   answerQuestion,
   confirmGuide,
@@ -29,21 +30,6 @@ const FILE = "workspace.json";
 const empty = (): Workspace => ({ version: 1, series: [], sessions: [], assets: [] });
 
 let cache: Workspace | null = null;
-
-type SavedSeries = Partial<Series> &
-  Pick<Series, "id"> & { videoModel?: unknown; resolution?: unknown; mediaLevel?: unknown };
-
-function withoutOldSeriesFields(saved: SavedSeries): Series {
-  const { videoModel: _model, resolution: _size, mediaLevel: _level, models, ...series } = saved;
-  const picked = seriesModels(models);
-  return {
-    ...(series as Series),
-    characterIds: series.characterIds ?? [],
-    productIds: series.productIds ?? [],
-    environmentIds: series.environmentIds ?? [],
-    ...(picked ? { models: picked } : {}),
-  };
-}
 
 function withoutOldSessionFields(session: Session): Session {
   if (!session.settings) return session;

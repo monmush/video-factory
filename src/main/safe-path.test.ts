@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { childPath, childPathOrNull, isSafeSegment } from "./safe-path";
+import { isSafeSegment } from "../shared/safe-segment";
+import { childPath, childPathOrNull } from "./safe-path";
 
 const root = "/data/assets";
 
