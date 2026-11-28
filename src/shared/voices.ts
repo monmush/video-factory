@@ -169,6 +169,12 @@ function strongestTraits(found: Found[]): VoiceTraits {
 export const guessVoiceTraits = (name: string, description: string): VoiceTraits =>
   strongestTraits([...cluesIn(name), ...cluesIn(description)]);
 
+const UPLOADED_SAMPLE = /^upload-[0-9a-f]{64}\.mp3$/;
+
+export const isUploadedSample = (name: string) => UPLOADED_SAMPLE.test(name);
+
+export const uploadedSampleName = (sha256Hex: string) => `upload-${sha256Hex}.mp3`;
+
 export const voiceKey = (text: string) =>
   text.normalize("NFC").trim().toLocaleLowerCase("vi").replace(/\s+/g, " ");
 

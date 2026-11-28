@@ -253,6 +253,7 @@ export interface Asset {
   images: AssetImage[];
   contains?: string[];
   voice?: string;
+  voiceSample?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -312,6 +313,7 @@ export interface AssetInput {
   images: ImageRef[];
   contains?: string[];
   voice?: string;
+  voiceSample?: string | null;
 }
 
 export interface VoiceSuggestion {
@@ -398,6 +400,12 @@ export interface VoiceSampleAsk {
   text: string;
   name: string;
   description: string;
+  uploaded?: string;
+}
+
+export interface UploadedVoice {
+  file: string;
+  url: string;
 }
 
 export const mediaUrl = {
@@ -625,6 +633,7 @@ export interface IpcContract {
   "voices:sample": { args: [voice: VoiceSampleAsk]; result: { url: string | null } };
   "voices:make": { args: [voice: VoiceSampleAsk]; result: { url: string } };
   "voices:remake": { args: [voice: VoiceSampleAsk]; result: { url: string } };
+  "voices:pick-upload": { args: []; result: UploadedVoice | null };
   "material:list": { args: [seriesId: string]; result: MaterialItem[] };
   "material:set-reusable": {
     args: [input: { seriesId: string; itemId: string; reusable: boolean }];
@@ -764,6 +773,7 @@ export const IPC_CHANNELS = [
   "voices:sample",
   "voices:make",
   "voices:remake",
+  "voices:pick-upload",
   "material:list",
   "material:set-reusable",
   "material:remove",

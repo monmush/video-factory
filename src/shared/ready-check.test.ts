@@ -142,6 +142,22 @@ describe("characters who speak with the same voice", () => {
     expect(needsAttention(check)).toBe(true);
   });
 
+  it("compares uploaded recordings by file rather than by voice text", () => {
+    const text = "Giọng nam trẻ, miền Bắc, sáng";
+    const upload = (n: string) => `upload-${n.repeat(64)}.mp3`;
+    const different = [
+      character("a", { voice: text, voiceSample: upload("1") }),
+      character("b", { voice: text, voiceSample: upload("2") }),
+    ];
+    expect(readyCheck([speaking], ["1"], different, SERIES).sharedVoices).toEqual([]);
+    const same = [
+      character("a", { voice: text, voiceSample: upload("1") }),
+      character("b", { voice: "Giọng nữ lớn tuổi", voiceSample: upload("1") }),
+    ];
+    const check = readyCheck([speaking], ["1"], same, SERIES);
+    expect(check.sharedVoices.map((g) => g.map((c) => c.id))).toEqual([["a", "b"]]);
+  });
+
   it("says nothing when the speakers' voices differ", () => {
     const cast = [
       character("a", { voice: "Giọng nam trẻ, miền Bắc, sáng" }),

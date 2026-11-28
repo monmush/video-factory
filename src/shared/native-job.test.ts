@@ -327,6 +327,33 @@ describe("each character's voice sample", () => {
     expect(withVoiceChoices(started, [becameAMan]).voices).toEqual(started.voices);
   });
 
+  it("takes an uploaded voice as ready and unpriced, and follows its adding and removal until the video runs", () => {
+    const staged = { ...plannedJob(), voicesKept: undefined };
+    const generated = {
+      characterId: "a",
+      text: "Giọng nữ trẻ",
+      character: {},
+      file: "a1.mp3",
+      ready: false,
+    };
+    const uploaded = {
+      ...generated,
+      file: `upload-${"0".repeat(64)}.mp3`,
+      ready: true,
+      uploaded: true as const,
+    };
+    const voiceGroup = (job: VideoJob) => costPanel(job)?.groups.map((g) => g.label);
+    const withUpload = withVoiceChoices(staged, [uploaded]);
+    expect(withUpload.voices?.[0]).toMatchObject({ file: uploaded.file, uploaded: true });
+    expect(withUpload.voices?.[0]?.toMake).toBeUndefined();
+    expect(voiceGroup(withUpload)).not.toContain("Giọng nhân vật");
+    const removed = withVoiceChoices(withUpload, [generated]);
+    expect(removed.voices?.[0]).toMatchObject({ file: "a1.mp3", toMake: true });
+    expect(removed.voices?.[0]?.uploaded).toBeUndefined();
+    expect(voiceGroup(removed)).toContain("Giọng nhân vật");
+    expect(withVoiceChoices(removed, [uploaded]).voices?.[0]?.file).toBe(uploaded.file);
+  });
+
   it("fails the video after a second failed attempt, and is tried again on resume", () => {
     const job = running(withVoices(plannedJob(), false));
     const once = stepReportedFailure(job, { voice: "a" }, "lỗi");

@@ -1,10 +1,11 @@
 import { VOICE_SAMPLE_USD } from "@shared/cost/rates";
 import { estimateText } from "@shared/cost/table";
-import type { VoiceSuggestion } from "@shared/ipc";
+import type { UploadedVoice, VoiceSuggestion } from "@shared/ipc";
 import { cleanVoiceText, guessVoiceTraits, MAX_VOICE_CHARS, spokenTraits } from "@shared/voices";
-import { LoaderCircle, Play, Square } from "lucide-react";
+import { LoaderCircle, Play, Square, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { errorMessage } from "@/lib/errors";
 import { Button } from "./ui/button";
 import { ButtonPrice, HoldButton } from "./ui/hold-button";
 import { Textarea } from "./ui/textarea";
@@ -20,6 +21,8 @@ export function VoiceField({
   description,
   disabled,
   onChange,
+  uploaded,
+  onUploadedChange,
 }: {
   value: string;
   shown: string;
@@ -28,15 +31,77 @@ export function VoiceField({
   description: string;
   disabled?: boolean;
   onChange: (typed: string | null) => void;
+  uploaded: string | null;
+  onUploadedChange: (file: string | null) => void;
 }) {
   const suggestions = useVoiceSuggestions(name, description);
+  const player = usePlayer();
+  const upload = useUploadedVoice(uploaded);
+  const [picking, setPicking] = useState(false);
+  const [pickFailed, setPickFailed] = useState<string | null>(null);
+  const changeLocked = disabled || picking;
+
+  const pick = async () => {
+    setPicking(true);
+    setPickFailed(null);
+    try {
+      const picked = await api.invoke("voices:pick-upload");
+      if (!picked) return;
+      upload.remember(picked);
+      onUploadedChange(picked.file);
+      player.toggle(picked.url);
+    } catch (e) {
+      setPickFailed(errorMessage(e));
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const remove = () => {
+    player.stop();
+    setPickFailed(null);
+    onUploadedChange(null);
+  };
+
+  const playing = upload.url ? player.playing === upload.url : false;
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex min-h-6 items-center justify-between gap-2">
         <label htmlFor="character-voice" className="font-medium">
           Giọng nói
         </label>
-        <ListenControl text={value} name={name} description={description} />
+        <span className="flex items-center gap-2">
+          {pickFailed && <span className="text-xs text-destructive-foreground">{pickFailed}</span>}
+          {upload.url ? (
+            <>
+              <Button variant="outline" size="xs" disabled={changeLocked} onClick={pick}>
+                Đổi
+              </Button>
+              <Button variant="outline" size="xs" disabled={changeLocked} onClick={remove}>
+                Gỡ
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => upload.url && player.toggle(upload.url)}
+              >
+                {playing ? <Square className="fill-current" /> : <Play />}
+                {playing ? "Dừng" : "Nghe thử"}
+              </Button>
+            </>
+          ) : (
+            upload.url === null && (
+              <>
+                <Button variant="outline" size="xs" disabled={changeLocked} onClick={pick}>
+                  <Upload />
+                  Tải lên
+                </Button>
+                <ListenControl text={value} name={name} description={description} player={player} />
+              </>
+            )
+          )}
+        </span>
       </div>
       <Textarea
         id="character-voice"
@@ -121,19 +186,42 @@ function sampleKey(text: string, name: string, description: string): string {
   return JSON.stringify([clean, gender, age ?? null]);
 }
 
+function useUploadedVoice(file: string | null) {
+  const [known, setKnown] = useState<{ file: string; url: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!file || known?.file === file) return;
+    let live = true;
+    api
+      .invoke("voices:sample", { text: "", name: "", description: "", uploaded: file })
+      .then((r) => live && setKnown({ file, url: r.url }))
+      .catch(() => live && setKnown({ file, url: null }));
+    return () => {
+      live = false;
+    };
+  }, [file, known]);
+
+  const remember = useCallback((picked: UploadedVoice) => setKnown(picked), []);
+  const url = !file ? null : known?.file === file ? known.url : undefined;
+  return { url, remember };
+}
+
+type Player = ReturnType<typeof usePlayer>;
+
 function ListenControl({
   text,
   name,
   description,
+  player,
 }: {
   text: string;
   name: string;
   description: string;
+  player: Player;
 }) {
   const [known, setKnown] = useState<{ key: string; url: string | null } | null>(null);
   const [making, setMaking] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const player = usePlayer();
   const key = sampleKey(text, name, description);
   const latestKey = useRef(key);
   latestKey.current = key;

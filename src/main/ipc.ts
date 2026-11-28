@@ -11,7 +11,7 @@ import {
 } from "../shared/ipc";
 import { directionText, seriesTargetSec } from "../shared/series-guide";
 import { usageData } from "../shared/usage-stats";
-import { guessVoiceTraits } from "../shared/voices";
+import { guessVoiceTraits, isUploadedSample } from "../shared/voices";
 import { appAbout, installId, record, recordDerived } from "./activity";
 import { readCostReport, writeActivityExport } from "./activity-export";
 import { estimateAngles, generateAngles } from "./angles";
@@ -71,6 +71,7 @@ import {
 import * as video from "./video/runner";
 import { makeSample, remakeSample, sampleFile, sampleVersion } from "./voice-maker";
 import { suggestVoices } from "./voice-suggestions";
+import { pickUploadedVoice } from "./voice-upload";
 
 type Handler<C extends IpcChannel> = (
   ...args: IpcContract[C]["args"]
@@ -369,9 +370,18 @@ export function registerIpc() {
     return { url };
   };
   const characterOf = (ask: VoiceSampleAsk) => guessVoiceTraits(ask.name, ask.description);
+  const uploadedSampleOf = (file: string) => {
+    if (!isUploadedSample(file)) throw new Error("Invalid uploaded voice");
+    return file;
+  };
   handle("voices:sample", async (ask) => ({
-    url: await sampleUrl(sampleFile(ask.text, characterOf(ask))),
+    url: await sampleUrl(
+      ask.uploaded === undefined
+        ? sampleFile(ask.text, characterOf(ask))
+        : uploadedSampleOf(ask.uploaded),
+    ),
   }));
+  handle("voices:pick-upload", pickUploadedVoice);
   handle("voices:make", async (ask) => madeSampleUrl(await makeSample(ask.text, characterOf(ask))));
   handle("voices:remake", async (ask) =>
     madeSampleUrl(await remakeSample(ask.text, characterOf(ask))),

@@ -226,6 +226,8 @@ function CharacterForm({
       : null,
   );
   const voice = cleanVoiceText(typedVoice ?? "") || defaultVoice;
+  const savedVoiceSample = character?.voiceSample ?? null;
+  const [uploadedVoice, setUploadedVoice] = useState<string | null>(savedVoiceSample);
 
   const generating = pendingAngles.length > 0;
   const inFlight = describing || generating || saving || cleaning.size > 0;
@@ -552,6 +554,8 @@ function CharacterForm({
       images: images.map(toRef),
       contains: kind === "product" ? contains : undefined,
       voice: kind === "character" ? voice : undefined,
+      voiceSample:
+        kind === "character" && uploadedVoice !== savedVoiceSample ? uploadedVoice : undefined,
     };
     try {
       const id = character?.id ?? createdId.current;
@@ -1047,6 +1051,8 @@ function CharacterForm({
               description={description}
               disabled={saving}
               onChange={setTypedVoice}
+              uploaded={uploadedVoice}
+              onUploadedChange={setUploadedVoice}
             />
           )}
 

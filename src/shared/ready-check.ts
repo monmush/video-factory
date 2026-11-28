@@ -119,7 +119,9 @@ function sharedVoices(
   ].flatMap((id) => characters.get(id) ?? []);
   const byVoice = new Map<string, Asset[]>();
   for (const character of cast) {
-    const key = voiceKey(characterVoice(character, assets));
+    const key = character.voiceSample
+      ? `upload:${character.voiceSample}`
+      : voiceKey(characterVoice(character, assets));
     byVoice.set(key, [...(byVoice.get(key) ?? []), character]);
   }
   return [...byVoice.values()].filter((group) => group.length > 1);

@@ -71,7 +71,7 @@ const VOICE_OF_AUDIO_1 =
   "The speaker's voice is the voice heard in Audio 1, with the same timbre, pitch, age and accent. Audio 1 is only a sample of that voice: never repeat its words.";
 
 const voiceDescribed = (voice: string) =>
-  `That voice is described as: "${voice.replace(/"/g, "'").trim()}".`;
+  voice.trim() ? `That voice is described as: "${voice.replace(/"/g, "'").trim()}".` : "";
 
 export interface SpeechPromptInput {
   people: number;

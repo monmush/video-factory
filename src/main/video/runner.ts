@@ -189,6 +189,7 @@ import {
   characterVoiceTraits,
   defaultVoiceText,
   guessVoiceTraits,
+  isUploadedSample,
 } from "../../shared/voices";
 import { record, recordDerived } from "../activity";
 import { getBoard, onBoardChanged } from "../board";
@@ -2329,16 +2330,29 @@ async function runPollSegment(key: string, job: VideoJob, id: string) {
 
 const UNKNOWN_CHARACTER_VOICE = defaultVoiceText(characterVoiceTraits("", ""));
 
+async function characterVoiceChoice(character: Asset, all: readonly Asset[]): Promise<VoiceChoice> {
+  const text = characterVoice(character, all);
+  const traits = guessVoiceTraits(character.name, character.description);
+  const uploaded = character.voiceSample;
+  if (uploaded && isUploadedSample(uploaded) && (await sampleExists(uploaded))) {
+    return {
+      characterId: character.id,
+      text,
+      character: traits,
+      file: uploaded,
+      ready: true,
+      uploaded: true,
+    };
+  }
+  return voiceChoice(character.id, text, traits);
+}
+
 async function voiceChoicesOf(job: VideoJob, all: readonly Asset[]): Promise<VoiceChoice[]> {
   return Promise.all(
     voicesNeeded(job).map((id) => {
       const character = all.find((a) => a.id === id && a.kind === "character");
       return character
-        ? voiceChoice(
-            id,
-            characterVoice(character, all),
-            guessVoiceTraits(character.name, character.description),
-          )
+        ? characterVoiceChoice(character, all)
         : voiceChoice(id, UNKNOWN_CHARACTER_VOICE, {});
     }),
   );

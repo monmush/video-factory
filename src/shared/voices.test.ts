@@ -5,6 +5,7 @@ import {
   characterVoiceTraits,
   defaultVoiceText,
   guessVoiceTraits,
+  isUploadedSample,
   type SavedAsset,
   voiceRegion,
   withVoiceTexts,
@@ -154,5 +155,16 @@ describe("saved characters from before voices were texts", () => {
     expect(unknown?.voice).toMatch(/^Giọng nam lớn tuổi, miền Bắc/);
     expect(new Set([taken, unknown?.voice, none?.voice]).size).toBe(3);
     expect(product).not.toHaveProperty("voice");
+  });
+});
+
+describe("the name of an uploaded voice sample", () => {
+  it("accepts only an upload name, never a path or a generated sample", () => {
+    const hex = "a".repeat(64);
+    expect(isUploadedSample(`upload-${hex}.mp3`)).toBe(true);
+    expect(isUploadedSample(`${hex}.mp3`)).toBe(false);
+    expect(isUploadedSample(`../upload-${hex}.mp3`)).toBe(false);
+    expect(isUploadedSample(`upload-${hex}.mp3/x`)).toBe(false);
+    expect(isUploadedSample(`upload-${hex}.mp3.tmp.mp3`)).toBe(false);
   });
 });

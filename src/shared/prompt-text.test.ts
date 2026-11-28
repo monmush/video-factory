@@ -53,3 +53,11 @@ describe("the voice of a clip that speaks for itself", () => {
     expect(prompt).toContain("described as: \"Giọng nam lớn tuổi, miền Trung, 'trầm'\".");
   });
 });
+
+describe("the voice of a clip whose sample is an uploaded recording", () => {
+  it("binds the speaker to Audio 1 without a description the recording may contradict", () => {
+    const prompt = speechPrompt({ people: 1, words: "Ừ.", cue: null, voice: "" });
+    expect(prompt).toMatch(/voice heard in Audio 1/);
+    expect(prompt).not.toMatch(/described as/);
+  });
+});

@@ -26,7 +26,7 @@ import type { StepPoll } from "./video/steps";
 const ENDPOINT = "google/gemini-3.8-flash-tts";
 const PURPOSE = "character-voice";
 
-const SHORTEST_SAMPLE_SEC = 2;
+export const SHORTEST_SAMPLE_SEC = 2;
 const FIXTURE_VOICE_MS = 4000;
 
 const isFixture = () => providerMode() === "fixture";

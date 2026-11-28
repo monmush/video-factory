@@ -11,12 +11,13 @@ import {
   MAX_CHARACTER_IMAGES,
   type Workspace,
 } from "../shared/ipc";
-import { cleanVoiceText, defaultVoiceFor } from "../shared/voices";
+import { cleanVoiceText, defaultVoiceFor, isUploadedSample } from "../shared/voices";
 import { assetDir, imageRefPath } from "./media";
 import { carryOverCheck } from "./place-check";
 import { checkSets } from "./product-sets";
 import { mutate } from "./store";
 import { isUsableCutout } from "./video/product-shot";
+import { sampleExists } from "./voice-maker";
 
 function validate(ws: Workspace, input: AssetInput, selfId?: string) {
   if (!["character", "product", "environment"].includes(input.kind)) {
@@ -59,6 +60,19 @@ function voiceToSave(
 ): string | undefined {
   if (character.kind !== "character") return undefined;
   return cleanVoiceText(typed) || defaultVoiceFor(character, ws.assets);
+}
+
+async function voiceSampleToSave(
+  kind: Asset["kind"],
+  given: string | null | undefined,
+  saved: string | undefined,
+): Promise<string | undefined> {
+  if (kind !== "character" || given === null) return undefined;
+  if (given === undefined) return saved;
+  if (!isUploadedSample(given) || !(await sampleExists(given))) {
+    throw new Error("Không tìm thấy giọng đã tải lên");
+  }
+  return given;
 }
 
 const imageFiles = (asset?: Asset) => new Map(asset?.images.map((i) => [i.id, i.file]));
@@ -155,6 +169,7 @@ async function buildAsset(
 ): Promise<Asset> {
   const name = input.name.trim();
   const description = input.description.trim();
+  const voiceSample = await voiceSampleToSave(input.kind, input.voiceSample, undefined);
   return {
     id,
     kind: input.kind,
@@ -164,6 +179,7 @@ async function buildAsset(
     images: (await applyImages(id, input.images, [])).images,
     contains: input.kind === "product" ? cleanContains(input.contains) : undefined,
     voice: voiceToSave(ws, { id, kind: input.kind, name, description }, input.voice),
+    ...(voiceSample ? { voiceSample } : {}),
     createdAt: now(),
     updatedAt: now(),
   };
@@ -230,6 +246,7 @@ export async function updateAsset(id: string, input: AssetInput): Promise<Asset>
         ? asset.contains
         : cleanContains(input.contains);
     checkSets(ws.assets.map((a) => (a.id === id ? { ...a, contains } : a)));
+    const voiceSample = await voiceSampleToSave(asset.kind, input.voiceSample, asset.voiceSample);
     asset.name = input.name.trim();
     asset.handle = input.handle;
     asset.description = input.description.trim();
@@ -238,6 +255,8 @@ export async function updateAsset(id: string, input: AssetInput): Promise<Asset>
     removed = applied.removed;
     asset.contains = contains;
     asset.voice = voiceToSave(ws, asset, input.voice ?? asset.voice);
+    if (voiceSample) asset.voiceSample = voiceSample;
+    else delete asset.voiceSample;
     asset.updatedAt = now();
     return asset;
   });

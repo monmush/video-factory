@@ -1,6 +1,17 @@
 # Character voices
 
-Updated 26 November 2026. Owns how a character gets its voice, the voice sample the video model hears, and what is still unverified. How a speech clip is requested: [video generation](VIDEO_GENERATION_DECISIONS.md), "The video model speaks". Code: `src/shared/voices.ts` (voice text, default rule, region, migration), `src/shared/voice-step.ts` (the job's voices step), `src/shared/voice-request.ts` (what the voice-making model is asked), `src/main/voice-maker.ts` (the voice-making model), `src/main/voice-suggestions.ts`, `src/renderer/src/components/voice-field.tsx`.
+Updated 28 November 2026. Owns how a character gets its voice, the voice sample the video model hears, and what is still unverified. How a speech clip is requested: [video generation](VIDEO_GENERATION_DECISIONS.md), "The video model speaks". Code: `src/shared/voices.ts` (voice text, default rule, region, migration), `src/shared/voice-step.ts` (the job's voices step), `src/shared/voice-request.ts` (what the voice-making model is asked), `src/main/voice-maker.ts` (the voice-making model), `src/main/voice-upload.ts` (an uploaded voice), `src/main/voice-suggestions.ts`, `src/renderer/src/components/voice-field.tsx`.
+
+## An uploaded voice (28 November 2026)
+
+Asked by the owner 28 November: a character can speak with a real voice instead of the made sample.
+
+- **Data**: `Asset.voiceSample`, the name of a file in `voices/`, `upload-<sha256 of the treated file>.mp3` (`isUploadedSample`). The voice text stays and keeps its role: the writer's accent rules and the dialog's text field. Saving keeps, removes (`null`) or sets it; a name that is not an upload or not on disk is refused ("Không tìm thấy giọng đã tải lên"). Only characters carry it. Sample files are never deleted, also not when an upload is removed or replaced. It travels in setup sharing with the asset and the `voices/` folder.
+- **Upload** (`voices:pick-upload`, free, the same in fixture mode): a file picker for audio or video (mp3, wav, m4a, aac, ogg, flac, mp4, mov, m4v, webm). A file without sound: "Tệp này không có âm thanh". It gets the same treatment as a made sample (mono, the first 12 s, −18 LUFS, mp3); shorter than 2 s: "Giọng mẫu cần dài ít nhất 2 giây".
+- **Character dialog**, beside "Giọng nói": without an upload the controls above plus "Tải lên", which plays the file once picked. With an upload, "Nghe thử" / "Dừng", "Đổi" and "Gỡ"; the paid "Giữ để nghe" and "Tạo lại" are hidden. "Gỡ" returns to the made sample. An upload whose file is missing shows as none, and is kept unless the user changes it. The text field and suggestions are unchanged.
+- **In a video**: a character with an upload on disk gets it as its sample, ready, never made or priced; a missing file falls back to the made sample. A staged video follows an upload added or removed; a started video keeps what it recorded, as for any voice.
+- **Speech prompt**: with an uploaded voice the sentence `That voice is described as: "…"` is left out, because the text may be only the guessed default and contradict the recording; the binding to Audio 1 stays.
+- **Ready check**: characters with an upload are compared by file, the others by voice text; so the same text with different uploads gives no warning, and one file shared by two characters does.
 
 ## Why the voice-making model changed (26 November 2026)
 
@@ -45,6 +56,8 @@ When the video model speaks, each clip invented a new voice from a fixed English
 - Whether Wan 3.0 and MiniMax H3 Max hold the voice and accent from the reference sample across clips (fal does not document what the audio references do).
 - Wan 3.0 reference-to-video has no start frame: the still is only a reference, so its first frame may differ from the picture.
 - The billed units of the voice-making model and of both reference-to-video endpoints.
+- Whether the video models hold an uploaded real voice across clips.
+- Only the first 12 s of an uploaded file are used; whether a later part would be a better sample is not judged.
 
 ## Sounds without words — 13 November 2026
 

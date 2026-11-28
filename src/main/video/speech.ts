@@ -19,7 +19,7 @@ import {
 } from "../../shared/speech";
 import { segmentAnchor, type VideoJob } from "../../shared/video-job";
 import { speechUsd, type VideoModel, videoModel } from "../../shared/video-models";
-import { voiceOf } from "../../shared/voice-step";
+import { type JobVoice, voiceOf } from "../../shared/voice-step";
 import {
   type Canceller,
   type CancelOutcome,
@@ -46,6 +46,9 @@ function fal(): Promise<Fal> {
   return falPromise;
 }
 
+const spokenDescriptionOf = (voice: JobVoice | undefined) =>
+  !voice || voice.uploaded ? "" : voice.text;
+
 export function segmentPrompt(job: VideoJob, segment: JobSegment): string {
   const ambient = job.plan?.seats.find((s) => s.characterId === segment.characterId)?.ambient;
   const shot = segment.speakerShot === null ? undefined : job.shots[segment.speakerShot];
@@ -60,7 +63,7 @@ export function segmentPrompt(job: VideoJob, segment: JobSegment): string {
     people: job.frames.find((f) => f.id === segment.frame)?.people ?? 1,
     words,
     cue,
-    voice: voiceOf(job, segment.characterId)?.text ?? "",
+    voice: spokenDescriptionOf(voiceOf(job, segment.characterId)),
     motion,
     ambient,
     pace: segment.pace,

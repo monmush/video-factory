@@ -6,6 +6,7 @@ export interface JobVoice {
   character?: VoiceTraits;
   file: string;
   ready: boolean;
+  uploaded?: true;
   toMake?: true;
   requestId?: string;
   submittedAt?: string;
@@ -18,7 +19,7 @@ export interface JobVoice {
   error?: string;
 }
 
-export type VoiceChoice = Pick<JobVoice, "characterId" | "text" | "file" | "ready"> & {
+export type VoiceChoice = Pick<JobVoice, "characterId" | "text" | "file" | "ready" | "uploaded"> & {
   character: VoiceTraits;
 };
 
